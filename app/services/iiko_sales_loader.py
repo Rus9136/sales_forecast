@@ -22,8 +22,10 @@ class IikoSalesLoaderService:
     async def fetch_sales_from_single_domain(self, base_url: str, from_date: date, to_date: date) -> List[dict]:
         """Fetch sales data from a single iiko domain"""
         try:
+            # Always get fresh token before making request
             auth_service = IikoAuthService(base_url)
-            token = await auth_service.get_auth_token()
+            token = await auth_service._refresh_token()  # Force fresh token
+            logger.info(f"Got fresh token for {base_url}: {token[:10]}...")
             
             # Prepare request body
             request_body = {
@@ -62,14 +64,22 @@ class IikoSalesLoaderService:
                 )
                 response.raise_for_status()
                 
-                response_data = response.json()
+                # Check if response is valid JSON
+                try:
+                    response_data = response.json()
+                except Exception as json_error:
+                    logger.error(f"Invalid JSON response from {base_url}. Status: {response.status_code}, Text: {response.text[:200]}")
+                    raise Exception(f"Invalid JSON response: {json_error}")
+                
                 # Extract data from the response wrapper
                 sales_data = response_data.get('data', [])
                 logger.info(f"Fetched {len(sales_data)} sales records from {base_url}")
                 return sales_data
                 
         except httpx.HTTPError as e:
-            logger.error(f"Error fetching sales from {base_url}: {e}")
+            logger.error(f"HTTP Error fetching sales from {base_url}: {e}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Response status: {e.response.status_code}, text: {e.response.text[:200]}")
             return []
         except Exception as e:
             logger.error(f"Unexpected error from {base_url}: {e}")
@@ -226,6 +236,8 @@ class IikoSalesLoaderService:
     
     async def sync_sales(self, from_date: date = None, to_date: date = None) -> dict:
         """Main method to sync sales data from iiko"""
+        error_details = []
+        
         try:
             # Default to current date if no dates provided
             if not from_date:
@@ -236,16 +248,23 @@ class IikoSalesLoaderService:
             logger.info(f"Starting sales sync from {from_date} to {to_date}")
             
             # Fetch sales data from iiko API
-            sales_data = await self.fetch_sales_from_iiko(from_date, to_date)
+            try:
+                sales_data = await self.fetch_sales_from_iiko(from_date, to_date)
+            except Exception as fetch_error:
+                error_msg = f"Failed to fetch data from iiko API: {str(fetch_error)}"
+                logger.error(error_msg)
+                error_details.append(error_msg)
+                raise Exception(error_msg)
             
             if not sales_data:
                 logger.info("No sales data found - returning success response")
                 result = {
                     "status": "success",
-                    "message": "No sales data found",
+                    "message": "No sales data found for the specified date range",
                     "summary_records": 0,
                     "hourly_records": 0,
-                    "total_raw_records": 0
+                    "total_raw_records": 0,
+                    "details": "No sales transactions were found in iiko API for the given period"
                 }
                 logger.info(f"Returning result: {result}")
                 return result
@@ -256,18 +275,31 @@ class IikoSalesLoaderService:
                 logger.info(f"First record: {sales_data[0]}")
             
             # Process sales data
-            summary_records, hourly_records = self.process_sales_data(sales_data)
+            try:
+                summary_records, hourly_records = self.process_sales_data(sales_data)
+            except Exception as process_error:
+                error_msg = f"Failed to process sales data: {str(process_error)}"
+                logger.error(error_msg)
+                error_details.append(error_msg)
+                raise Exception(error_msg)
             
             # Sync to database
-            summary_count = self.sync_sales_summary(summary_records)
-            hourly_count = self.sync_sales_by_hour(hourly_records)
+            try:
+                summary_count = self.sync_sales_summary(summary_records)
+                hourly_count = self.sync_sales_by_hour(hourly_records)
+            except Exception as db_error:
+                error_msg = f"Database sync failed: {str(db_error)}"
+                logger.error(error_msg)
+                error_details.append(error_msg)
+                raise Exception(error_msg)
             
             result = {
                 "status": "success",
                 "message": f"Successfully synced sales data from {from_date} to {to_date}",
                 "summary_records": summary_count,
                 "hourly_records": hourly_count,
-                "total_raw_records": len(sales_data)
+                "total_raw_records": len(sales_data),
+                "details": f"Processed {len(sales_data)} raw records into {summary_count} daily summaries and {hourly_count} hourly records"
             }
             
             logger.info(f"Sales sync completed: {result}")
@@ -276,10 +308,19 @@ class IikoSalesLoaderService:
         except Exception as e:
             self.db.rollback()
             logger.error(f"Error syncing sales: {e}")
+            
+            # Prepare detailed error message
+            if error_details:
+                detailed_error = " → ".join(error_details)
+            else:
+                detailed_error = str(e)
+                
             return {
                 "status": "error",
-                "message": f"Sales sync failed: {str(e)}",
+                "message": f"Sales sync failed: {detailed_error}",
                 "summary_records": 0,
                 "hourly_records": 0,
-                "total_raw_records": 0
+                "total_raw_records": 0,
+                "details": f"Error occurred during sync process. Check logs for more information. Error: {detailed_error}",
+                "error_type": type(e).__name__
             }

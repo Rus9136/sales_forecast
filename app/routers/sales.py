@@ -109,29 +109,57 @@ async def sync_sales(
     try:
         sales_loader = IikoSalesLoaderService(db)
         
-        # Use provided dates or let service handle defaults
-        
-        logger.info(f"Starting sales sync from {from_date} to {to_date}")
+        logger.info(f"API endpoint: Starting sales sync from {from_date} to {to_date}")
         
         # Perform sync
         result = await sales_loader.sync_sales(from_date, to_date)
         
-        logger.info(f"Sync result: {result}")
-        logger.info(f"Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
+        logger.info(f"API endpoint: Sync completed with status: {result.get('status')}")
         
+        # Check if sync failed
+        if result.get("status") == "error":
+            logger.error(f"API endpoint: Sync failed with error: {result.get('message')}")
+            # Return error with detailed information
+            return {
+                "status": "error",
+                "message": result.get("message", "Unknown error occurred"),
+                "from_date": from_date,
+                "to_date": to_date,
+                "summary_records": result.get("summary_records", 0),
+                "hourly_records": result.get("hourly_records", 0),
+                "total_raw_records": result.get("total_raw_records", 0),
+                "details": result.get("details", "No additional details available"),
+                "error_type": result.get("error_type", "UnknownError")
+            }
+        
+        # Success case
         return {
             "status": "success",
-            "message": result["message"],
+            "message": result.get("message", "Sync completed successfully"),
             "from_date": from_date,
             "to_date": to_date,
-            "summary_records": result["summary_records"],
-            "hourly_records": result["hourly_records"],
-            "total_raw_records": result["total_raw_records"]
+            "summary_records": result.get("summary_records", 0),
+            "hourly_records": result.get("hourly_records", 0),
+            "total_raw_records": result.get("total_raw_records", 0),
+            "details": result.get("details", f"Successfully processed {result.get('total_raw_records', 0)} records")
         }
         
     except Exception as e:
-        logger.error(f"Error in sales sync: {e}")
-        raise HTTPException(status_code=500, detail=f"Sales sync failed: {str(e)}")
+        error_msg = f"API endpoint error: {str(e)}"
+        logger.error(f"Critical error in sales sync endpoint: {e}", exc_info=True)
+        
+        # Return detailed error information instead of raising HTTP exception
+        return {
+            "status": "error",
+            "message": f"Critical system error during sync: {str(e)}",
+            "from_date": from_date,
+            "to_date": to_date,
+            "summary_records": 0,
+            "hourly_records": 0,
+            "total_raw_records": 0,
+            "details": f"A critical error occurred in the API endpoint. Error type: {type(e).__name__}. Please check server logs for more information.",
+            "error_type": type(e).__name__
+        }
 
 
 @router.get("/stats")

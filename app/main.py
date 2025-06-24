@@ -801,16 +801,40 @@ async def root():
                     
                     const result = await response.json();
                     
-                    if (response.ok) {
+                    // Check if the result indicates success or error
+                    if (result.status === 'success') {
                         updateProgress(100, 'Загрузка завершена успешно!');
                         showResult(true, result);
+                    } else if (result.status === 'error') {
+                        // API returned error status
+                        updateProgress(100, 'Ошибка при загрузке данных');
+                        showResult(false, result);
+                    } else if (!response.ok) {
+                        // HTTP error
+                        throw new Error(result.detail || result.message || 'HTTP ошибка сервера');
                     } else {
-                        throw new Error(result.detail || 'Ошибка синхронизации');
+                        // Unexpected response format
+                        updateProgress(100, 'Загрузка завершена успешно!');
+                        showResult(true, result);
                     }
                     
                 } catch (error) {
                     console.error('Sync error:', error);
-                    showResult(false, { message: error.message });
+                    updateProgress(100, 'Произошла ошибка');
+                    
+                    // Create error object with details
+                    const errorData = {
+                        message: error.message || 'Неизвестная ошибка сети',
+                        details: `Ошибка подключения к серверу. ${error.name ? `Тип: ${error.name}` : ''} Проверьте подключение к интернету и повторите попытку.`,
+                        error_type: error.name || 'NetworkError',
+                        total_raw_records: 0,
+                        summary_records: 0,
+                        hourly_records: 0,
+                        from_date: startDate,
+                        to_date: endDate
+                    };
+                    
+                    showResult(false, errorData);
                 } finally {
                     // Re-enable form
                     document.getElementById('load-btn').disabled = false;
@@ -852,12 +876,28 @@ async def root():
                         <p><strong>Обработано записей:</strong> ${data.total_raw_records}</p>
                         <p><strong>Дневных сводок:</strong> ${data.summary_records}</p>
                         <p><strong>Почасовых записей:</strong> ${data.hourly_records}</p>
+                        ${data.details ? `<p><strong>Детали:</strong> ${data.details}</p>` : ''}
                     `;
                 } else {
                     resultContent.innerHTML = `
                         <h3>❌ Ошибка синхронизации</h3>
-                        <p><strong>Ошибка:</strong> ${data.message}</p>
-                        <p>Попробуйте еще раз или обратитесь к администратору.</p>
+                        <p><strong>Основная ошибка:</strong> ${data.message || 'Неизвестная ошибка'}</p>
+                        ${data.details ? `<p><strong>Подробности:</strong> ${data.details}</p>` : ''}
+                        ${data.error_type ? `<p><strong>Тип ошибки:</strong> ${data.error_type}</p>` : ''}
+                        ${data.from_date && data.to_date ? `<p><strong>Период:</strong> ${data.from_date} - ${data.to_date}</p>` : ''}
+                        <p><strong>Статистика:</strong></p>
+                        <ul style="margin-left: 20px;">
+                            <li>Обработано записей: ${data.total_raw_records || 0}</li>
+                            <li>Дневных сводок: ${data.summary_records || 0}</li>
+                            <li>Почасовых записей: ${data.hourly_records || 0}</li>
+                        </ul>
+                        <p style="margin-top: 15px;"><strong>Рекомендации:</strong></p>
+                        <ul style="margin-left: 20px;">
+                            <li>Проверьте подключение к интернету</li>
+                            <li>Убедитесь что указанные даты корректны</li>
+                            <li>Попробуйте уменьшить диапазон дат</li>
+                            <li>Если ошибка повторяется, обратитесь к администратору</li>
+                        </ul>
                     `;
                 }
             }

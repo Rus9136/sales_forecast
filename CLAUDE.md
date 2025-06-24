@@ -3,6 +3,15 @@
 ## Project Overview
 Sales Forecast API - это система прогнозирования продаж, построенная на FastAPI с использованием LightGBM для машинного обучения. Проект интегрируется с внешними API для получения данных о подразделениях и организациях.
 
+## ⚠️ ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ
+**НЕ ТРОГАЙТЕ 1C Exchange Service на порту 8000!** Это отдельный независимый проект, который работает параллельно с Sales Forecast. 
+
+### Разделение портов:
+- **Порт 8000**: 1C Exchange Service (ОТДЕЛЬНЫЙ ПРОЕКТ - НЕ ТРОГАТЬ!)
+- **Порт 8002**: Sales Forecast API (ЭТОТ ПРОЕКТ)
+- **Порт 5435**: PostgreSQL для Sales Forecast
+- **Порт 5433**: PostgreSQL для других проектов
+
 ## Architecture
 - **Backend**: FastAPI (Python)
 - **Database**: PostgreSQL
@@ -70,10 +79,20 @@ Sales Forecast API - это система прогнозирования про
 
 ## Common Commands
 
+### ⚠️ ВАЖНО: Порты и проекты
+```bash
+# Sales Forecast API (ЭТОТ ПРОЕКТ) - порт 8002
+curl http://localhost:8002/
+
+# 1C Exchange Service (ДРУГОЙ ПРОЕКТ) - порт 8000 
+# НЕ ТРОГАТЬ! НЕ ОСТАНАВЛИВАТЬ! НЕ ИЗМЕНЯТЬ!
+curl http://localhost:8000/
+```
+
 ### Development
 ```bash
-# Запуск в development режиме
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Запуск в development режиме (НА ПОРТУ 8002!)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
 
 # Запуск тестов
 pytest
@@ -87,17 +106,17 @@ alembic upgrade head
 # Запуск production окружения
 docker-compose -f docker-compose.prod.yml up -d
 
-# Перестройка контейнеров
-docker-compose -f docker-compose.prod.yml build --no-cache
+# Перестройка контейнеров (ТОЛЬКО Sales Forecast!)
+docker-compose -f docker-compose.prod.yml build --no-cache sales-forecast-app
 
 # Проверка логов
 docker-compose -f docker-compose.prod.yml logs -f sales-forecast-app
 
-# Синхронизация подразделений
+# Синхронизация подразделений (НА ПОРТУ 8002!)
 curl -X POST http://localhost:8002/api/departments/sync
 
-# Синхронизация продаж из iiko
-curl -X POST http://localhost:8002/api/sales/sync
+# Синхронизация продаж из iiko (НА ПОРТУ 8002!)
+curl -X POST "http://localhost:8002/api/sales/sync?from_date=2025-03-01&to_date=2025-03-31"
 ```
 
 ### Database
@@ -247,12 +266,14 @@ git log --oneline
 - **JavaScript Enhancement**: Унифицированная навигация и управление данными
 
 ### Current Status
-- **Sales Sync**: ✅ Работает с реальными данными iiko API (35,328 записей → 265 daily + 3,727 hourly)
-- **Data Aggregation**: ✅ Pandas обработка корректно группирует данные с format='mixed' для дат
-- **API Endpoints**: ✅ Все CRUD операции функциональны
+- **Sales Sync**: ✅ Работает с реальными данными iiko API (стабильная загрузка больших объемов)
+- **Authentication**: ✅ Принудительное обновление токенов решает проблемы авторизации
+- **Data Aggregation**: ✅ Pandas обработка корректно группирует данные с format='mixed' для дат  
+- **API Endpoints**: ✅ Все CRUD операции функциональны на порту 8002
 - **Database Schema**: ✅ Foreign keys и индексы настроены правильно
 - **Version Control**: ✅ Git репозиторий настроен и синхронизирован
 - **Admin Panel**: ✅ Полнофункциональная панель управления продажами с обновленным UI
+- **Production**: ✅ Docker контейнеры пересобраны и протестированы
 
 ### Session Logs
 - **SESSION_LOG_20250624_113111.md**: Первоначальная настройка системы
@@ -266,11 +287,23 @@ git log --oneline
 - **Admin Panel Cleanup**: ✅ Убраны кнопки "Назад" и пустые пункты меню (Сотрудники, Должности)
 - **Section Headers**: ✅ Заголовки разделов в сайдбаре визуально отличаются от кнопок подпунктов
 
+### ✅ Critical Bug Fixes (2025-06-24 Latest Session)
+- **Token Authentication Issue**: ✅ Исправлена ошибка "Unexpected token" при загрузке продаж
+  - Теперь токен принудительно обновляется перед каждым запросом к iiko API
+  - Добавлена валидация JSON ответов с детальным логированием ошибок
+  - Улучшена обработка HTTP ошибок с показом статуса ответа
+- **Production Deployment**: ✅ Пересобран Docker контейнер с исправлениями
+  - Применены все изменения в production окружении
+  - Протестирована загрузка данных за март (135,833 записей успешно обработаны)
+  - Подтверждена работа на правильном порту 8002
+
 ### Next Steps
 - [x] ✅ Добавить веб-форму для выбора диапазона дат
 - [x] ✅ Создать админ панель для управления продажами
 - [x] ✅ Убрать mock данные и решить проблему 409 с реальными датами
 - [x] ✅ Улучшить UI/UX админ панели
+- [x] ✅ Исправить ошибки авторизации с iiko API
+- [x] ✅ Пересобрать production Docker контейнеры
 - [ ] Добавить экспорт данных в CSV/Excel
 - [ ] Добавить графики и визуализацию продаж
 - [ ] Добавить batch processing для больших объемов данных
