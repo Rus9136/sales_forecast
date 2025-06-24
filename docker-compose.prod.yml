@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # PostgreSQL for Sales Forecast
+  sales-forecast-db:
+    image: postgres:15
+    container_name: sales-forecast-db
+    environment:
+      POSTGRES_USER: sales_user
+      POSTGRES_PASSWORD: sales_password
+      POSTGRES_DB: sales_forecast
+    ports:
+      - "5435:5432"
+    volumes:
+      - sales_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sales_user -d sales_forecast"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Sales Forecast App
+  sales-forecast-app:
+    build: .
+    container_name: sales-forecast-app
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql://sales_user:sales_password@sales-forecast-db:5432/sales_forecast
+      POSTGRES_HOST: sales-forecast-db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: sales_user
+      POSTGRES_PASSWORD: sales_password
+      POSTGRES_DB: sales_forecast
+      API_BASE_URL: "http://tco.aqnietgroup.com:5555/v1"
+    depends_on:
+      sales-forecast-db:
+        condition: service_healthy
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  # 1C Exchange Service  
+  exchange-service:
+    build:
+      context: /root/projects/1c-exchange-service
+    container_name: exchange-service
+    ports:
+      - "8000:8000"
+    environment:
+      API_KEY: "SdSWhiCAv8nZR67"
+      LOG_LEVEL: "INFO"
+      PROJECT_NAME: "1C Exchange Service"
+      VERSION: "1.0.0"
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+volumes:
+  sales_postgres_data:
