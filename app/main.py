@@ -4,7 +4,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from .config import settings
 from .db import engine, Base
-from .routers import branch, department, sales
+from .routers import branch, department, sales, forecast
+from .services.scheduled_sales_loader import run_auto_sync
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +21,43 @@ app = FastAPI(
     debug=settings.DEBUG
 )
 
+# Initialize scheduler for automatic sales loading
+scheduler = BackgroundScheduler()
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background scheduler on application startup"""
+    try:
+        # Schedule daily automatic sales loading at 2:00 AM
+        scheduler.add_job(
+            func=run_auto_sync,
+            trigger="cron", 
+            hour=2,
+            minute=0,
+            id='daily_sales_sync',
+            name='Daily Sales Auto-Sync',
+            replace_existing=True
+        )
+        
+        scheduler.start()
+        logger.info("✅ Background scheduler started - Daily sales sync scheduled for 2:00 AM")
+        
+        # Register shutdown handler
+        atexit.register(lambda: scheduler.shutdown() if scheduler.running else None)
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to start scheduler: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up scheduler on application shutdown"""
+    try:
+        if scheduler.running:
+            scheduler.shutdown()
+            logger.info("✅ Background scheduler shut down successfully")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down scheduler: {e}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,6 +69,7 @@ app.add_middleware(
 app.include_router(branch.router, prefix="/api")
 app.include_router(department.router, prefix="/api")
 app.include_router(sales.router, prefix="/api")
+app.include_router(forecast.router, prefix="/api")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -40,7 +81,10 @@ async def root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Админ панель</title>
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+        <meta http-equiv="Pragma" content="no-cache">
+        <meta http-equiv="Expires" content="0">
+        <title>Админ панель - v2.2 (Smart Outliers)</title>
         <style>
             * {
                 margin: 0;
@@ -427,6 +471,9 @@ async def root():
                 color: #721c24;
             }
         </style>
+        
+        <!-- Chart.js library -->
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     </head>
     <body>
         <div class="container">
@@ -442,8 +489,13 @@ async def root():
                     <li><a href="#продажи" class="section-header">ПРОДАЖИ</a></li>
                     <li><a href="#продажи-по-дням" onclick="showDailySales()">Продажи по дням</a></li>
                     <li><a href="#продажи-по-часам" onclick="showHourlySales()">Продажи по часам</a></li>
+                    <li><a href="#прогноз" class="section-header">ПРОГНОЗ ПРОДАЖ</a></li>
+                    <li><a href="#прогноз-по-филиалам" onclick="showForecastByBranch()">📈 Прогноз по филиалам</a></li>
+                    <li><a href="#сравнение-факт-прогноз" onclick="showForecastComparison()">📊 Сравнение факт / прогноз</a></li>
+                    <li><a href="#экспорт-прогноза" onclick="showForecastExport()">📤 Экспорт прогноза</a></li>
                     <li><a href="#сервис" class="section-header">СЕРВИС</a></li>
                     <li><a href="#загрузка-данных" onclick="showDataLoading()">Загрузка данных</a></li>
+                    <li><a href="#авто-загрузка" onclick="showAutoSyncStatus()">⏰ Автоматическая загрузка</a></li>
                 </ul>
             </div>
             
@@ -629,6 +681,234 @@ async def root():
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- Forecast by Branch Page -->
+                <div id="page-forecast-branch" class="page-content" style="display: none;">
+                    <div class="page-header">
+                        <h1 class="page-title">Прогноз по филиалам</h1>
+                        
+                        <div class="filters-row">
+                            <input type="date" class="filter-select" id="forecast-start-date" placeholder="Дата начала">
+                            <input type="date" class="filter-select" id="forecast-end-date" placeholder="Дата окончания">
+                            <select class="filter-select" id="forecast-department-filter">
+                                <option value="">Все подразделения</option>
+                            </select>
+                            
+                            <button class="refresh-btn" onclick="loadForecasts()">Обновить прогноз</button>
+                            
+                            <span class="loading" id="forecast-loading" style="display: none;">Загрузка...</span>
+                            
+                            <div class="total-count" id="forecast-total-count">Всего: 0</div>
+                        </div>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table id="forecast-table">
+                            <thead>
+                                <tr>
+                                    <th>Дата</th>
+                                    <th>Филиал</th>
+                                    <th>Прогноз выручки</th>
+                                </tr>
+                            </thead>
+                            <tbody id="forecast-tbody">
+                                <tr>
+                                    <td colspan="3" class="no-data">Выберите период и нажмите "Обновить прогноз"</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Forecast Comparison Page -->
+                <div id="page-forecast-comparison" class="page-content" style="display: none;">
+                    <div class="page-header">
+                        <h1 class="page-title">Сравнение факт / прогноз</h1>
+                        
+                        <div class="filters-row">
+                            <input type="date" class="filter-select" id="comparison-start-date" placeholder="Дата начала">
+                            <input type="date" class="filter-select" id="comparison-end-date" placeholder="Дата окончания">
+                            <select class="filter-select" id="comparison-department-filter">
+                                <option value="">Все подразделения</option>
+                            </select>
+                            
+                            <button class="refresh-btn" onclick="loadComparison()">Загрузить</button>
+                            
+                            <span class="loading" id="comparison-loading" style="display: none;">Загрузка...</span>
+                            
+                            <div class="total-count" id="comparison-total-count">Всего: 0</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Chart Container -->
+                    <div id="forecast-chart-wrapper" style="margin: 20px 0; display: none;">
+                        <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                            <h3 style="margin-bottom: 15px; color: #2c3e50;">График "Факт vs Прогноз"</h3>
+                            <div id="chart-warning" style="background: #fff3cd; color: #856404; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-size: 14px; display: none;">
+                                ⚠️ Для удобства отображения на графике показаны последние 30 дат. Используйте фильтр по датам для детализации.
+                            </div>
+                            <div id="chart-outliers-warning" style="background: #ffeaa7; color: #d63031; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-size: 14px; display: none;">
+                                📈 Внимание: График использует логарифмическую шкалу из-за больших разрывов в данных (разница более чем в 5 раз).
+                            </div>
+                            <div id="chart-no-data" style="background: #f8d7da; color: #721c24; padding: 20px; border-radius: 4px; text-align: center; display: none;">
+                                📊 Нет данных для отображения графика
+                            </div>
+                            <canvas id="forecastChart" height="120"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table id="comparison-table">
+                            <thead>
+                                <tr>
+                                    <th onclick="sortComparison('date')">Дата ↕</th>
+                                    <th onclick="sortComparison('department')">Филиал ↕</th>
+                                    <th onclick="sortComparison('predicted')">Прогноз ↕</th>
+                                    <th onclick="sortComparison('actual')">Факт ↕</th>
+                                    <th onclick="sortComparison('error')">Δ отклонение ↕</th>
+                                    <th onclick="sortComparison('error_pct')">% ошибка ↕</th>
+                                </tr>
+                            </thead>
+                            <tbody id="comparison-tbody">
+                                <tr>
+                                    <td colspan="6" class="no-data">Выберите период и нажмите "Загрузить"</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Forecast Export Page -->
+                <div id="page-forecast-export" class="page-content" style="display: none;">
+                    <div class="page-header">
+                        <h1 class="page-title">Экспорт прогноза</h1>
+                    </div>
+                    
+                    <div class="form-container">
+                        <div class="form-section">
+                            <h2 class="form-section-title">Параметры экспорта</h2>
+                            
+                            <form id="export-form" class="export-form">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="export-start-date">Дата начала:</label>
+                                        <input type="date" id="export-start-date" name="start-date" required>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label for="export-end-date">Дата окончания:</label>
+                                        <input type="date" id="export-end-date" name="end-date" required>
+                                    </div>
+                                </div>
+                                
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="export-department">Подразделение:</label>
+                                        <select class="filter-select" id="export-department" style="width: 100%;">
+                                            <option value="">Все подразделения</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                
+                                <div class="form-row">
+                                    <div class="form-group checkbox-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="include-actual" name="include-actual">
+                                            <span class="checkmark"></span>
+                                            Включить фактические данные для сравнения
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div class="form-actions">
+                                    <button type="button" class="load-btn" onclick="exportForecast()">
+                                        📥 Экспорт в CSV
+                                    </button>
+                                    <button type="button" class="cancel-btn" onclick="showDepartments()">
+                                        Отмена
+                                    </button>
+                                </div>
+                                
+                                <div class="result-section result-success" id="export-result" style="display: none;">
+                                    <div class="result-content">
+                                        <h3>✅ Экспорт начат</h3>
+                                        <p>Файл будет загружен автоматически.</p>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                        
+                        <div class="form-section" style="margin-top: 30px;">
+                            <h2 class="form-section-title">Информация о модели</h2>
+                            <div id="model-info" style="padding: 20px; background-color: #f8f9fa; border-radius: 8px;">
+                                <p>Загрузка информации о модели...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Auto Sync Status Page -->
+                <div id="page-auto-sync" class="page-content" style="display: none;">
+                    <div class="page-header">
+                        <h1 class="page-title">Автоматическая загрузка продаж</h1>
+                    </div>
+                    
+                    <!-- Status Cards -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px;">
+                        <div class="form-container" style="padding: 20px;">
+                            <h3 style="margin-bottom: 15px; color: #2c3e50;">⏰ Расписание</h3>
+                            <p><strong>Время запуска:</strong> Каждый день в 02:00</p>
+                            <p><strong>Период загрузки:</strong> Предыдущий день</p>
+                            <p><strong>Статус планировщика:</strong> <span id="scheduler-status" style="color: #27ae60;">✅ Активен</span></p>
+                        </div>
+                        
+                        <div class="form-container" style="padding: 20px;">
+                            <h3 style="margin-bottom: 15px; color: #2c3e50;">📊 Статистика (30 дней)</h3>
+                            <p><strong>Успешных загрузок:</strong> <span id="success-count">-</span></p>
+                            <p><strong>Ошибок:</strong> <span id="error-count">-</span></p>
+                            <p><strong>Успешность:</strong> <span id="success-rate">-</span>%</p>
+                        </div>
+                        
+                        <div class="form-container" style="padding: 20px;">
+                            <h3 style="margin-bottom: 15px; color: #2c3e50;">🔧 Управление</h3>
+                            <button class="sync-btn" onclick="testAutoSync()" style="margin-bottom: 10px;">🧪 Тестовый запуск</button>
+                            <button class="refresh-btn" onclick="loadAutoSyncStatus()" style="margin-bottom: 10px;">🔄 Обновить</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Latest Status -->
+                    <div class="form-container" style="margin-bottom: 30px;">
+                        <h2 style="margin-bottom: 20px; color: #2c3e50;">Последняя загрузка</h2>
+                        <div id="latest-sync-info">
+                            <p>Загрузка информации...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Logs Table -->
+                    <div class="form-container">
+                        <h2 style="margin-bottom: 20px; color: #2c3e50;">История автоматических загрузок</h2>
+                        
+                        <div class="table-container">
+                            <table id="auto-sync-table">
+                                <thead>
+                                    <tr>
+                                        <th>Дата выполнения</th>
+                                        <th>Период данных</th>
+                                        <th>Тип</th>
+                                        <th>Статус</th>
+                                        <th>Загружено записей</th>
+                                        <th>Сообщение</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="auto-sync-tbody">
+                                    <tr>
+                                        <td colspan="6" class="no-data">Загрузка логов...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -943,6 +1223,10 @@ async def root():
                 document.getElementById('page-data-loading').style.display = 'none';
                 document.getElementById('page-daily-sales').style.display = 'none';
                 document.getElementById('page-hourly-sales').style.display = 'none';
+                document.getElementById('page-forecast-branch').style.display = 'none';
+                document.getElementById('page-forecast-comparison').style.display = 'none';
+                document.getElementById('page-forecast-export').style.display = 'none';
+                document.getElementById('page-auto-sync').style.display = 'none';
             }
             
             function updateSidebarActive(selector) {
@@ -1118,6 +1402,669 @@ async def root():
             document.getElementById('search-input').addEventListener('input', applyFilters);
             document.getElementById('company-filter').addEventListener('change', applyFilters);
             
+            // =============================================================
+            // FORECAST FUNCTIONS v2.1 - LOGARITHMIC SCALE EDITION
+            // Updated: 2025-06-24 | Auto Log/Linear Scale Detection
+            // =============================================================
+            let comparisonData = [];
+            let sortColumn = 'date';
+            let sortDirection = 'asc';
+            let forecastChart = null;
+            
+            function showForecastByBranch() {
+                hideAllPages();
+                document.getElementById('page-forecast-branch').style.display = 'block';
+                updateSidebarActive('#прогноз-по-филиалам');
+                
+                // Set default dates (next 7 days)
+                const today = new Date();
+                const nextWeek = new Date(today);
+                nextWeek.setDate(today.getDate() + 7);
+                
+                document.getElementById('forecast-start-date').value = today.toISOString().split('T')[0];
+                document.getElementById('forecast-end-date').value = nextWeek.toISOString().split('T')[0];
+                
+                // Populate department filter
+                populateForecastDepartmentFilters();
+            }
+            
+            function showForecastComparison() {
+                hideAllPages();
+                document.getElementById('page-forecast-comparison').style.display = 'block';
+                updateSidebarActive('#сравнение-факт-прогноз');
+                
+                // Set default dates (last 30 days)
+                const today = new Date();
+                const monthAgo = new Date(today);
+                monthAgo.setDate(today.getDate() - 30);
+                
+                document.getElementById('comparison-start-date').value = monthAgo.toISOString().split('T')[0];
+                document.getElementById('comparison-end-date').value = today.toISOString().split('T')[0];
+                
+                // Populate department filter
+                populateForecastDepartmentFilters();
+            }
+            
+            function showForecastExport() {
+                hideAllPages();
+                document.getElementById('page-forecast-export').style.display = 'block';
+                updateSidebarActive('#экспорт-прогноза');
+                
+                // Set default dates
+                const today = new Date();
+                const nextMonth = new Date(today);
+                nextMonth.setDate(today.getDate() + 30);
+                
+                document.getElementById('export-start-date').value = today.toISOString().split('T')[0];
+                document.getElementById('export-end-date').value = nextMonth.toISOString().split('T')[0];
+                
+                // Populate department filter
+                populateForecastDepartmentFilters();
+                
+                // Load model info
+                loadModelInfo();
+            }
+            
+            function populateForecastDepartmentFilters() {
+                const departments = allBranches || [];
+                
+                // Forecast page filter
+                const forecastFilter = document.getElementById('forecast-department-filter');
+                if (forecastFilter) {
+                    forecastFilter.innerHTML = '<option value="">Все подразделения</option>';
+                    departments.forEach(dept => {
+                        const option = document.createElement('option');
+                        option.value = dept.id;
+                        option.textContent = dept.name || dept.code || dept.id;
+                        forecastFilter.appendChild(option);
+                    });
+                }
+                
+                // Comparison page filter
+                const comparisonFilter = document.getElementById('comparison-department-filter');
+                if (comparisonFilter) {
+                    comparisonFilter.innerHTML = '<option value="">Все подразделения</option>';
+                    departments.forEach(dept => {
+                        const option = document.createElement('option');
+                        option.value = dept.id;
+                        option.textContent = dept.name || dept.code || dept.id;
+                        comparisonFilter.appendChild(option);
+                    });
+                }
+                
+                // Export page filter
+                const exportFilter = document.getElementById('export-department');
+                if (exportFilter) {
+                    exportFilter.innerHTML = '<option value="">Все подразделения</option>';
+                    departments.forEach(dept => {
+                        const option = document.createElement('option');
+                        option.value = dept.id;
+                        option.textContent = dept.name || dept.code || dept.id;
+                        exportFilter.appendChild(option);
+                    });
+                }
+            }
+            
+            async function loadForecasts() {
+                const startDate = document.getElementById('forecast-start-date').value;
+                const endDate = document.getElementById('forecast-end-date').value;
+                const departmentId = document.getElementById('forecast-department-filter').value;
+                
+                if (!startDate || !endDate) {
+                    alert('Пожалуйста, укажите даты начала и окончания');
+                    return;
+                }
+                
+                document.getElementById('forecast-loading').style.display = 'inline';
+                
+                try {
+                    let url = `/api/forecast/batch?from_date=${startDate}&to_date=${endDate}`;
+                    if (departmentId) {
+                        url += `&department_id=${departmentId}`;
+                    }
+                    
+                    const response = await fetch(url);
+                    const forecastData = await response.json();
+                    
+                    renderForecastTable(forecastData);
+                    document.getElementById('forecast-total-count').textContent = `Всего: ${forecastData.length}`;
+                    
+                } catch (error) {
+                    console.error('Error loading forecasts:', error);
+                    document.getElementById('forecast-tbody').innerHTML = 
+                        '<tr><td colspan="3" class="no-data">Ошибка загрузки данных</td></tr>';
+                } finally {
+                    document.getElementById('forecast-loading').style.display = 'none';
+                }
+            }
+            
+            function renderForecastTable(forecastData) {
+                const tbody = document.getElementById('forecast-tbody');
+                
+                if (forecastData.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" class="no-data">Нет данных для отображения</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = '';
+                forecastData.forEach(forecast => {
+                    const row = tbody.insertRow();
+                    row.insertCell(0).textContent = new Date(forecast.date).toLocaleDateString('ru-RU');
+                    row.insertCell(1).textContent = forecast.department_name;
+                    
+                    const salesCell = row.insertCell(2);
+                    if (forecast.predicted_sales !== null) {
+                        salesCell.textContent = '₸ ' + Math.round(forecast.predicted_sales).toLocaleString('ru-RU');
+                    } else {
+                        salesCell.textContent = 'Недостаточно данных';
+                        salesCell.style.color = '#999';
+                    }
+                });
+            }
+            
+            async function loadComparison() {
+                const startDate = document.getElementById('comparison-start-date').value;
+                const endDate = document.getElementById('comparison-end-date').value;
+                const departmentId = document.getElementById('comparison-department-filter').value;
+                
+                if (!startDate || !endDate) {
+                    alert('Пожалуйста, укажите даты начала и окончания');
+                    return;
+                }
+                
+                document.getElementById('comparison-loading').style.display = 'inline';
+                
+                try {
+                    let url = `/api/forecast/comparison?from_date=${startDate}&to_date=${endDate}`;
+                    if (departmentId) {
+                        url += `&department_id=${departmentId}`;
+                    }
+                    
+                    const response = await fetch(url);
+                    comparisonData = await response.json();
+                    
+                    renderComparisonTable();
+                    updateForecastChart();
+                    document.getElementById('comparison-total-count').textContent = `Всего: ${comparisonData.length}`;
+                    
+                } catch (error) {
+                    console.error('Error loading comparison:', error);
+                    document.getElementById('comparison-tbody').innerHTML = 
+                        '<tr><td colspan="6" class="no-data">Ошибка загрузки данных</td></tr>';
+                } finally {
+                    document.getElementById('comparison-loading').style.display = 'none';
+                }
+            }
+            
+            function renderComparisonTable() {
+                const tbody = document.getElementById('comparison-tbody');
+                
+                if (comparisonData.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="no-data">Нет данных для отображения</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = '';
+                comparisonData.forEach(item => {
+                    const row = tbody.insertRow();
+                    row.insertCell(0).textContent = new Date(item.date).toLocaleDateString('ru-RU');
+                    row.insertCell(1).textContent = item.department_name;
+                    row.insertCell(2).textContent = '₸ ' + Math.round(item.predicted_sales).toLocaleString('ru-RU');
+                    row.insertCell(3).textContent = '₸ ' + Math.round(item.actual_sales).toLocaleString('ru-RU');
+                    
+                    const errorCell = row.insertCell(4);
+                    const error = item.error;
+                    errorCell.textContent = (error >= 0 ? '+' : '') + Math.round(error).toLocaleString('ru-RU');
+                    errorCell.style.color = error >= 0 ? '#27ae60' : '#e74c3c';
+                    
+                    const errorPctCell = row.insertCell(5);
+                    errorPctCell.textContent = item.error_percentage.toFixed(1) + '%';
+                    if (item.error_percentage > 20) {
+                        errorPctCell.style.color = '#e74c3c';
+                        errorPctCell.style.fontWeight = 'bold';
+                    }
+                });
+            }
+            
+            function sortComparison(column) {
+                const columnMap = {
+                    'date': 'date',
+                    'department': 'department_name',
+                    'predicted': 'predicted_sales',
+                    'actual': 'actual_sales',
+                    'error': 'error',
+                    'error_pct': 'error_percentage'
+                };
+                
+                const sortKey = columnMap[column];
+                
+                if (sortColumn === sortKey) {
+                    sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    sortColumn = sortKey;
+                    sortDirection = 'asc';
+                }
+                
+                comparisonData.sort((a, b) => {
+                    let aVal = a[sortKey];
+                    let bVal = b[sortKey];
+                    
+                    if (sortKey === 'date') {
+                        aVal = new Date(aVal);
+                        bVal = new Date(bVal);
+                    }
+                    
+                    if (sortDirection === 'asc') {
+                        return aVal > bVal ? 1 : -1;
+                    } else {
+                        return aVal < bVal ? 1 : -1;
+                    }
+                });
+                
+                renderComparisonTable();
+                updateForecastChart();
+            }
+            
+            // =============================================================
+            // LOGARITHMIC SCALE CHART FUNCTION v2.1
+            // Auto-detects data outliers and switches between linear/log scale
+            // Trigger: ratio > 5x = logarithmic scale + warning
+            // =============================================================
+            function updateForecastChart() {
+                const chartWrapper = document.getElementById('forecast-chart-wrapper');
+                const departmentFilter = document.getElementById('comparison-department-filter');
+                const chartWarning = document.getElementById('chart-warning');
+                const chartOutliersWarning = document.getElementById('chart-outliers-warning');
+                const chartNoData = document.getElementById('chart-no-data');
+                const chartCanvas = document.getElementById('forecastChart');
+                
+                // Скрываем все элементы по умолчанию
+                chartWarning.style.display = 'none';
+                chartOutliersWarning.style.display = 'none';
+                chartNoData.style.display = 'none';
+                chartCanvas.style.display = 'block';
+                
+                // Проверяем: выбран ли только один филиал (не "Все подразделения")
+                if (!departmentFilter.value || comparisonData.length === 0) {
+                    chartWrapper.style.display = 'none';
+                    if (forecastChart) {
+                        forecastChart.destroy();
+                        forecastChart = null;
+                    }
+                    return;
+                }
+                
+                chartWrapper.style.display = 'block';
+                
+                // Группируем данные по датам для одного филиала
+                const chartData = {};
+                comparisonData.forEach(item => {
+                    const date = new Date(item.date).toLocaleDateString('ru-RU');
+                    if (!chartData[date]) {
+                        chartData[date] = {
+                            predicted: item.predicted_sales,
+                            actual: item.actual_sales
+                        };
+                    }
+                });
+                
+                // Сортируем даты по возрастанию
+                const allDates = Object.keys(chartData).sort((a, b) => {
+                    const dateA = new Date(a.split('.').reverse().join('-'));
+                    const dateB = new Date(b.split('.').reverse().join('-'));
+                    return dateA - dateB;
+                });
+                
+                // Проверяем наличие данных
+                if (allDates.length === 0) {
+                    chartNoData.style.display = 'block';
+                    chartCanvas.style.display = 'none';
+                    if (forecastChart) {
+                        forecastChart.destroy();
+                        forecastChart = null;
+                    }
+                    return;
+                }
+                
+                // ОПТИМИЗАЦИЯ: Ограничиваем количество точек для производительности
+                const MAX_POINTS = 30;
+                let dates, showWarning = false;
+                
+                if (allDates.length > MAX_POINTS) {
+                    // Показываем последние 30 дат
+                    dates = allDates.slice(-MAX_POINTS);
+                    showWarning = true;
+                } else {
+                    dates = allDates;
+                }
+                
+                // Показываем предупреждение если данных много
+                if (showWarning) {
+                    chartWarning.style.display = 'block';
+                }
+                
+                // Подготавливаем данные для графика
+                const predictedValues = dates.map(date => chartData[date].predicted);
+                const actualValues = dates.map(date => chartData[date].actual);
+                
+                // ============= ИНТЕЛЛЕКТУАЛЬНАЯ ОБРАБОТКА ВЫБРОСОВ =============
+                
+                // Собираем все значения (исключаем null/undefined)
+                const allValues = [...predictedValues, ...actualValues].filter(v => v != null && v > 0);
+                
+                if (allValues.length === 0) {
+                    chartNoData.style.display = 'block';
+                    chartCanvas.style.display = 'none';
+                    return;
+                }
+                
+                // Функция для вычисления процентилей
+                function percentile(arr, p) {
+                    const sorted = [...arr].sort((a, b) => a - b);
+                    const index = (p / 100) * (sorted.length - 1);
+                    const lower = Math.floor(index);
+                    const upper = Math.ceil(index);
+                    const weight = index % 1;
+                    return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+                }
+                
+                // Вычисляем 5-й и 95-й процентили для обрезки экстремальных значений
+                const p5 = percentile(allValues, 5);
+                const p95 = percentile(allValues, 95);
+                const originalRange = Math.max(...allValues) - Math.min(...allValues);
+                const clippedRange = p95 - p5;
+                
+                // Определяем есть ли значительные выбросы (>3x от нормального диапазона)
+                const hasExtremeOutliers = originalRange / clippedRange > 3;
+                
+                // Подготавливаем данные для отображения
+                let displayPredicted, displayActual, clippedCount = 0;
+                let minValue, maxValue;
+                
+                if (hasExtremeOutliers) {
+                    // Ограничиваем данные процентилями для лучшей читаемости
+                    displayPredicted = predictedValues.map(v => {
+                        if (v == null) return null;
+                        if (v < p5 || v > p95) {
+                            clippedCount++;
+                            return v < p5 ? p5 : p95;
+                        }
+                        return v;
+                    });
+                    
+                    displayActual = actualValues.map(v => {
+                        if (v == null) return null;
+                        if (v < p5 || v > p95) {
+                            clippedCount++;
+                            return v < p5 ? p5 : p95;
+                        }
+                        return v;
+                    });
+                    
+                    minValue = p5 * 0.95;
+                    maxValue = p95 * 1.05;
+                    
+                    // Показываем предупреждение об ограничении данных
+                    chartOutliersWarning.innerHTML = `
+                        🎯 <strong>Данные оптимизированы для читаемости:</strong> 
+                        ${clippedCount} экстремальных значений ограничены границами 
+                        ${p5.toLocaleString('ru-RU')}₸ - ${p95.toLocaleString('ru-RU')}₸. 
+                        Реальные значения видны в подсказках при наведении.
+                    `;
+                    chartOutliersWarning.style.display = 'block';
+                } else {
+                    // Используем исходные данные
+                    displayPredicted = predictedValues;
+                    displayActual = actualValues;
+                    minValue = Math.min(...allValues) * 0.95;
+                    maxValue = Math.max(...allValues) * 1.05;
+                }
+                
+                // Конфигурация оси Y (всегда линейная для лучшего восприятия)
+                let yAxisConfig = {
+                    type: 'linear',
+                    beginAtZero: false,
+                    min: minValue,
+                    max: maxValue,
+                    title: {
+                        display: true,
+                        text: hasExtremeOutliers ? 'Сумма продаж (₸) - оптимизировано' : 'Сумма продаж (₸)'
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            if (value >= 1000000) {
+                                return '₸ ' + (value / 1000000).toFixed(1) + 'М';
+                            } else if (value >= 1000) {
+                                return '₸ ' + (value / 1000).toFixed(0) + 'К';
+                            } else {
+                                return '₸ ' + value.toLocaleString('ru-RU');
+                            }
+                        },
+                        maxTicksLimit: 8
+                    }
+                };
+                
+                
+                // ============= СОЗДАНИЕ ГРАФИКА =============
+                
+                // Уничтожаем предыдущий график
+                if (forecastChart) {
+                    forecastChart.destroy();
+                }
+                
+                // Создаем новый график с оптимизированными настройками
+                const ctx = document.getElementById('forecastChart').getContext('2d');
+                forecastChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: dates,
+                        datasets: [
+                            {
+                                label: 'Прогноз',
+                                data: displayPredicted,
+                                borderColor: '#3498db',
+                                backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                                borderWidth: 2,
+                                fill: false,
+                                tension: 0.1,
+                                pointRadius: dates.length > 15 ? 2 : 4,
+                                pointHoverRadius: 6
+                            },
+                            {
+                                label: 'Факт',
+                                data: displayActual,
+                                borderColor: '#27ae60',
+                                backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                                borderWidth: 2,
+                                fill: false,
+                                tension: 0.1,
+                                pointRadius: dates.length > 15 ? 2 : 4,
+                                pointHoverRadius: 6
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            intersect: false,
+                            mode: 'index'
+                        },
+                        // ОПТИМИЗАЦИЯ: Отключаем анимацию для производительности
+                        animation: {
+                            duration: dates.length > 15 ? 0 : 750
+                        },
+                        scales: {
+                            x: {
+                                title: {
+                                    display: true,
+                                    text: 'Дата'
+                                },
+                                ticks: {
+                                    // ОПТИМИЗАЦИЯ: Читаемые подписи дат
+                                    maxTicksLimit: Math.min(dates.length, 12),
+                                    maxRotation: 45,
+                                    minRotation: 0,
+                                    callback: function(value, index, values) {
+                                        // Форматируем дату как ДД.ММ
+                                        const label = this.getLabelForValue(value);
+                                        return label ? label.slice(0, 5) : '';
+                                    }
+                                }
+                            },
+                            y: yAxisConfig
+                        },
+                        plugins: {
+                            title: {
+                                display: false
+                            },
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        // Показываем реальные значения в подсказках (до ограничения)
+                                        const dataIndex = context.dataIndex;
+                                        const datasetIndex = context.datasetIndex;
+                                        let originalValue;
+                                        
+                                        if (datasetIndex === 0) {
+                                            // Прогноз
+                                            originalValue = predictedValues[dataIndex];
+                                        } else {
+                                            // Факт
+                                            originalValue = actualValues[dataIndex];
+                                        }
+                                        
+                                        if (originalValue == null) {
+                                            return context.dataset.label + ': Нет данных';
+                                        }
+                                        
+                                        const displayValue = context.parsed.y;
+                                        const isClipped = Math.abs(originalValue - displayValue) > 1;
+                                        
+                                        let label = context.dataset.label + ': ₸ ' + originalValue.toLocaleString('ru-RU');
+                                        
+                                        if (isClipped) {
+                                            label += ' (на графике: ₸ ' + displayValue.toLocaleString('ru-RU') + ')';
+                                        }
+                                        
+                                        return label;
+                                    }
+                                }
+                            },
+                            // ОПТИМИЗАЦИЯ: Включаем decimation для больших данных
+                            decimation: {
+                                enabled: dates.length > 20,
+                                algorithm: 'lttb',
+                                samples: 20
+                            }
+                        }
+                    }
+                });
+            }
+            
+            async function exportForecast() {
+                const startDate = document.getElementById('export-start-date').value;
+                const endDate = document.getElementById('export-end-date').value;
+                const departmentId = document.getElementById('export-department').value;
+                const includeActual = document.getElementById('include-actual').checked;
+                
+                if (!startDate || !endDate) {
+                    alert('Пожалуйста, укажите даты начала и окончания');
+                    return;
+                }
+                
+                try {
+                    let url = `/api/forecast/export/csv?from_date=${startDate}&to_date=${endDate}`;
+                    if (departmentId) {
+                        url += `&department_id=${departmentId}`;
+                    }
+                    if (includeActual) {
+                        url += `&include_actual=true`;
+                    }
+                    
+                    // Show success message
+                    document.getElementById('export-result').style.display = 'block';
+                    
+                    // Trigger download
+                    window.location.href = url;
+                    
+                    // Hide success message after 3 seconds
+                    setTimeout(() => {
+                        document.getElementById('export-result').style.display = 'none';
+                    }, 3000);
+                    
+                } catch (error) {
+                    console.error('Error exporting forecast:', error);
+                    alert('Ошибка при экспорте данных');
+                }
+            }
+            
+            async function loadModelInfo() {
+                try {
+                    const response = await fetch('/api/forecast/model/info');
+                    const modelInfo = await response.json();
+                    
+                    const infoDiv = document.getElementById('model-info');
+                    if (modelInfo.status === 'loaded') {
+                        infoDiv.innerHTML = `
+                            <p><strong>Статус модели:</strong> <span style="color: #27ae60;">✅ Загружена</span></p>
+                            <p><strong>Тип модели:</strong> ${modelInfo.model_type}</p>
+                            <p><strong>Количество признаков:</strong> ${modelInfo.n_features}</p>
+                            <p><strong>Путь к модели:</strong> ${modelInfo.model_path}</p>
+                            <div style="margin-top: 15px;">
+                                <button class="sync-btn" onclick="retrainModel()">🔄 Переобучить модель</button>
+                            </div>
+                        `;
+                    } else {
+                        infoDiv.innerHTML = `
+                            <p><strong>Статус модели:</strong> <span style="color: #e74c3c;">❌ Не загружена</span></p>
+                            <p>Необходимо обучить модель перед использованием прогнозов.</p>
+                            <div style="margin-top: 15px;">
+                                <button class="sync-btn" onclick="retrainModel()">🚀 Обучить модель</button>
+                            </div>
+                        `;
+                    }
+                } catch (error) {
+                    console.error('Error loading model info:', error);
+                    document.getElementById('model-info').innerHTML = 
+                        '<p style="color: #e74c3c;">Ошибка загрузки информации о модели</p>';
+                }
+            }
+            
+            async function retrainModel() {
+                if (!confirm('Переобучение модели может занять несколько минут. Продолжить?')) return;
+                
+                const infoDiv = document.getElementById('model-info');
+                infoDiv.innerHTML = '<p>⏳ Идет обучение модели...</p>';
+                
+                try {
+                    const response = await fetch('/api/forecast/retrain', { method: 'POST' });
+                    const result = await response.json();
+                    
+                    if (result.status === 'success') {
+                        infoDiv.innerHTML = `
+                            <p style="color: #27ae60;"><strong>✅ Модель успешно обучена!</strong></p>
+                            <p><strong>MAE:</strong> ${result.metrics.mae}</p>
+                            <p><strong>MAPE:</strong> ${result.metrics.mape}%</p>
+                            <p><strong>R²:</strong> ${result.metrics.r2}</p>
+                            <p><strong>Обучающая выборка:</strong> ${result.metrics.train_samples} записей</p>
+                            <p><strong>Тестовая выборка:</strong> ${result.metrics.test_samples} записей</p>
+                        `;
+                        
+                        setTimeout(loadModelInfo, 5000);
+                    } else {
+                        throw new Error(result.detail || 'Ошибка обучения');
+                    }
+                } catch (error) {
+                    console.error('Error retraining model:', error);
+                    infoDiv.innerHTML = `<p style="color: #e74c3c;">❌ Ошибка обучения модели: ${error.message}</p>`;
+                }
+            }
+            
             // Initialize form handler when DOM is loaded
             document.addEventListener('DOMContentLoaded', function() {
                 const salesForm = document.getElementById('sales-sync-form');
@@ -1126,6 +2073,157 @@ async def root():
                 }
             });
             
+            // =============================================================
+            // AUTO SYNC FUNCTIONS
+            // =============================================================
+            
+            function showAutoSyncStatus() {
+                hideAllPages();
+                document.getElementById('page-auto-sync').style.display = 'block';
+                updateSidebarActive('#авто-загрузка');
+                
+                // Load auto sync status on page show
+                loadAutoSyncStatus();
+            }
+            
+            async function loadAutoSyncStatus() {
+                try {
+                    const response = await fetch('/api/sales/auto-sync/status');
+                    const data = await response.json();
+                    
+                    // Update statistics
+                    document.getElementById('success-count').textContent = data.statistics.success_count_30d;
+                    document.getElementById('error-count').textContent = data.statistics.error_count_30d;
+                    document.getElementById('success-rate').textContent = data.statistics.success_rate_30d;
+                    
+                    // Update latest sync info
+                    updateLatestSyncInfo(data.statistics);
+                    
+                    // Render logs table
+                    renderAutoSyncTable(data.logs);
+                    
+                } catch (error) {
+                    console.error('Error loading auto sync status:', error);
+                    document.getElementById('latest-sync-info').innerHTML = 
+                        '<p style="color: #e74c3c;">Ошибка загрузки данных</p>';
+                }
+            }
+            
+            function updateLatestSyncInfo(statistics) {
+                const infoDiv = document.getElementById('latest-sync-info');
+                
+                if (statistics.latest_success) {
+                    const successInfo = statistics.latest_success;
+                    infoDiv.innerHTML = `
+                        <div style="background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                            <h4 style="margin-bottom: 10px;">✅ Последняя успешная загрузка</h4>
+                            <p><strong>Дата данных:</strong> ${new Date(successInfo.date).toLocaleDateString('ru-RU')}</p>
+                            <p><strong>Время выполнения:</strong> ${new Date(successInfo.executed_at).toLocaleString('ru-RU')}</p>
+                            <p><strong>Загружено записей:</strong> ${successInfo.records.toLocaleString('ru-RU')}</p>
+                            <p><strong>Сообщение:</strong> ${successInfo.message}</p>
+                        </div>
+                    `;
+                } else {
+                    infoDiv.innerHTML = `
+                        <div style="background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 15px; border-radius: 8px;">
+                            <p>🚫 Успешных автоматических загрузок пока не было</p>
+                        </div>
+                    `;
+                }
+                
+                if (statistics.latest_error) {
+                    const errorInfo = statistics.latest_error;
+                    infoDiv.innerHTML += `
+                        <div style="background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; border-radius: 8px;">
+                            <h4 style="margin-bottom: 10px;">⚠️ Последняя ошибка</h4>
+                            <p><strong>Дата данных:</strong> ${new Date(errorInfo.date).toLocaleDateString('ru-RU')}</p>
+                            <p><strong>Время выполнения:</strong> ${new Date(errorInfo.executed_at).toLocaleString('ru-RU')}</p>
+                            <p><strong>Ошибка:</strong> ${errorInfo.message}</p>
+                            ${errorInfo.error_details ? `<p><strong>Детали:</strong> ${errorInfo.error_details}</p>` : ''}
+                        </div>
+                    `;
+                }
+            }
+            
+            function renderAutoSyncTable(logs) {
+                const tbody = document.getElementById('auto-sync-tbody');
+                
+                if (logs.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="no-data">Логов автоматических загрузок пока нет</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = '';
+                logs.forEach(log => {
+                    const row = tbody.insertRow();
+                    
+                    // Executed At
+                    row.insertCell(0).textContent = new Date(log.executed_at).toLocaleString('ru-RU');
+                    
+                    // Sync Date (data period)
+                    row.insertCell(1).textContent = new Date(log.sync_date).toLocaleDateString('ru-RU');
+                    
+                    // Sync Type
+                    const typeCell = row.insertCell(2);
+                    typeCell.textContent = log.sync_type === 'daily_auto' ? 'Автоматически' : 'Вручную';
+                    
+                    // Status
+                    const statusCell = row.insertCell(3);
+                    if (log.status === 'success') {
+                        statusCell.innerHTML = '<span style="color: #27ae60; font-weight: bold;">✅ Успешно</span>';
+                    } else {
+                        statusCell.innerHTML = '<span style="color: #e74c3c; font-weight: bold;">❌ Ошибка</span>';
+                    }
+                    
+                    // Records count
+                    const recordsCell = row.insertCell(4);
+                    const totalRecords = (log.summary_records || 0) + (log.hourly_records || 0);
+                    recordsCell.textContent = totalRecords.toLocaleString('ru-RU');
+                    
+                    // Message
+                    const messageCell = row.insertCell(5);
+                    messageCell.textContent = log.message || '-';
+                    messageCell.style.maxWidth = '300px';
+                    messageCell.style.overflow = 'hidden';
+                    messageCell.style.textOverflow = 'ellipsis';
+                    messageCell.style.whiteSpace = 'nowrap';
+                    
+                    if (log.error_details) {
+                        messageCell.title = log.error_details; // Show full error on hover
+                    }
+                });
+            }
+            
+            async function testAutoSync() {
+                if (!confirm('Это запустит тестовую автоматическую загрузку продаж. Продолжить?')) return;
+                
+                try {
+                    const button = event.target;
+                    button.disabled = true;
+                    button.textContent = '⏳ Выполняется...';
+                    
+                    const response = await fetch('/api/sales/auto-sync/test', { method: 'POST' });
+                    const result = await response.json();
+                    
+                    if (result.result && result.result.status === 'success') {
+                        alert(`✅ Тестовая загрузка выполнена успешно!\n\nЗагружено записей: ${result.result.total_raw_records || 0}\nДневных сводок: ${result.result.summary_records || 0}\nПочасовых записей: ${result.result.hourly_records || 0}`);
+                    } else {
+                        alert(`⚠️ Тестовая загрузка завершилась с ошибкой:\n\n${result.result?.message || result.message || 'Неизвестная ошибка'}`);
+                    }
+                    
+                    // Reload status
+                    loadAutoSyncStatus();
+                    
+                } catch (error) {
+                    console.error('Error testing auto sync:', error);
+                    alert('❌ Ошибка при выполнении тестовой загрузки: ' + error.message);
+                } finally {
+                    const button = event.target;
+                    button.disabled = false;
+                    button.textContent = '🧪 Тестовый запуск';
+                }
+            }
+
             // Load data on page load
             window.onload = loadBranches;
         </script>

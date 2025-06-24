@@ -4,7 +4,7 @@ from sqlalchemy import func
 from typing import List, Optional
 from datetime import date, datetime, timedelta
 from ..db import get_db
-from ..models.branch import SalesSummary as SalesSummaryModel, SalesByHour as SalesByHourModel
+from ..models.branch import SalesSummary as SalesSummaryModel, SalesByHour as SalesByHourModel, AutoSyncLog
 from ..schemas.branch import SalesSummary, SalesByHour
 from ..services.iiko_sales_loader import IikoSalesLoaderService
 import logging
@@ -237,3 +237,103 @@ def delete_sales_hourly(record_id: int, db: Session = Depends(get_db)):
     db.delete(record)
     db.commit()
     return {"message": f"Sales hourly record {record_id} deleted successfully"}
+
+
+@router.get("/auto-sync/status")
+def get_auto_sync_status(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """Get automatic sync logs and status"""
+    try:
+        # Get recent auto sync logs
+        logs = db.query(AutoSyncLog).order_by(AutoSyncLog.executed_at.desc()).offset(skip).limit(limit).all()
+        
+        # Get latest successful sync
+        latest_success = db.query(AutoSyncLog).filter(
+            AutoSyncLog.status == 'success'
+        ).order_by(AutoSyncLog.executed_at.desc()).first()
+        
+        # Get latest failed sync
+        latest_error = db.query(AutoSyncLog).filter(
+            AutoSyncLog.status == 'error'
+        ).order_by(AutoSyncLog.executed_at.desc()).first()
+        
+        # Count success vs error syncs in last 30 days
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        success_count = db.query(AutoSyncLog).filter(
+            AutoSyncLog.status == 'success',
+            AutoSyncLog.executed_at >= thirty_days_ago
+        ).count()
+        
+        error_count = db.query(AutoSyncLog).filter(
+            AutoSyncLog.status == 'error',
+            AutoSyncLog.executed_at >= thirty_days_ago
+        ).count()
+        
+        # Convert logs to response format
+        log_list = []
+        for log in logs:
+            log_dict = {
+                "id": log.id,
+                "sync_date": log.sync_date,
+                "sync_type": log.sync_type,
+                "status": log.status,
+                "message": log.message,
+                "summary_records": log.summary_records,
+                "hourly_records": log.hourly_records,
+                "total_raw_records": log.total_raw_records,
+                "error_details": log.error_details,
+                "executed_at": log.executed_at,
+                "created_at": log.created_at
+            }
+            log_list.append(log_dict)
+        
+        return {
+            "logs": log_list,
+            "statistics": {
+                "total_logs": len(log_list),
+                "success_count_30d": success_count,
+                "error_count_30d": error_count,
+                "success_rate_30d": round((success_count / (success_count + error_count)) * 100, 1) if (success_count + error_count) > 0 else 0,
+                "latest_success": {
+                    "date": latest_success.sync_date if latest_success else None,
+                    "executed_at": latest_success.executed_at if latest_success else None,
+                    "message": latest_success.message if latest_success else None,
+                    "records": latest_success.summary_records + latest_success.hourly_records if latest_success else 0
+                } if latest_success else None,
+                "latest_error": {
+                    "date": latest_error.sync_date if latest_error else None,
+                    "executed_at": latest_error.executed_at if latest_error else None,
+                    "message": latest_error.message if latest_error else None,
+                    "error_details": latest_error.error_details if latest_error else None
+                } if latest_error else None
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting auto sync status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get auto sync status: {str(e)}")
+
+
+@router.post("/auto-sync/test")
+async def test_auto_sync(db: Session = Depends(get_db)):
+    """Test automatic sync function (for debugging)"""
+    try:
+        from ..services.scheduled_sales_loader import run_auto_sync
+        
+        logger.info("Manual test of auto-sync function triggered")
+        result = run_auto_sync()
+        
+        return {
+            "message": "Auto-sync test completed",
+            "result": result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error testing auto sync: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to test auto sync: {str(e)}"
+        }

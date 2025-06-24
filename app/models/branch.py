@@ -117,3 +117,19 @@ class SalesByHour(Base):
     __table_args__ = (
         {"schema": None},
     )
+
+
+class AutoSyncLog(Base):
+    __tablename__ = "auto_sync_log"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    sync_date = Column(Date, nullable=False, index=True)
+    sync_type = Column(String(50), nullable=False)  # 'daily_auto', 'manual', etc.
+    status = Column(String(20), nullable=False, index=True)  # 'success', 'error'
+    message = Column(String(500), nullable=True)
+    summary_records = Column(Integer, default=0)
+    hourly_records = Column(Integer, default=0) 
+    total_raw_records = Column(Integer, default=0)
+    error_details = Column(String(1000), nullable=True)
+    executed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
