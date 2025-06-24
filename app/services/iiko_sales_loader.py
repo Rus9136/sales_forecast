@@ -15,7 +15,8 @@ class IikoSalesLoaderService:
     def __init__(self, db: Session):
         self.db = db
         self.domains = [
-            "https://sandy-co-co.iiko.it"
+            "https://sandy-co-co.iiko.it",
+            "https://madlen-group-so.iiko.it"
         ]
     
     async def fetch_sales_from_single_domain(self, base_url: str, from_date: date, to_date: date) -> List[dict]:
@@ -107,8 +108,8 @@ class IikoSalesLoaderService:
         logger.info(f"Sales data sample: {sales_data[:2] if len(sales_data) > 0 else 'empty'}")
         logger.info(f"DataFrame columns: {df.columns.tolist()}")
         
-        # Parse datetime and extract components
-        df['CloseTime'] = pd.to_datetime(df['CloseTime'])
+        # Parse datetime and extract components - handle mixed formats
+        df['CloseTime'] = pd.to_datetime(df['CloseTime'], format='mixed')
         df['date'] = df['CloseTime'].dt.date
         df['hour'] = df['CloseTime'].dt.hour
         
@@ -226,40 +227,16 @@ class IikoSalesLoaderService:
     async def sync_sales(self, from_date: date = None, to_date: date = None) -> dict:
         """Main method to sync sales data from iiko"""
         try:
-            # Default to known working date (2025-04-07) if no dates provided
+            # Default to current date if no dates provided
             if not from_date:
-                from_date = date(2025, 4, 7)  # Hardcoded working date
+                from_date = date.today() - timedelta(days=1)  # Yesterday
             if not to_date:
                 to_date = from_date
             
             logger.info(f"Starting sales sync from {from_date} to {to_date}")
             
-            # TEMPORARY: Use mock data instead of API calls to test the system
-            logger.info("USING MOCK DATA FOR TESTING")
-            sales_data = [
-                {
-                    "CloseTime": "2025-04-07T12:30:00",
-                    "Department.Id": "216d7ca2-64e9-465c-ab64-b0ea76084e8b",
-                    "DishSumInt": 15000,
-                    "OrderNum": 12345
-                },
-                {
-                    "CloseTime": "2025-04-07T13:45:00",
-                    "Department.Id": "216d7ca2-64e9-465c-ab64-b0ea76084e8b",
-                    "DishSumInt": 22000,
-                    "OrderNum": 12346
-                },
-                {
-                    "CloseTime": "2025-04-07T14:20:00",
-                    "Department.Id": "2086adde-d191-496e-9ff7-eb78173fa8bb",
-                    "DishSumInt": 18500,
-                    "OrderNum": 12347
-                }
-            ]
-            logger.info(f"Using mock sales data with {len(sales_data)} records")
-            
-            # Fetch sales data (commented out for testing)
-            # sales_data = await self.fetch_sales_from_iiko(from_date, to_date)
+            # Fetch sales data from iiko API
+            sales_data = await self.fetch_sales_from_iiko(from_date, to_date)
             
             if not sales_data:
                 logger.info("No sales data found - returning success response")

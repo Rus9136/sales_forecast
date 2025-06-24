@@ -109,11 +109,7 @@ async def sync_sales(
     try:
         sales_loader = IikoSalesLoaderService(db)
         
-        # Set default dates if not provided - using known working date
-        if not from_date:
-            from_date = date(2025, 4, 7)  # Hardcoded working date
-        if not to_date:
-            to_date = from_date
+        # Use provided dates or let service handle defaults
         
         logger.info(f"Starting sales sync from {from_date} to {to_date}")
         
