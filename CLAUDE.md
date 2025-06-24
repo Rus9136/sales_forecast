@@ -206,6 +206,25 @@ hourly_data = df.groupby(['Department.Id', 'date', 'hour']).agg(
 ).reset_index()
 ```
 
+## Version Control
+
+### Git Repository
+- **Repository**: https://github.com/Rus9136/sales_forecast.git
+- **Branch**: master
+- **Latest Commit**: feat: Implement sales loading system from iiko API with pandas processing
+
+### Git Commands
+```bash
+# Clone repository
+git clone https://github.com/Rus9136/sales_forecast.git
+
+# Pull latest changes
+git pull origin master
+
+# Check commit history
+git log --oneline
+```
+
 ## Recent Updates (2025-06-24)
 
 ### ✅ Sales Loading System Implementation
@@ -214,15 +233,22 @@ hourly_data = df.groupby(['Department.Id', 'date', 'hour']).agg(
 - **New API Endpoints**: /api/sales/* для управления данными продаж
 - **Mock Data**: Временная реализация для обхода 409 ошибок API
 - **Production Deploy**: Успешный деплой в Docker с тестированием
+- **Git Repository**: Создан и настроен GitHub репозиторий с полной историей
 
 ### Current Status
 - **Sales Sync**: ✅ Работает с mock данными (3 записи → 2 daily + 3 hourly)
 - **Data Aggregation**: ✅ Pandas обработка корректно группирует данные
 - **API Endpoints**: ✅ Все CRUD операции функциональны
 - **Database Schema**: ✅ Foreign keys и индексы настроены правильно
+- **Version Control**: ✅ Git репозиторий настроен и синхронизирован
+
+### Session Logs
+- **SESSION_LOG_20250624_113111.md**: Первоначальная настройка системы
+- **SESSION_LOG_20250624_122543.md**: Реализация системы загрузки продаж
 
 ### Next Steps
 - [ ] Добавить веб-форму для выбора диапазона дат
 - [ ] Убрать mock данные и решить проблему 409 с реальными датами
 - [ ] Добавить batch processing для больших объемов данных
 - [ ] Интегрировать sales данные в ML модель прогнозирования
+- [ ] Настроить CI/CD pipeline для автоматического деплоя
