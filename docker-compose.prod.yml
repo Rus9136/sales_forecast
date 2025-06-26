@@ -34,6 +34,8 @@ services:
       POSTGRES_PASSWORD: sales_password
       POSTGRES_DB: sales_forecast
       API_BASE_URL: "http://tco.aqnietgroup.com:5555/v1"
+    volumes:
+      - ./models:/app/models  # Монтируем директорию models для сохранения ML модели
     depends_on:
       sales-forecast-db:
         condition: service_healthy

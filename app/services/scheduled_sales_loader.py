@@ -23,10 +23,12 @@ class ScheduledSalesLoaderService:
         db: Session = next(get_db())
         
         try:
-            # Calculate date range (previous day)
+            # Calculate date range (previous day) 
+            # iiko API requires different from_date and to_date (409 error if same)
             yesterday = date.today() - timedelta(days=1)
             from_date = yesterday
-            to_date = yesterday
+            # Use today as to_date to avoid 409 error
+            to_date = date.today()
             
             self.logger.info(f"Starting automatic sales sync for {from_date}")
             

@@ -39,7 +39,7 @@ class TrainingDataService:
         if end_date is None:
             end_date = datetime.now().date()
         if start_date is None:
-            start_date = end_date - timedelta(days=90)
+            start_date = end_date - timedelta(days=180)  # Увеличиваем до 6 месяцев для максимального качества модели
             
         logger.info(f"Preparing training data from {start_date} to {end_date}")
         
@@ -73,6 +73,11 @@ class TrainingDataService:
     
     def _load_sales_data(self, start_date: datetime, end_date: datetime) -> pd.DataFrame:
         """Load sales data from database"""
+        logger.info(f"DEBUG: self.db type: {type(self.db)}")
+        logger.info(f"DEBUG: self.db has query attr: {hasattr(self.db, 'query')}")
+        if hasattr(self.db, 'query'):
+            logger.info(f"DEBUG: self.db.query type: {type(self.db.query)}")
+        
         query = self.db.query(
             SalesSummary.department_id,
             SalesSummary.date,
@@ -207,6 +212,47 @@ class TrainingDataService:
         """Get target column name"""
         return 'total_sales'
     
+    def split_train_validation_test(
+        self,
+        df: pd.DataFrame,
+        val_size: float = 0.15,
+        test_size: float = 0.15,
+        random_state: int = 42
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """
+        Split data into train, validation and test sets
+        
+        Uses time-based split to respect temporal order:
+        - Train: 70% (oldest data)
+        - Validation: 15% (middle data) - for early stopping and hyperparameter tuning
+        - Test: 15% (newest data) - for final honest evaluation
+        
+        Args:
+            val_size: Proportion of data for validation set
+            test_size: Proportion of data for test set
+            
+        Returns:
+            Tuple of (train_df, val_df, test_df)
+        """
+        # Sort by date
+        df = df.sort_values('date')
+        
+        # Calculate split indices
+        train_size = 1 - val_size - test_size
+        train_split = int(len(df) * train_size)
+        val_split = int(len(df) * (train_size + val_size))
+        
+        # Split data
+        train_df = df.iloc[:train_split].copy()
+        val_df = df.iloc[train_split:val_split].copy()
+        test_df = df.iloc[val_split:].copy()
+        
+        logger.info(f"Train set: {len(train_df)} samples ({len(train_df)/len(df)*100:.1f}%)")
+        logger.info(f"Validation set: {len(val_df)} samples ({len(val_df)/len(df)*100:.1f}%)")
+        logger.info(f"Test set: {len(test_df)} samples ({len(test_df)/len(df)*100:.1f}%)")
+        
+        return train_df, val_df, test_df
+    
     def split_train_test(
         self,
         df: pd.DataFrame,
@@ -214,7 +260,7 @@ class TrainingDataService:
         random_state: int = 42
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Split data into train and test sets
+        Split data into train and test sets (legacy method)
         
         Uses time-based split to respect temporal order
         """

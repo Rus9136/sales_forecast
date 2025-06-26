@@ -17,113 +17,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
 
-@router.get("/{forecast_date}/{branch_id}")
-async def get_sales_forecast(
-    forecast_date: date,
-    branch_id: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Get sales forecast for a specific branch and date
-    
-    Args:
-        forecast_date: Date to forecast (YYYY-MM-DD format)
-        branch_id: Department/Branch UUID
-        
-    Returns:
-        JSON with branch_id, date, and predicted_sales
-    """
-    try:
-        # Validate branch exists
-        branch = db.query(Department).filter(Department.id == branch_id).first()
-        if not branch:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Branch with ID {branch_id} not found"
-            )
-        
-        # Get forecaster agent
-        forecaster = get_forecaster_agent()
-        
-        # Log the forecast request
-        logger.info(f"Forecasting sales for branch {branch_id} ({branch.name}) on {forecast_date}")
-        
-        # Call forecast function
-        predicted_sales = forecaster.forecast(
-            branch_id=branch_id,
-            forecast_date=forecast_date,
-            db=db
-        )
-        
-        # Handle case when forecast returns None
-        if predicted_sales is None:
-            logger.warning(f"Could not generate forecast for branch {branch_id} on {forecast_date}")
-            # Option 1: Return null in response
-            return {
-                "branch_id": branch_id,
-                "branch_name": branch.name,
-                "date": forecast_date.isoformat(),
-                "predicted_sales": None,
-                "message": "Insufficient historical data for forecast"
-            }
-            # Option 2: Return 204 No Content
-            # return Response(status_code=status.HTTP_204_NO_CONTENT)
-        
-        # Return successful forecast
-        return {
-            "branch_id": branch_id,
-            "branch_name": branch.name,
-            "date": forecast_date.isoformat(),
-            "predicted_sales": round(predicted_sales, 2)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        # Log full traceback
-        logger.error(f"Error during forecast: {str(e)}")
-        logger.error(traceback.format_exc())
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error generating forecast: {str(e)}"
-        )
-
-
 @router.post("/retrain")
 async def retrain_model(db: Session = Depends(get_db)):
     """
-    Retrain the forecasting model with latest data
+    Retrain the sales forecasting model with latest data
     
     Returns:
-        Training metrics (MAE, MAPE, R2)
+        Training results and model metrics
     """
     try:
-        # Get forecaster agent
-        forecaster = get_forecaster_agent()
+        from ..services.training_service import TrainingDataService
+        
+        # Initialize training service
+        training_service = TrainingDataService(db)
         
         logger.info("Starting model retraining...")
         
-        # Retrain model
-        metrics = forecaster.retrain_model(db)
+        # Get training data
+        training_data = training_service.prepare_training_data()
+        
+        if training_data.empty:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No training data available"
+            )
+        
+        logger.info(f"Training data prepared: {len(training_data)} samples")
+        
+        # Get forecaster and train
+        forecaster = get_forecaster_agent()
+        results = forecaster.train_model(db)
+        
+        logger.info(f"Model training completed. Metrics: {results}")
         
         return {
             "status": "success",
             "message": "Model retrained successfully",
-            "metrics": {
-                "mae": round(metrics['mae'], 2),
-                "mape": round(metrics['mape'], 2),
-                "r2": round(metrics['r2'], 4),
-                "rmse": round(metrics['rmse'], 2),
-                "train_samples": metrics['train_samples'],
-                "test_samples": metrics['test_samples']
-            },
+            "metrics": results,
             "timestamp": datetime.now().isoformat()
         }
         
     except Exception as e:
-        logger.error(f"Error during model retraining: {str(e)}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Error retraining model: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -143,78 +79,14 @@ async def get_model_info():
         forecaster = get_forecaster_agent()
         model_info = forecaster.get_model_info()
         
-        return {
-            "status": model_info['status'],
-            "model_path": model_info['model_path'],
-            "model_type": model_info.get('model_type', 'unknown'),
-            "n_features": model_info.get('n_features', 0),
-            "feature_names": model_info.get('feature_names', [])
-        }
+        # Возвращаем все данные из model_info, включая training_metrics
+        return model_info
         
     except Exception as e:
         logger.error(f"Error getting model info: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting model info: {str(e)}"
-        )
-
-
-@router.get("/batch")
-async def get_batch_forecasts(
-    from_date: date,
-    to_date: date,
-    department_id: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """
-    Get batch forecasts for multiple departments and dates
-    
-    Query params:
-        from_date: Start date for forecasts
-        to_date: End date for forecasts
-        department_id: Optional specific department filter
-    """
-    try:
-        # Get departments
-        query = db.query(Department)
-        if department_id:
-            query = query.filter(Department.id == department_id)
-        departments = query.all()
-        
-        if not departments:
-            return []
-        
-        # Get forecaster
-        forecaster = get_forecaster_agent()
-        
-        # Generate forecasts
-        results = []
-        current_date = from_date
-        
-        while current_date <= to_date:
-            for dept in departments:
-                prediction = forecaster.forecast(
-                    branch_id=str(dept.id),
-                    forecast_date=current_date,
-                    db=db
-                )
-                
-                results.append({
-                    "date": current_date.isoformat(),
-                    "department_id": str(dept.id),
-                    "department_name": dept.name,
-                    "predicted_sales": round(prediction, 2) if prediction else None
-                })
-            
-            current_date += timedelta(days=1)
-        
-        return results
-        
-    except Exception as e:
-        logger.error(f"Error getting batch forecasts: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error getting batch forecasts: {str(e)}"
         )
 
 
@@ -247,43 +119,109 @@ async def get_forecast_comparison(
         # Get forecaster
         forecaster = get_forecaster_agent()
         
-        # Build comparison data
         results = []
         for sale in sales_data:
             # Get department info
-            dept = db.query(Department).filter(Department.id == sale.department_id).first()
-            if not dept:
-                continue
+            department = db.query(Department).filter(Department.id == sale.department_id).first()
             
-            # Get forecast for this date/department
-            prediction = forecaster.forecast(
-                branch_id=str(sale.department_id),
-                forecast_date=sale.date,
-                db=db
-            )
+            # Get prediction
+            try:
+                prediction = forecaster.forecast(str(sale.department_id), sale.date, db)
+            except Exception as pred_error:
+                logger.warning(f"Failed to get prediction for {sale.date}, {sale.department_id}: {pred_error}")
+                prediction = None
             
-            if prediction is not None:
-                actual = float(sale.total_sales)
-                error = prediction - actual
-                error_pct = (abs(error) / actual * 100) if actual > 0 else 0
-                
-                results.append({
-                    "date": sale.date.isoformat(),
-                    "department_id": str(sale.department_id),
-                    "department_name": dept.name,
-                    "predicted_sales": round(prediction, 2),
-                    "actual_sales": round(actual, 2),
-                    "error": round(error, 2),
-                    "error_percentage": round(error_pct, 2)
-                })
+            # Calculate error if we have both values
+            error = None
+            error_percentage = None
+            if prediction and sale.total_sales:
+                error = prediction - sale.total_sales
+                error_percentage = (abs(error) / sale.total_sales) * 100
+            
+            results.append({
+                "date": sale.date.isoformat(),
+                "department_id": str(sale.department_id),
+                "department_name": department.name if department else "Unknown",
+                "predicted_sales": round(prediction, 2) if prediction else None,
+                "actual_sales": sale.total_sales,
+                "error": round(error, 2) if error else None,
+                "error_percentage": round(error_percentage, 2) if error_percentage else None
+            })
         
         return results
         
     except Exception as e:
-        logger.error(f"Error comparing forecasts: {str(e)}")
+        logger.error(f"Error getting forecast comparison: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error comparing forecasts: {str(e)}"
+            detail=f"Error getting forecast comparison: {str(e)}"
+        )
+
+
+@router.get("/batch")
+async def get_batch_forecasts(
+    from_date: date,
+    to_date: date,
+    department_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get batch forecasts for a date range
+    
+    Returns:
+        List of forecasts for the specified period
+    """
+    try:
+        # Get departments
+        departments_query = db.query(Department)
+        if department_id:
+            departments_query = departments_query.filter(Department.id == department_id)
+        
+        departments = departments_query.all()
+        
+        if not departments:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No departments found"
+            )
+        
+        # Get forecaster
+        forecaster = get_forecaster_agent()
+        
+        results = []
+        current_date = from_date
+        
+        while current_date <= to_date:
+            for dept in departments:
+                try:
+                    prediction = forecaster.forecast(str(dept.id), current_date, db)
+                except Exception as pred_error:
+                    logger.warning(f"Failed to get prediction for {current_date}, {dept.id}: {pred_error}")
+                    prediction = None
+                
+                logger.info(f"Prediction for {dept.name} on {current_date}: {prediction}")
+                
+                if prediction is None:
+                    logger.warning(
+                        f"No prediction available for department {dept.name} on {current_date}"
+                    )
+                
+                results.append({
+                    "date": current_date.isoformat(),
+                    "department_id": str(dept.id),
+                    "department_name": dept.name,
+                    "predicted_sales": round(prediction, 2) if prediction else None
+                })
+            
+            current_date += timedelta(days=1)
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error getting batch forecasts: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting batch forecasts: {str(e)}"
         )
 
 
@@ -296,65 +234,130 @@ async def export_forecasts_csv(
     db: Session = Depends(get_db)
 ):
     """
-    Export forecasts to CSV file
+    Export forecasts to CSV format
     
-    Query params:
-        from_date: Start date
-        to_date: End date
-        department_id: Optional department filter
-        include_actual: Include actual sales for comparison
+    Returns:
+        CSV file with forecast data
     """
     try:
-        # Get data based on include_actual flag
+        # Get forecast data
         if include_actual:
-            data = await get_forecast_comparison(from_date, to_date, department_id, db)
-            headers = ["Date", "Department ID", "Department Name", "Predicted Sales", "Actual Sales", "Error", "Error %"]
+            # Get comparison data
+            comparison_data = await get_forecast_comparison(from_date, to_date, department_id, db)
+            
+            # Create CSV output
+            output = io.StringIO()
+            fieldnames = ['date', 'department_name', 'predicted_sales', 'actual_sales', 'error', 'error_percentage']
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for row in comparison_data:
+                writer.writerow({
+                    'date': row['date'],
+                    'department_name': row['department_name'],
+                    'predicted_sales': row['predicted_sales'],
+                    'actual_sales': row['actual_sales'],
+                    'error': row['error'],
+                    'error_percentage': row['error_percentage']
+                })
+            
+            filename = f"forecast_comparison_{from_date}_{to_date}.csv"
         else:
-            data = await get_batch_forecasts(from_date, to_date, department_id, db)
-            headers = ["Date", "Department ID", "Department Name", "Predicted Sales"]
+            # Get forecast data only
+            forecast_data = await get_batch_forecasts(from_date, to_date, department_id, db)
+            
+            # Create CSV output
+            output = io.StringIO()
+            fieldnames = ['date', 'department_name', 'predicted_sales']
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for row in forecast_data:
+                writer.writerow({
+                    'date': row['date'],
+                    'department_name': row['department_name'],
+                    'predicted_sales': row['predicted_sales']
+                })
+            
+            filename = f"forecast_{from_date}_{to_date}.csv"
         
-        # Create CSV
-        output = io.StringIO()
-        writer = csv.writer(output)
-        
-        # Write headers
-        writer.writerow(headers)
-        
-        # Write data
-        for row in data:
-            if include_actual:
-                writer.writerow([
-                    row['date'],
-                    row['department_id'],
-                    row['department_name'],
-                    row['predicted_sales'],
-                    row['actual_sales'],
-                    row['error'],
-                    row['error_percentage']
-                ])
-            else:
-                writer.writerow([
-                    row['date'],
-                    row['department_id'],
-                    row['department_name'],
-                    row['predicted_sales']
-                ])
-        
-        # Create response
-        output.seek(0)
-        filename = f"forecast_{from_date}_to_{to_date}.csv"
-        
+        # Return CSV response
+        csv_content = output.getvalue()
         return Response(
-            content=output.getvalue(),
+            content=csv_content,
             media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
         
     except Exception as e:
-        logger.error(f"Error exporting forecasts: {str(e)}")
+        logger.error(f"Error exporting forecasts to CSV: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error exporting forecasts: {str(e)}"
+            detail=f"Error exporting forecasts to CSV: {str(e)}"
+        )
+
+
+@router.get("/{forecast_date}/{branch_id}")
+async def get_sales_forecast(
+    forecast_date: date,
+    branch_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get sales forecast for a specific branch and date
+    
+    Args:
+        forecast_date: Date to forecast (YYYY-MM-DD format)
+        branch_id: Department/Branch UUID
+        
+    Returns:
+        JSON with branch_id, date, and predicted_sales
+    """
+    try:
+        # Validate branch exists
+        branch = db.query(Department).filter(Department.id == branch_id).first()
+        if not branch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Branch with ID {branch_id} not found"
+            )
+        
+        # Get forecaster agent
+        forecaster = get_forecaster_agent()
+        
+        # Log the forecast request
+        logger.info(f"Forecasting sales for branch {branch_id} ({branch.name}) on {forecast_date}")
+        
+        # Call forecast function
+        predicted_sales = forecaster.forecast(branch_id, forecast_date, db)
+        
+        # Handle case when forecast returns None
+        if predicted_sales is None:
+            logger.warning(f"Could not generate forecast for branch {branch_id} on {forecast_date}")
+            return {
+                "branch_id": branch_id,
+                "branch_name": branch.name,
+                "date": forecast_date.isoformat(),
+                "predicted_sales": None,
+                "message": "Insufficient historical data for forecast"
+            }
+        
+        # Return successful forecast
+        return {
+            "branch_id": branch_id,
+            "branch_name": branch.name,
+            "date": forecast_date.isoformat(),
+            "predicted_sales": round(predicted_sales, 2)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log full traceback
+        logger.error(f"Error during forecast: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating forecast: {str(e)}"
         )

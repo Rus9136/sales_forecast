@@ -470,6 +470,24 @@ async def root():
                 border: 1px solid #f5c6cb;
                 color: #721c24;
             }
+            
+            /* Chart container optimization */
+            #forecast-chart-wrapper {
+                max-width: 1200px;
+                margin: 20px auto;
+                width: 100%;
+            }
+            
+            #forecast-chart-wrapper .chart-container {
+                position: relative;
+                height: 400px;
+                width: 100%;
+            }
+            
+            #forecastChart {
+                max-width: 100%;
+                height: 400px !important;
+            }
         </style>
         
         <!-- Chart.js library -->
@@ -755,7 +773,20 @@ async def root():
                             <div id="chart-no-data" style="background: #f8d7da; color: #721c24; padding: 20px; border-radius: 4px; text-align: center; display: none;">
                                 📊 Нет данных для отображения графика
                             </div>
-                            <canvas id="forecastChart" height="120"></canvas>
+                            <div class="chart-container">
+                                <canvas id="forecastChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Average Error Display -->
+                    <div id="average-error-display" style="display: none; margin: 20px 0; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 24px;">📊</span>
+                            <div>
+                                <div style="font-size: 14px; opacity: 0.9;">Точность прогнозирования</div>
+                                <div id="average-error-text" style="font-size: 18px; font-weight: 600;"></div>
+                            </div>
                         </div>
                     </div>
                     
@@ -1585,12 +1616,15 @@ async def root():
                     
                     renderComparisonTable();
                     updateForecastChart();
+                    calculateAndDisplayAverageError();
                     document.getElementById('comparison-total-count').textContent = `Всего: ${comparisonData.length}`;
                     
                 } catch (error) {
                     console.error('Error loading comparison:', error);
                     document.getElementById('comparison-tbody').innerHTML = 
                         '<tr><td colspan="6" class="no-data">Ошибка загрузки данных</td></tr>';
+                    // Скрываем блок средней ошибки при ошибке
+                    document.getElementById('average-error-display').style.display = 'none';
                 } finally {
                     document.getElementById('comparison-loading').style.display = 'none';
                 }
@@ -1601,6 +1635,8 @@ async def root():
                 
                 if (comparisonData.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="6" class="no-data">Нет данных для отображения</td></tr>';
+                    // Скрываем блок средней ошибки если нет данных
+                    document.getElementById('average-error-display').style.display = 'none';
                     return;
                 }
                 
@@ -1663,6 +1699,47 @@ async def root():
                 
                 renderComparisonTable();
                 updateForecastChart();
+                calculateAndDisplayAverageError();
+            }
+            
+            // =============================================================
+            // AVERAGE ERROR CALCULATION FUNCTION
+            // Calculates and displays average error percentage
+            // =============================================================
+            function calculateAndDisplayAverageError() {
+                const avgErrorDisplay = document.getElementById('average-error-display');
+                const avgErrorText = document.getElementById('average-error-text');
+                
+                if (!comparisonData || comparisonData.length === 0) {
+                    avgErrorDisplay.style.display = 'none';
+                    return;
+                }
+                
+                // Извлекаем валидные значения % ошибки
+                const validErrorPercentages = comparisonData
+                    .map(item => item.error_percentage)
+                    .filter(value => 
+                        value !== null && 
+                        value !== undefined && 
+                        !isNaN(value) && 
+                        isFinite(value)
+                    );
+                
+                if (validErrorPercentages.length === 0) {
+                    avgErrorText.textContent = 'Нет данных для расчёта средней ошибки';
+                    avgErrorDisplay.style.display = 'block';
+                    return;
+                }
+                
+                // Вычисляем среднее значение
+                const averageError = validErrorPercentages.reduce((sum, value) => sum + Math.abs(value), 0) / validErrorPercentages.length;
+                
+                // Форматируем результат
+                const formattedAverage = averageError.toFixed(1);
+                avgErrorText.textContent = `Средний % ошибки за выбранный период: ${formattedAverage}%`;
+                
+                // Показываем блок
+                avgErrorDisplay.style.display = 'block';
             }
             
             // =============================================================
@@ -1804,12 +1881,12 @@ async def root():
                     minValue = p5 * 0.95;
                     maxValue = p95 * 1.05;
                     
-                    // Показываем предупреждение об ограничении данных
+                    // Показываем предупреждение об использовании логарифмической шкалы
                     chartOutliersWarning.innerHTML = `
-                        🎯 <strong>Данные оптимизированы для читаемости:</strong> 
+                        📈 <strong>Логарифмическая шкала:</strong> 
+                        График использует логарифмическую шкалу для лучшей читаемости данных с большими различиями. 
                         ${clippedCount} экстремальных значений ограничены границами 
-                        ${p5.toLocaleString('ru-RU')}₸ - ${p95.toLocaleString('ru-RU')}₸. 
-                        Реальные значения видны в подсказках при наведении.
+                        ${p5.toLocaleString('ru-RU')}₸ - ${p95.toLocaleString('ru-RU')}₸.
                     `;
                     chartOutliersWarning.style.display = 'block';
                 } else {
@@ -1820,15 +1897,15 @@ async def root():
                     maxValue = Math.max(...allValues) * 1.05;
                 }
                 
-                // Конфигурация оси Y (всегда линейная для лучшего восприятия)
+                // Конфигурация оси Y с интеллектуальным выбором шкалы
                 let yAxisConfig = {
-                    type: 'linear',
+                    type: hasExtremeOutliers ? 'logarithmic' : 'linear',
                     beginAtZero: false,
-                    min: minValue,
-                    max: maxValue,
+                    min: hasExtremeOutliers ? Math.max(1, Math.min(...allValues) * 0.8) : minValue,
+                    max: hasExtremeOutliers ? Math.max(...allValues) * 1.2 : maxValue,
                     title: {
                         display: true,
-                        text: hasExtremeOutliers ? 'Сумма продаж (₸) - оптимизировано' : 'Сумма продаж (₸)'
+                        text: hasExtremeOutliers ? 'Сумма продаж (₸) - логарифмическая шкала' : 'Сумма продаж (₸)'
                     },
                     ticks: {
                         callback: function(value) {
@@ -1840,7 +1917,7 @@ async def root():
                                 return '₸ ' + value.toLocaleString('ru-RU');
                             }
                         },
-                        maxTicksLimit: 8
+                        maxTicksLimit: hasExtremeOutliers ? 6 : 8
                     }
                 };
                 
@@ -1886,6 +1963,7 @@ async def root():
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        aspectRatio: 3,
                         interaction: {
                             intersect: false,
                             mode: 'index'
@@ -2010,15 +2088,68 @@ async def root():
                     
                     const infoDiv = document.getElementById('model-info');
                     if (modelInfo.status === 'loaded') {
-                        infoDiv.innerHTML = `
+                        let html = `
                             <p><strong>Статус модели:</strong> <span style="color: #27ae60;">✅ Загружена</span></p>
                             <p><strong>Тип модели:</strong> ${modelInfo.model_type}</p>
                             <p><strong>Количество признаков:</strong> ${modelInfo.n_features}</p>
                             <p><strong>Путь к модели:</strong> ${modelInfo.model_path}</p>
+                        `;
+                        
+                        // Если есть метрики обучения, показываем их
+                        if (modelInfo.training_metrics) {
+                            const metrics = modelInfo.training_metrics;
+                            html += `
+                                <div style="margin-top: 20px; padding: 15px; background: #f0f8ff; border-radius: 8px; border: 1px solid #b0d4f0;">
+                                    <h4 style="margin-top: 0; color: #2c3e50;">📊 Метрики последнего обучения (Модель v2.0):</h4>
+                                    
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 15px 0;">
+                                        <div style="background: #fff3cd; padding: 12px; border-radius: 6px; border: 1px solid #ffeaa7;">
+                                            <h5 style="margin: 0 0 8px 0; color: #856404;">📈 Validation (контроль обучения):</h5>
+                                            <div style="font-size: 13px;">
+                                                <p style="margin: 3px 0;"><strong>MAE:</strong> ${metrics.val_mae ? metrics.val_mae.toFixed(2) : 'N/A'}</p>
+                                                <p style="margin: 3px 0;"><strong>MAPE:</strong> ${metrics.val_mape ? metrics.val_mape.toFixed(2) + '%' : 'N/A'}</p>
+                                                <p style="margin: 3px 0;"><strong>R²:</strong> ${metrics.val_r2 ? metrics.val_r2.toFixed(4) : 'N/A'}</p>
+                                                <p style="margin: 3px 0;"><strong>RMSE:</strong> ${metrics.val_rmse ? metrics.val_rmse.toFixed(2) : 'N/A'}</p>
+                                            </div>
+                                        </div>
+                                        
+                                        <div style="background: #d1ecf1; padding: 12px; border-radius: 6px; border: 1px solid #7dd3fc;">
+                                            <h5 style="margin: 0 0 8px 0; color: #0c5460;">🎯 Test (честная оценка):</h5>
+                                            <div style="font-size: 13px;">
+                                                <p style="margin: 3px 0;"><strong>MAE:</strong> ${metrics.test_mae ? metrics.test_mae.toFixed(2) : metrics.mae.toFixed(2)}</p>
+                                                <p style="margin: 3px 0;"><strong>MAPE:</strong> ${metrics.test_mape ? metrics.test_mape.toFixed(2) + '%' : metrics.mape.toFixed(2) + '%'}</p>
+                                                <p style="margin: 3px 0;"><strong>R²:</strong> ${metrics.test_r2 ? metrics.test_r2.toFixed(4) : metrics.r2.toFixed(4)}</p>
+                                                <p style="margin: 3px 0;"><strong>RMSE:</strong> ${metrics.test_rmse ? metrics.test_rmse.toFixed(2) : metrics.rmse.toFixed(2)}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="margin-top: 15px; padding: 10px; background: #e7f3ff; border-radius: 6px; border-left: 4px solid #2196F3;">
+                                        <p style="margin: 5px 0; font-size: 14px; color: #1976D2;">
+                                            <strong>📍 Объяснение:</strong><br>
+                                            • <strong>Validation</strong> - данные для контроля обучения (early stopping)<br>
+                                            • <strong>Test</strong> - честная оценка на данных, которые модель никогда не видела<br>
+                                            • Test метрики показывают реальную производительность на новых данных
+                                        </p>
+                                    </div>
+                                    
+                                    <div style="margin-top: 10px; font-size: 13px; color: #666;">
+                                        <p style="margin: 2px 0;"><strong>📊 Размеры выборок:</strong></p>
+                                        <p style="margin: 2px 0;">• Обучение: ${metrics.train_samples} записей</p>
+                                        <p style="margin: 2px 0;">• Validation: ${metrics.val_samples || 'N/A'} записей</p>
+                                        <p style="margin: 2px 0;">• Test: ${metrics.test_samples} записей</p>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                        
+                        html += `
                             <div style="margin-top: 15px;">
                                 <button class="sync-btn" onclick="retrainModel()">🔄 Переобучить модель</button>
                             </div>
                         `;
+                        
+                        infoDiv.innerHTML = html;
                     } else {
                         infoDiv.innerHTML = `
                             <p><strong>Статус модели:</strong> <span style="color: #e74c3c;">❌ Не загружена</span></p>
@@ -2039,6 +2170,7 @@ async def root():
                 if (!confirm('Переобучение модели может занять несколько минут. Продолжить?')) return;
                 
                 const infoDiv = document.getElementById('model-info');
+                const originalContent = infoDiv.innerHTML;
                 infoDiv.innerHTML = '<p>⏳ Идет обучение модели...</p>';
                 
                 try {
@@ -2046,22 +2178,28 @@ async def root():
                     const result = await response.json();
                     
                     if (result.status === 'success') {
+                        // Показываем временное сообщение об успешном обучении
                         infoDiv.innerHTML = `
-                            <p style="color: #27ae60;"><strong>✅ Модель успешно обучена!</strong></p>
-                            <p><strong>MAE:</strong> ${result.metrics.mae}</p>
-                            <p><strong>MAPE:</strong> ${result.metrics.mape}%</p>
-                            <p><strong>R²:</strong> ${result.metrics.r2}</p>
-                            <p><strong>Обучающая выборка:</strong> ${result.metrics.train_samples} записей</p>
-                            <p><strong>Тестовая выборка:</strong> ${result.metrics.test_samples} записей</p>
+                            <div style="padding: 15px; background: #d4edda; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 20px;">
+                                <p style="color: #155724; margin: 0;"><strong>✅ Модель успешно обучена!</strong></p>
+                            </div>
                         `;
                         
-                        setTimeout(loadModelInfo, 5000);
+                        // Сразу загружаем обновленную информацию о модели
+                        setTimeout(() => {
+                            loadModelInfo();
+                        }, 2000);
                     } else {
                         throw new Error(result.detail || 'Ошибка обучения');
                     }
                 } catch (error) {
                     console.error('Error retraining model:', error);
-                    infoDiv.innerHTML = `<p style="color: #e74c3c;">❌ Ошибка обучения модели: ${error.message}</p>`;
+                    infoDiv.innerHTML = `
+                        <div style="padding: 15px; background: #f8d7da; border-radius: 8px; border: 1px solid #f5c6cb; margin-bottom: 20px;">
+                            <p style="color: #721c24; margin: 0;">❌ Ошибка обучения модели: ${error.message}</p>
+                        </div>
+                        ${originalContent}
+                    `;
                 }
             }
             
