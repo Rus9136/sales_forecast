@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from .config import settings
 from .db import engine, Base
-from .routers import branch, department, sales, forecast, monitoring
+from .routers import branch, department, sales, forecast, monitoring, auth
 from .services.scheduled_sales_loader import run_auto_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
@@ -96,6 +96,7 @@ app.include_router(department.router, prefix="/api")
 app.include_router(sales.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 
 
 def run_daily_metrics_calculation():
