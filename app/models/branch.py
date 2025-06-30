@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, ForeignKey, DateTime, Float, Integer, Date
+from sqlalchemy import Column, String, ForeignKey, DateTime, Float, Integer, Date, CheckConstraint, Text, Boolean, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
@@ -69,6 +69,17 @@ class Department(Base):
     name = Column(String(255), nullable=False)
     type = Column(String(50), default='DEPARTMENT', index=True)
     taxpayer_id_number = Column(String(50), nullable=True)
+    
+    # New segmentation and seasonal fields
+    segment_type = Column(
+        String(50), 
+        default='restaurant', 
+        index=True,
+        nullable=True
+    )
+    season_start_date = Column(Date, nullable=True)
+    season_end_date = Column(Date, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     synced_at = Column(DateTime, default=datetime.utcnow)
@@ -76,6 +87,24 @@ class Department(Base):
     # Self-referential relationship for hierarchy
     children = relationship("Department", back_populates="parent")
     parent = relationship("Department", back_populates="children", remote_side=[id])
+    
+    # Check constraint for segment_type (already exists in DB)
+    __table_args__ = (
+        CheckConstraint(
+            segment_type.in_([
+                'coffeehouse',      # кофейня
+                'restaurant',       # ресторан  
+                'confectionery',    # кондитерская
+                'food_court',       # фудкорт в ТРЦ
+                'store',            # магазин
+                'fast_food',        # фаст-фуд
+                'bakery',           # пекарня
+                'cafe',             # кафе
+                'bar'               # бар
+            ]),
+            name='valid_segment_type'
+        ),
+    )
 
 
 class SalesSummary(Base):
@@ -133,3 +162,95 @@ class AutoSyncLog(Base):
     error_details = Column(String(1000), nullable=True)
     executed_at = Column(DateTime, default=datetime.utcnow, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelVersion(Base):
+    __tablename__ = "model_versions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    version_id = Column(String(100), nullable=False, unique=True, index=True)
+    model_type = Column(String(50), nullable=False)  # 'LGBMRegressor', etc.
+    is_active = Column(Boolean, default=False, index=True)
+    
+    # Training details
+    training_date = Column(DateTime, nullable=False)
+    training_end_date = Column(DateTime, nullable=True)
+    deployment_date = Column(DateTime, nullable=True)
+    n_features = Column(Integer, nullable=False)
+    n_samples = Column(Integer, nullable=False)
+    training_days = Column(Integer, nullable=False)
+    outlier_method = Column(String(50), nullable=True)
+    
+    # Performance metrics
+    train_mape = Column(Float, nullable=True)
+    validation_mape = Column(Float, nullable=True)
+    test_mape = Column(Float, nullable=True)
+    train_r2 = Column(Float, nullable=True)
+    validation_r2 = Column(Float, nullable=True)
+    test_r2 = Column(Float, nullable=True)
+    
+    # Model details
+    hyperparameters = Column(Text, nullable=True)
+    top_features = Column(Text, nullable=True)
+    feature_names = Column(Text, nullable=True)
+    model_path = Column(String(255), nullable=False)
+    model_size_mb = Column(Float, nullable=True)
+    
+    # Status and metadata
+    status = Column(String(50), nullable=False, index=True)  # 'trained', 'deployed', 'rejected', 'archived'
+    created_by = Column(String(50), nullable=False)  # 'scheduled', 'manual', 'performance_degradation'
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+
+class ModelRetrainingLog(Base):
+    __tablename__ = "model_retraining_log"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    retrain_date = Column(DateTime, nullable=False, index=True)
+    trigger_type = Column(String(50), nullable=False, index=True)  # 'scheduled', 'manual', 'performance_degradation'
+    trigger_details = Column(Text, nullable=True)
+    
+    # Model versions
+    previous_version_id = Column(String(100), nullable=True)
+    previous_mape = Column(Float, nullable=True)
+    new_version_id = Column(String(100), nullable=False)
+    new_mape = Column(Float, nullable=False)
+    mape_improvement = Column(Float, nullable=True)
+    
+    # Decision details
+    decision = Column(String(50), nullable=False, index=True)  # 'deployed', 'rejected'
+    decision_reason = Column(Text, nullable=True)
+    execution_time_seconds = Column(Integer, nullable=True)
+    
+    # Status and error handling
+    status = Column(String(50), nullable=False, index=True)  # 'completed', 'failed'
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PostprocessingSettings(Base):
+    __tablename__ = "postprocessing_settings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Smoothing settings
+    enable_smoothing = Column(Boolean, default=True, nullable=False)
+    max_change_percent = Column(Float, default=50.0, nullable=False)
+    
+    # Business rules settings
+    enable_business_rules = Column(Boolean, default=True, nullable=False)
+    enable_weekend_adjustment = Column(Boolean, default=True, nullable=False)
+    enable_holiday_adjustment = Column(Boolean, default=True, nullable=False)
+    
+    # Anomaly detection settings
+    enable_anomaly_detection = Column(Boolean, default=True, nullable=False)
+    anomaly_threshold = Column(Float, default=3.0, nullable=False)
+    
+    # Confidence intervals settings
+    enable_confidence = Column(Boolean, default=True, nullable=False)
+    confidence_level = Column(Float, default=0.95, nullable=False)
+    
+    # Metadata
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

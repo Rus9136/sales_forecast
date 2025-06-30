@@ -27,7 +27,7 @@ def get_departments(
     
     departments = query.offset(skip).limit(limit).all()
     
-    # Convert UUIDs to strings
+    # Convert UUIDs to strings and include new fields
     result = []
     for dept in departments:
         dept_dict = {
@@ -38,6 +38,9 @@ def get_departments(
             "name": dept.name,
             "type": dept.type,
             "taxpayer_id_number": dept.taxpayer_id_number,
+            "segment_type": dept.segment_type if dept.segment_type else "restaurant",
+            "season_start_date": dept.season_start_date.isoformat() if dept.season_start_date else None,
+            "season_end_date": dept.season_end_date.isoformat() if dept.season_end_date else None,
             "created_at": dept.created_at,
             "updated_at": dept.updated_at,
             "synced_at": dept.synced_at
@@ -47,16 +50,32 @@ def get_departments(
     return result
 
 
-@router.get("/{department_id}", response_model=Department)
+@router.get("/{department_id}")
 def get_department(department_id: str, db: Session = Depends(get_db)):
     """Get a specific department by ID"""
     department = db.query(DepartmentModel).filter(DepartmentModel.id == department_id).first()
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
-    return department
+    
+    # Convert UUIDs to strings and include new fields (same format as list endpoint)
+    return {
+        "id": str(department.id),
+        "parent_id": str(department.parent_id) if department.parent_id else None,
+        "code": department.code,
+        "code_tco": department.code_tco,
+        "name": department.name,
+        "type": department.type,
+        "taxpayer_id_number": department.taxpayer_id_number,
+        "segment_type": department.segment_type if department.segment_type else "restaurant",
+        "season_start_date": department.season_start_date.isoformat() if department.season_start_date else None,
+        "season_end_date": department.season_end_date.isoformat() if department.season_end_date else None,
+        "created_at": department.created_at,
+        "updated_at": department.updated_at,
+        "synced_at": department.synced_at
+    }
 
 
-@router.post("/", response_model=Department)
+@router.post("/")
 def create_department(
     department: DepartmentCreate,
     db: Session = Depends(get_db)
@@ -66,10 +85,26 @@ def create_department(
     db.add(db_department)
     db.commit()
     db.refresh(db_department)
-    return db_department
+    
+    # Return formatted response
+    return {
+        "id": str(db_department.id),
+        "parent_id": str(db_department.parent_id) if db_department.parent_id else None,
+        "code": db_department.code,
+        "code_tco": db_department.code_tco,
+        "name": db_department.name,
+        "type": db_department.type,
+        "taxpayer_id_number": db_department.taxpayer_id_number,
+        "segment_type": db_department.segment_type if db_department.segment_type else "restaurant",
+        "season_start_date": db_department.season_start_date.isoformat() if db_department.season_start_date else None,
+        "season_end_date": db_department.season_end_date.isoformat() if db_department.season_end_date else None,
+        "created_at": db_department.created_at,
+        "updated_at": db_department.updated_at,
+        "synced_at": db_department.synced_at
+    }
 
 
-@router.put("/{department_id}", response_model=Department)
+@router.put("/{department_id}")
 def update_department(
     department_id: str,
     department_update: DepartmentUpdate,
@@ -86,7 +121,23 @@ def update_department(
     
     db.commit()
     db.refresh(department)
-    return department
+    
+    # Return formatted response
+    return {
+        "id": str(department.id),
+        "parent_id": str(department.parent_id) if department.parent_id else None,
+        "code": department.code,
+        "code_tco": department.code_tco,
+        "name": department.name,
+        "type": department.type,
+        "taxpayer_id_number": department.taxpayer_id_number,
+        "segment_type": department.segment_type if department.segment_type else "restaurant",
+        "season_start_date": department.season_start_date.isoformat() if department.season_start_date else None,
+        "season_end_date": department.season_end_date.isoformat() if department.season_end_date else None,
+        "created_at": department.created_at,
+        "updated_at": department.updated_at,
+        "synced_at": department.synced_at
+    }
 
 
 @router.delete("/{department_id}")

@@ -29,13 +29,16 @@ class SalesForecasterAgent:
     
     def train_model(
         self, 
-        db: Session,
+        train_df: Optional[pd.DataFrame] = None,
+        val_df: Optional[pd.DataFrame] = None,
+        test_df: Optional[pd.DataFrame] = None,
+        db: Optional[Session] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         val_size: float = 0.15,
         test_size: float = 0.15,
         save_model: bool = True
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Any, Dict[str, Any]]:
         """
         Train LightGBM model on historical sales data with proper train/validation/test split
         
@@ -48,23 +51,41 @@ class SalesForecasterAgent:
         """
         logger.info("Starting model training with train/validation/test split...")
         
-        # Initialize training service
-        training_service = TrainingDataService(db)
-        
-        # Prepare training data
-        df = training_service.prepare_training_data(start_date, end_date)
-        
-        if df.empty:
-            raise ValueError("No training data available")
-        
-        # Get feature columns and target
-        self.feature_columns = training_service.get_feature_columns()
-        target_column = training_service.get_target_column()
-        
-        # Split data into train/validation/test
-        train_df, val_df, test_df = training_service.split_train_validation_test(
-            df, val_size=val_size, test_size=test_size
-        )
+        # Handle data preparation
+        if train_df is None or val_df is None or test_df is None:
+            if db is None:
+                raise ValueError("Either pre-split dataframes or database session must be provided")
+            
+            # Initialize training service
+            training_service = TrainingDataService(db)
+            
+            # Prepare training data
+            df = training_service.prepare_training_data(start_date, end_date)
+            
+            if df.empty:
+                raise ValueError("No training data available")
+            
+            # Split data into train/validation/test
+            train_df, val_df, test_df = training_service.split_train_validation_test(
+                df, val_size=val_size, test_size=test_size
+            )
+            
+            # Get feature columns and target
+            self.feature_columns = training_service.get_feature_columns()
+            target_column = training_service.get_target_column()
+        else:
+            # Use pre-split data
+            training_service = TrainingDataService(db) if db else None
+            if training_service:
+                self.feature_columns = training_service.get_feature_columns()
+                target_column = training_service.get_target_column()
+            else:
+                # Create a temporary training service to get updated feature columns
+                from ..db import get_db
+                temp_db = next(get_db())
+                temp_training_service = TrainingDataService(temp_db)
+                self.feature_columns = temp_training_service.get_feature_columns()
+                target_column = temp_training_service.get_target_column()
         
         # Prepare datasets
         X_train = train_df[self.feature_columns]
@@ -159,7 +180,7 @@ class SalesForecasterAgent:
         for _, row in feature_importance.head().iterrows():
             logger.info(f"  {row['feature']}: {row['importance']:.4f}")
         
-        return metrics
+        return self.model, metrics
     
     def forecast(self, branch_id: str, forecast_date: date, db: Session = None) -> Optional[float]:
         """
@@ -182,14 +203,22 @@ class SalesForecasterAgent:
             db = next(get_db())
         
         try:
-            # Calculate date range for historical data (last 30 days)
+            # Calculate date range for historical data (last 30 days minimum)
             end_date = forecast_date - timedelta(days=1)
             start_date = end_date - timedelta(days=30)
             
-            # Query historical sales
+            # Query historical sales with department info
             sales_query = db.query(
                 SalesSummary.date,
-                SalesSummary.total_sales
+                SalesSummary.total_sales,
+                Department.name.label('department_name'),
+                Department.code.label('department_code'),
+                Department.type.label('department_type'),
+                Department.segment_type.label('segment_type'),
+                Department.parent_id.label('parent_id')
+            ).join(
+                Department,
+                SalesSummary.department_id == Department.id
             ).filter(
                 and_(
                     SalesSummary.department_id == branch_id,
@@ -200,48 +229,26 @@ class SalesForecasterAgent:
             
             sales_data = sales_query.all()
             
-            if len(sales_data) < 7:
-                logger.warning(f"Insufficient historical data for branch {branch_id}. Found {len(sales_data)} days, need at least 7.")
+            if len(sales_data) < 14:  # Need more days for better features
+                logger.warning(f"Insufficient historical data for branch {branch_id}. Found {len(sales_data)} days, need at least 14.")
                 return None
             
             # Create DataFrame
-            df = pd.DataFrame(sales_data, columns=['date', 'total_sales'])
+            df = pd.DataFrame([{
+                'date': r.date,
+                'total_sales': float(r.total_sales),
+                'department_name': r.department_name,
+                'department_code': r.department_code,
+                'department_type': r.department_type,
+                'segment_type': r.segment_type,
+                'parent_id': str(r.parent_id) if r.parent_id else None
+            } for r in sales_data])
+            
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date')
             
-            # Calculate rolling features
-            rolling_7d = df['total_sales'].tail(7).mean()
-            rolling_14d = df['total_sales'].tail(14).mean() if len(df) >= 14 else rolling_7d
-            rolling_30d = df['total_sales'].mean()
-            rolling_7d_std = df['total_sales'].tail(7).std()
-            lag_1d = df['total_sales'].iloc[-1]
-            lag_7d = df['total_sales'].iloc[-7] if len(df) >= 7 else lag_1d
-            
-            # Calculate percentage change
-            if len(df) >= 2 and df['total_sales'].iloc[-2] != 0:
-                pct_change_1d = (df['total_sales'].iloc[-1] - df['total_sales'].iloc[-2]) / df['total_sales'].iloc[-2]
-            else:
-                pct_change_1d = 0
-            
-            # Create feature vector
-            forecast_datetime = pd.to_datetime(forecast_date)
-            features = {
-                'day_of_week': forecast_datetime.dayofweek,
-                'month': forecast_datetime.month,
-                'day_of_month': forecast_datetime.day,
-                'is_weekend': 1 if forecast_datetime.dayofweek >= 5 else 0,
-                'quarter': forecast_datetime.quarter,
-                'week_of_year': forecast_datetime.isocalendar().week,
-                'is_month_start': 1 if forecast_datetime.is_month_start else 0,
-                'is_month_end': 1 if forecast_datetime.is_month_end else 0,
-                'rolling_7d_avg_sales': rolling_7d,
-                'rolling_14d_avg_sales': rolling_14d,
-                'rolling_30d_avg_sales': rolling_30d,
-                'rolling_7d_std_sales': rolling_7d_std,
-                'lag_1d_sales': lag_1d,
-                'lag_7d_sales': lag_7d,
-                'pct_change_1d': pct_change_1d
-            }
+            # Create feature vector using the same logic as TrainingDataService
+            features = self._create_prediction_features(forecast_date, df)
             
             # Create DataFrame with features in correct order
             X = pd.DataFrame([features])[self.feature_columns]
@@ -259,6 +266,178 @@ class SalesForecasterAgent:
         except Exception as e:
             logger.error(f"Error during forecasting: {str(e)}")
             return None
+    
+    def _create_prediction_features(self, forecast_date: date, historical_df: pd.DataFrame) -> dict:
+        """
+        Create all 61 features for prediction using the same logic as TrainingDataService
+        """
+        forecast_datetime = pd.to_datetime(forecast_date)
+        
+        # Get the last row for department info
+        dept_info = historical_df.iloc[-1]
+        
+        # Initialize features dictionary
+        features = {}
+        
+        # 1. Time-based features (23 features)
+        features['day_of_week'] = forecast_datetime.dayofweek
+        features['month'] = forecast_datetime.month
+        features['day_of_month'] = forecast_datetime.day
+        features['year'] = forecast_datetime.year
+        features['is_weekend'] = 1 if forecast_datetime.dayofweek >= 5 else 0
+        features['is_friday'] = 1 if forecast_datetime.dayofweek == 4 else 0
+        features['is_monday'] = 1 if forecast_datetime.dayofweek == 0 else 0
+        features['quarter'] = forecast_datetime.quarter
+        features['is_quarter_start'] = 1 if forecast_datetime.is_quarter_start else 0
+        features['is_quarter_end'] = 1 if forecast_datetime.is_quarter_end else 0
+        features['week_of_year'] = forecast_datetime.isocalendar().week
+        features['is_month_start'] = 1 if forecast_datetime.is_month_start else 0
+        features['is_month_end'] = 1 if forecast_datetime.is_month_end else 0
+        
+        # Season features
+        season = self._get_season(forecast_datetime.month)
+        features['is_winter'] = 1 if season == 'winter' else 0
+        features['is_spring'] = 1 if season == 'spring' else 0
+        features['is_summer'] = 1 if season == 'summer' else 0
+        features['is_autumn'] = 1 if season == 'autumn' else 0
+        
+        # Holiday features (Kazakhstan holidays)
+        features['is_holiday'] = 1 if self._is_kazakhstan_holiday(forecast_datetime) else 0
+        features['is_pre_holiday'] = 1 if self._is_pre_holiday(forecast_datetime) else 0
+        features['is_post_holiday'] = 1 if self._is_post_holiday(forecast_datetime) else 0
+        
+        # Days from/to important dates
+        new_year = pd.to_datetime(f"{forecast_datetime.year}-01-01")
+        next_new_year = pd.to_datetime(f"{forecast_datetime.year + 1}-01-01")
+        features['days_from_new_year'] = (forecast_datetime - new_year).days
+        features['days_to_new_year'] = (next_new_year - forecast_datetime).days
+        
+        # 2. Rolling features (20 features)
+        sales_values = historical_df['total_sales'].values
+        
+        # Rolling averages
+        features['rolling_3d_avg_sales'] = np.mean(sales_values[-3:]) if len(sales_values) >= 3 else np.mean(sales_values)
+        features['rolling_7d_avg_sales'] = np.mean(sales_values[-7:]) if len(sales_values) >= 7 else np.mean(sales_values)
+        features['rolling_14d_avg_sales'] = np.mean(sales_values[-14:]) if len(sales_values) >= 14 else np.mean(sales_values)
+        features['rolling_30d_avg_sales'] = np.mean(sales_values)
+        
+        # Rolling standard deviations
+        features['rolling_3d_std_sales'] = np.std(sales_values[-3:]) if len(sales_values) >= 3 else 0
+        features['rolling_7d_std_sales'] = np.std(sales_values[-7:]) if len(sales_values) >= 7 else 0
+        features['rolling_14d_std_sales'] = np.std(sales_values[-14:]) if len(sales_values) >= 14 else 0
+        
+        # Rolling sums
+        features['rolling_7d_sum_sales'] = np.sum(sales_values[-7:]) if len(sales_values) >= 7 else np.sum(sales_values)
+        features['rolling_14d_sum_sales'] = np.sum(sales_values[-14:]) if len(sales_values) >= 14 else np.sum(sales_values)
+        
+        # Lag features
+        features['lag_1d_sales'] = sales_values[-1] if len(sales_values) >= 1 else 0
+        features['lag_2d_sales'] = sales_values[-2] if len(sales_values) >= 2 else features['lag_1d_sales']
+        features['lag_7d_sales'] = sales_values[-7] if len(sales_values) >= 7 else features['lag_1d_sales']
+        features['lag_14d_sales'] = sales_values[-14] if len(sales_values) >= 14 else features['lag_1d_sales']
+        
+        # Percentage changes
+        if len(sales_values) >= 2 and sales_values[-2] != 0:
+            features['pct_change_1d'] = (sales_values[-1] - sales_values[-2]) / sales_values[-2]
+        else:
+            features['pct_change_1d'] = 0
+            
+        if len(sales_values) >= 8 and sales_values[-8] != 0:
+            features['pct_change_7d'] = (sales_values[-1] - sales_values[-8]) / sales_values[-8]
+        else:
+            features['pct_change_7d'] = 0
+            
+        if len(sales_values) >= 15 and sales_values[-15] != 0:
+            features['pct_change_14d'] = (sales_values[-1] - sales_values[-15]) / sales_values[-15]
+        else:
+            features['pct_change_14d'] = 0
+        
+        # Rolling min/max
+        features['rolling_7d_min_sales'] = np.min(sales_values[-7:]) if len(sales_values) >= 7 else np.min(sales_values)
+        features['rolling_7d_max_sales'] = np.max(sales_values[-7:]) if len(sales_values) >= 7 else np.max(sales_values)
+        
+        # Sales momentum
+        if len(sales_values) >= 14:
+            features['sales_momentum_7d'] = np.mean(sales_values[-7:]) - np.mean(sales_values[-14:-7])
+        else:
+            features['sales_momentum_7d'] = 0
+            
+        if len(sales_values) >= 28:
+            features['sales_momentum_14d'] = np.mean(sales_values[-14:]) - np.mean(sales_values[-28:-14])
+        else:
+            features['sales_momentum_14d'] = 0
+        
+        # 3. Department features (18 features)
+        # Department type
+        features['is_department'] = 1 if dept_info.get('department_type') == 'DEPARTMENT' else 0
+        features['is_organization'] = 1 if dept_info.get('department_type') == 'ORGANIZATION' else 0
+        
+        # Segment type features
+        segment_type = dept_info.get('segment_type', '').lower() if dept_info.get('segment_type') else ''
+        features['is_coffeehouse'] = 1 if 'кофейня' in segment_type or 'coffee' in segment_type else 0
+        features['is_restaurant'] = 1 if 'ресторан' in segment_type or 'restaurant' in segment_type else 0
+        features['is_confectionery'] = 1 if 'кондитерская' in segment_type or 'confectionery' in segment_type else 0
+        features['is_food_court'] = 1 if 'фуд-корт' in segment_type or 'food court' in segment_type else 0
+        features['is_store'] = 1 if 'магазин' in segment_type or 'store' in segment_type else 0
+        features['is_fast_food'] = 1 if 'фаст-фуд' in segment_type or 'fast food' in segment_type else 0
+        features['is_bakery'] = 1 if 'пекарня' in segment_type or 'bakery' in segment_type else 0
+        features['is_cafe'] = 1 if 'кафе' in segment_type or 'cafe' in segment_type else 0
+        features['is_bar'] = 1 if 'бар' in segment_type or 'bar' in segment_type else 0
+        
+        # Department hierarchy
+        features['has_parent'] = 1 if dept_info.get('parent_id') is not None else 0
+        
+        # Department size indicators
+        dept_name = dept_info.get('department_name', '').lower()
+        features['dept_name_length'] = len(dept_name)
+        features['has_plaza_in_name'] = 1 if 'plaza' in dept_name or 'плаза' in dept_name else 0
+        features['has_center_in_name'] = 1 if 'center' in dept_name or 'центр' in dept_name else 0
+        features['has_mall_in_name'] = 1 if 'mall' in dept_name or 'мол' in dept_name or 'мол' in dept_name else 0
+        
+        # Location features
+        features['is_almaty'] = 1 if 'алмат' in dept_name or 'almaty' in dept_name else 0
+        features['is_astana'] = 1 if 'астан' in dept_name or 'astana' in dept_name else 0
+        features['is_shymkent'] = 1 if 'шымкент' in dept_name or 'shymkent' in dept_name else 0
+        
+        return features
+    
+    def _get_season(self, month: int) -> str:
+        """Get season from month"""
+        if month in [12, 1, 2]:
+            return 'winter'
+        elif month in [3, 4, 5]:
+            return 'spring'
+        elif month in [6, 7, 8]:
+            return 'summer'
+        else:
+            return 'autumn'
+    
+    def _is_kazakhstan_holiday(self, date_val) -> bool:
+        """Check if date is a Kazakhstan holiday"""
+        month_day = (date_val.month, date_val.day)
+        holidays = [
+            (1, 1), (1, 2),  # New Year
+            (3, 8),          # International Women's Day
+            (3, 21), (3, 22), (3, 23), (3, 24),  # Nauryz
+            (5, 1),          # Unity Day
+            (5, 7),          # Defender of the Fatherland Day
+            (5, 9),          # Victory Day
+            (7, 6),          # Capital City Day
+            (8, 30),         # Constitution Day
+            (12, 1),         # First President Day
+            (12, 16), (12, 17), (12, 18)  # Independence Day
+        ]
+        return month_day in holidays
+    
+    def _is_pre_holiday(self, date_val) -> bool:
+        """Check if date is before a holiday"""
+        next_day = date_val + timedelta(days=1)
+        return self._is_kazakhstan_holiday(next_day)
+    
+    def _is_post_holiday(self, date_val) -> bool:
+        """Check if date is after a holiday"""
+        prev_day = date_val - timedelta(days=1)
+        return self._is_kazakhstan_holiday(prev_day)
     
     def _calculate_mape(self, y_true, y_pred) -> float:
         """Calculate Mean Absolute Percentage Error"""
@@ -333,6 +512,18 @@ class SalesForecasterAgent:
             info['training_metrics'] = self._training_metrics
             
         return info
+    
+    def get_feature_importance(self) -> Dict[str, float]:
+        """Get feature importance as a dictionary"""
+        if self.model is None or self.feature_columns is None:
+            return {}
+        
+        feature_importance = pd.DataFrame({
+            'feature': self.feature_columns,
+            'importance': self.model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        return dict(zip(feature_importance['feature'], feature_importance['importance']))
 
 
 # Singleton instance

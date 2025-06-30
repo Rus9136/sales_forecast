@@ -2,6 +2,20 @@ from pydantic import BaseModel, field_serializer
 from datetime import datetime, date
 from typing import Optional, List
 from uuid import UUID
+from enum import Enum
+
+
+class SegmentType(str, Enum):
+    """Типы подразделений для прогнозирования"""
+    COFFEEHOUSE = "coffeehouse"      # Кофейня
+    RESTAURANT = "restaurant"        # Ресторан
+    CONFECTIONERY = "confectionery"  # Кондитерская
+    FOOD_COURT = "food_court"        # Фудкорт в ТРЦ
+    STORE = "store"                  # Магазин
+    FAST_FOOD = "fast_food"          # Фаст-фуд
+    BAKERY = "bakery"                # Пекарня
+    CAFE = "cafe"                    # Кафе
+    BAR = "bar"                      # Бар
 
 
 class BranchBase(BaseModel):
@@ -83,6 +97,9 @@ class DepartmentBase(BaseModel):
     type: str = 'DEPARTMENT'
     taxpayer_id_number: Optional[str] = None
     parent_id: Optional[UUID] = None
+    segment_type: Optional[SegmentType] = SegmentType.RESTAURANT
+    season_start_date: Optional[date] = None
+    season_end_date: Optional[date] = None
 
 
 class DepartmentCreate(DepartmentBase):
@@ -96,6 +113,9 @@ class DepartmentUpdate(BaseModel):
     type: Optional[str] = None
     taxpayer_id_number: Optional[str] = None
     parent_id: Optional[UUID] = None
+    segment_type: Optional[SegmentType] = None
+    season_start_date: Optional[date] = None
+    season_end_date: Optional[date] = None
 
 
 class Department(BaseModel):
@@ -106,6 +126,9 @@ class Department(BaseModel):
     name: str
     type: str = 'DEPARTMENT'
     taxpayer_id_number: Optional[str] = None
+    segment_type: Optional[SegmentType] = SegmentType.RESTAURANT
+    season_start_date: Optional[date] = None
+    season_end_date: Optional[date] = None
     created_at: datetime
     updated_at: datetime
     synced_at: datetime

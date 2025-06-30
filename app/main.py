@@ -160,7 +160,7 @@ async def root():
         <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
         <meta http-equiv="Pragma" content="no-cache">
         <meta http-equiv="Expires" content="0">
-        <title>Админ панель - v2.3 (Hourly Charts)</title>
+        <title>AI Модуль - v2.3 (Hourly Charts)</title>
         <style>
             * {
                 margin: 0;
@@ -829,32 +829,34 @@ async def root():
             
             /* Action buttons in table */
             .edit-btn {
-                background-color: #ffc107;
-                color: #212529;
+                background-color: #d4a574;
+                color: white;
                 border: none;
-                padding: 5px 10px;
-                border-radius: 3px;
+                padding: 6px 15px;
+                border-radius: 4px;
                 cursor: pointer;
                 font-size: 12px;
                 margin-right: 5px;
+                min-width: 80px;
             }
             
             .edit-btn:hover {
-                background-color: #e0a800;
+                background-color: #c49660;
             }
             
             .delete-btn {
-                background-color: #dc3545;
+                background-color: #c67e5c;
                 color: white;
                 border: none;
-                padding: 5px 10px;
-                border-radius: 3px;
+                padding: 6px 15px;
+                border-radius: 4px;
                 cursor: pointer;
                 font-size: 12px;
+                min-width: 80px;
             }
             
             .delete-btn:hover {
-                background-color: #c82333;
+                background-color: #b56d4f;
             }
             
             /* Card styles for monitoring pages */
@@ -1019,7 +1021,7 @@ async def root():
             <!-- Sidebar -->
             <div class="sidebar">
                 <div class="sidebar-header">
-                    <div class="sidebar-title">Админ панель</div>
+                    <div class="sidebar-title">AI Модуль</div>
                     <button class="logout-btn">Выйти</button>
                 </div>
                 <ul class="sidebar-menu">
@@ -5133,31 +5135,38 @@ async def root():
                 resultsDiv.innerHTML = '<p style="color: #007bff;">Обработка...</p>';
                 
                 try {
-                    const response = await fetch('/api/forecast/postprocess', {
+                    // Build URL with query parameters
+                    const url = new URL('/api/forecast/postprocess', window.location.origin);
+                    url.searchParams.append('branch_id', branchId);
+                    url.searchParams.append('forecast_date', forecastDate);
+                    url.searchParams.append('raw_prediction', parseFloat(rawPrediction));
+                    url.searchParams.append('apply_smoothing', applySmoothing);
+                    url.searchParams.append('apply_business_rules', applyBusinessRules);
+                    url.searchParams.append('apply_anomaly_detection', applyAnomalyDetection);
+                    url.searchParams.append('calculate_confidence', calculateConfidence);
+                    
+                    const response = await fetch(url, {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded',
-                        },
-                        body: new URLSearchParams({
-                            branch_id: branchId,
-                            forecast_date: forecastDate,
-                            raw_prediction: parseFloat(rawPrediction),
-                            apply_smoothing: applySmoothing,
-                            apply_business_rules: applyBusinessRules,
-                            apply_anomaly_detection: applyAnomalyDetection,
-                            calculate_confidence: calculateConfidence
-                        })
+                            'Content-Type': 'application/json',
+                        }
                     });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                    }
                     
                     const data = await response.json();
                     
                     if (data.status === 'success') {
                         displayTestResults(data.result);
                     } else {
-                        resultsDiv.innerHTML = `<p style="color: #dc3545;">Ошибка: ${data.detail || 'Неизвестная ошибка'}</p>`;
+                        resultsDiv.innerHTML = `<p style="color: #dc3545;">Ошибка: ${data.detail || 'Неизвестная ошибка API'}</p>`;
                     }
                 } catch (error) {
-                    resultsDiv.innerHTML = `<p style="color: #dc3545;">Ошибка сети: ${error.message}</p>`;
+                    console.error('Error in testPostprocessing:', error);
+                    resultsDiv.innerHTML = `<p style="color: #dc3545;">Ошибка сети: ${error.message || 'Неизвестная ошибка сети'}</p>`;
                 }
             }
 
