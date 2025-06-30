@@ -6,7 +6,25 @@ https://aqniet.site/api/forecast
 ```
 
 ## Authentication
-Currently, the API does not require authentication. In production, you should implement proper authentication mechanisms.
+
+The API uses Bearer token authentication with API keys for external access.
+
+### Getting an API Key
+Contact your system administrator to obtain an API key, or use the API key management endpoints if you have access.
+
+### API Key Format
+```
+sf_{key_id}_{secret}
+```
+
+### Authentication Headers
+Include your API key in the Authorization header:
+```
+Authorization: Bearer sf_your_key_id_your_secret
+```
+
+### Development Mode
+In development mode (DEBUG=True), authentication is optional. In production, API keys are required for all forecast endpoints.
 
 ## Main Forecast Endpoints
 
@@ -21,7 +39,12 @@ Currently, the API does not require authentication. In production, you should im
 
 **Example Request:**
 ```bash
+# Without authentication (development mode)
 curl -X GET "https://aqniet.site/api/forecast/2025-07-01/0d30c200-87b5-45a5-89f0-eb76e2892b4a"
+
+# With API key authentication (production)
+curl -X GET "https://aqniet.site/api/forecast/2025-07-01/0d30c200-87b5-45a5-89f0-eb76e2892b4a" \
+  -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
 **Response:**
@@ -240,6 +263,61 @@ curl -X POST "https://aqniet.site/api/forecast/postprocess" \
   "apply_anomaly_detection": true,
   "calculate_confidence": true
 }
+```
+
+## API Key Management Endpoints
+
+### 11. Create API Key
+**Endpoint:** `POST /api/auth/keys`
+
+**Description:** Create a new API key for external access.
+
+**Request Body:**
+```json
+{
+  "name": "My App Integration",
+  "description": "API key for mobile app integration",
+  "expires_in_days": 365,
+  "rate_limit_per_minute": 100,
+  "rate_limit_per_hour": 1000,
+  "rate_limit_per_day": 10000,
+  "created_by": "admin@example.com"
+}
+```
+
+**Response:**
+```json
+{
+  "key_id": "dGVzdF9rZXlfZXhhbXBsZQ",
+  "api_key": "sf_dGVzdF9rZXlfZXhhbXBsZQ_YWN0dWFsX3NlY3JldF9rZXk",
+  "name": "My App Integration",
+  "expires_at": "2026-06-30T12:00:00",
+  "rate_limits": {
+    "per_minute": 100,
+    "per_hour": 1000,
+    "per_day": 10000
+  }
+}
+```
+
+⚠️ **Important:** The full API key is shown only once and cannot be retrieved again!
+
+### 12. List API Keys
+**Endpoint:** `GET /api/auth/keys`
+
+### 13. Get API Key Usage Stats
+**Endpoint:** `GET /api/auth/keys/{key_id}/usage`
+
+### 14. Deactivate API Key
+**Endpoint:** `DELETE /api/auth/keys/{key_id}`
+
+### 15. Test API Key
+**Endpoint:** `POST /api/auth/test`
+
+**Example:**
+```bash
+curl -X POST "https://aqniet.site/api/auth/test" \
+  -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
 ## Model Information Endpoints

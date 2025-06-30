@@ -4,6 +4,15 @@
 
 **Base URL:** `https://aqniet.site/api/forecast`
 
+## 🔐 Authentication
+
+**API Key Required in Production:** Include in Authorization header
+```bash
+Authorization: Bearer sf_your_key_id_your_secret
+```
+
+**Development Mode:** Authentication optional when DEBUG=True
+
 ## 📊 Main Endpoints
 
 ### 1. Get Forecast for Date Range
@@ -13,7 +22,12 @@ GET /batch?from_date=2025-07-01&to_date=2025-07-07&department_id=BRANCH_UUID
 
 **Example:**
 ```bash
+# Without authentication (development)
 curl "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07"
+
+# With API key (production)
+curl "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07" \
+  -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
 **Response:**
@@ -149,6 +163,36 @@ curl "https://aqniet.site/api/departments/?limit=10"
   "detail": "Error message"
 }
 ```
+
+## 🔐 API Key Management
+
+### Get API Key
+```bash
+curl -X POST "https://aqniet.site/api/auth/keys" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My App",
+    "description": "Integration for my application",
+    "expires_in_days": 365
+  }'
+```
+
+### Test API Key
+```bash
+curl -X POST "https://aqniet.site/api/auth/test" \
+  -H "Authorization: Bearer sf_your_key_id_your_secret"
+```
+
+### Check Usage Stats
+```bash
+curl "https://aqniet.site/api/auth/keys/{key_id}/usage" \
+  -H "Authorization: Bearer sf_your_key_id_your_secret"
+```
+
+## ⚡ Rate Limits
+- **Default Limits:** 100/min, 1000/hour, 10000/day
+- **Custom Limits:** Configurable per API key
+- **429 Response:** When limits exceeded
 
 ## 📞 Support
 For technical issues or questions about the API, please refer to the full documentation or contact the development team.

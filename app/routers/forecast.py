@@ -12,6 +12,7 @@ import io
 from ..db import get_db
 from ..agents.sales_forecaster_agent import get_forecaster_agent
 from ..models.branch import Department, SalesSummary, PostprocessingSettings
+from ..auth import get_api_key_or_bypass, get_optional_api_key, ApiKey, log_api_usage
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,8 @@ async def get_forecast_comparison(
     from_date: date,
     to_date: date,
     department_id: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Compare forecasts with actual sales
@@ -163,6 +165,9 @@ async def get_forecast_comparison(
     Returns comparison data with prediction error metrics
     """
     try:
+        # Log API usage if authenticated
+        if api_key:
+            log_api_usage(api_key, "/forecast/comparison", db=db)
         # Get actual sales data
         sales_query = db.query(SalesSummary).filter(
             and_(
@@ -223,7 +228,8 @@ async def get_batch_forecasts(
     from_date: date,
     to_date: date,
     department_id: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Get batch forecasts for a date range
@@ -232,6 +238,9 @@ async def get_batch_forecasts(
         List of forecasts for the specified period
     """
     try:
+        # Log API usage if authenticated
+        if api_key:
+            log_api_usage(api_key, "/forecast/batch", db=db)
         # Get departments
         departments_query = db.query(Department)
         if department_id:
@@ -829,7 +838,8 @@ async def get_batch_forecasts_with_postprocessing(
     to_date: date,
     department_id: Optional[str] = None,
     apply_postprocessing: bool = True,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Get batch forecasts with automatic post-processing applied
@@ -838,6 +848,9 @@ async def get_batch_forecasts_with_postprocessing(
         List of forecasts with post-processing metadata
     """
     try:
+        # Log API usage if authenticated
+        if api_key:
+            log_api_usage(api_key, "/forecast/batch_with_postprocessing", db=db)
         # Get raw forecasts first
         raw_forecasts = await get_batch_forecasts(from_date, to_date, department_id, db)
         

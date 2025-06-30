@@ -147,3 +147,10 @@ Thumbs.db
 .env.production
 screenshots/
 backup/
+
+# API Keys and sensitive data (do not commit)
+create_api_key.py
+test_production_api_key.py
+PRODUCTION_API_KEY_SUMMARY.md
+*api_key*
+*API_KEY*

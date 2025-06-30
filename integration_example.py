@@ -23,9 +23,15 @@ BRANCH_IDS = [
 class SalesForecastClient:
     """Client for Sales Forecast API"""
     
-    def __init__(self, base_url=API_BASE_URL):
+    def __init__(self, base_url=API_BASE_URL, api_key=None):
         self.base_url = base_url
         self.session = requests.Session()
+        
+        # Set authentication header if API key provided
+        if api_key:
+            self.session.headers.update({
+                "Authorization": f"Bearer {api_key}"
+            })
     
     def get_single_forecast(self, branch_id: str, forecast_date: date) -> dict:
         """Get forecast for a single branch on a specific date"""
@@ -110,13 +116,66 @@ class SalesForecastClient:
         response = self.session.get(f"{self.base_url}/model/info")
         response.raise_for_status()
         return response.json()
+    
+    # API Key Management Methods
+    def create_api_key(self, name: str, description: str = None, expires_in_days: int = None) -> dict:
+        """Create a new API key"""
+        auth_base_url = self.base_url.replace("/forecast", "/auth")
+        
+        data = {
+            "name": name,
+            "description": description,
+            "expires_in_days": expires_in_days,
+            "created_by": "python_client"
+        }
+        
+        response = self.session.post(f"{auth_base_url}/keys", json=data)
+        response.raise_for_status()
+        return response.json()
+    
+    def list_api_keys(self) -> list:
+        """List all API keys"""
+        auth_base_url = self.base_url.replace("/forecast", "/auth")
+        response = self.session.get(f"{auth_base_url}/keys")
+        response.raise_for_status()
+        return response.json()
+    
+    def get_api_key_usage(self, key_id: str) -> dict:
+        """Get usage statistics for an API key"""
+        auth_base_url = self.base_url.replace("/forecast", "/auth")
+        response = self.session.get(f"{auth_base_url}/keys/{key_id}/usage")
+        response.raise_for_status()
+        return response.json()
+    
+    def test_api_key(self) -> dict:
+        """Test API key authentication"""
+        auth_base_url = self.base_url.replace("/forecast", "/auth")
+        response = self.session.post(f"{auth_base_url}/test")
+        response.raise_for_status()
+        return response.json()
 
 
 def main():
     """Example usage of the Sales Forecast API client"""
     
-    # Initialize client
+    # Initialize client (with optional API key for production)
+    # For production, get your API key from system administrator
+    # api_key = "sf_your_key_id_your_secret"
+    # client = SalesForecastClient(api_key=api_key)
+    
+    # For development/testing without authentication
     client = SalesForecastClient()
+    
+    # Test API key if provided
+    try:
+        auth_test = client.test_api_key()
+        print(f"🔑 Authentication: {auth_test.get('message', 'Success')}")
+        if 'key_name' in auth_test:
+            print(f"🏷️  Using API Key: {auth_test['key_name']}")
+        print()
+    except Exception as e:
+        print(f"ℹ️  No authentication (development mode): {e}")
+        print()
     
     # Example 1: Get model information
     print("=== Model Information ===")
