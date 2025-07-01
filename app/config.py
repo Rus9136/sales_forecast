@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     VERSION: str = "0.1.0"
     DEBUG: bool = False
     
+    # API Token for internal admin panel authentication
+    API_TOKEN: str = "sf_1WIK_p9-x_qoBDgHkm5hqqKnjolZ0xF5_5Nm9K1r2816u1Wdet_fkgZ3RUvpPMieQ_ckBfPd1Nhw"
+    
     POSTGRES_USER: str = "sales_user"
     POSTGRES_PASSWORD: str = "sales_password"
     POSTGRES_DB: str = "sales_forecast"

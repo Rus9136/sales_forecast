@@ -202,15 +202,22 @@ class TrainingDataService:
         df = df.copy()
         
         # Basic time features
-        df['day_of_week'] = df['date'].dt.dayofweek
+        # ВАЖНО: Используем PostgreSQL совместимую нумерацию (0=Sunday, 1=Monday, ..., 6=Saturday)
+        python_dow = df['date'].dt.dayofweek  # 0=Monday, ..., 6=Sunday
+        df['day_of_week'] = (python_dow + 1) % 7  # Конвертируем: 0=Sunday, 1=Monday, ..., 6=Saturday
         df['month'] = df['date'].dt.month
         df['day_of_month'] = df['date'].dt.day
         df['year'] = df['date'].dt.year
         
-        # Weekend and workday features
-        df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
-        df['is_friday'] = (df['day_of_week'] == 4).astype(int)
-        df['is_monday'] = (df['day_of_week'] == 0).astype(int)
+        # Weekend and workday features (PostgreSQL логика)
+        df['is_weekend'] = ((df['day_of_week'] == 0) | (df['day_of_week'] == 6)).astype(int)  # Воскресенье=0, Суббота=6
+        df['is_friday'] = (df['day_of_week'] == 5).astype(int)  # Пятница=5
+        df['is_monday'] = (df['day_of_week'] == 1).astype(int)  # Понедельник=1
+        
+        # Дополнительные weekend features для усиления эффекта
+        df['is_saturday'] = (df['day_of_week'] == 6).astype(int)  # Суббота=6
+        df['is_sunday'] = (df['day_of_week'] == 0).astype(int)  # Воскресенье=0
+        df['weekend_multiplier'] = ((df['day_of_week'] == 0) | (df['day_of_week'] == 6)).astype(float) * 0.2 + 1.0  # 1.2 для выходных, 1.0 для будних
         
         # Quarter features
         df['quarter'] = df['date'].dt.quarter
@@ -366,6 +373,9 @@ class TrainingDataService:
             'is_weekend',
             'is_friday',
             'is_monday',
+            'is_saturday',
+            'is_sunday',
+            'weekend_multiplier',
             
             # Quarter features
             'quarter',
@@ -472,6 +482,9 @@ class TrainingDataService:
             'is_weekend',
             'is_friday',
             'is_monday',
+            'is_saturday',
+            'is_sunday',
+            'weekend_multiplier',
             'quarter',
             'is_quarter_start',
             'is_quarter_end',

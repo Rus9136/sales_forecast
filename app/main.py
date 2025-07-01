@@ -152,7 +152,8 @@ def run_daily_metrics_calculation():
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Admin interface with sidebar"""
-    return """
+    api_token = settings.API_TOKEN
+    html_content = """
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -2226,13 +2227,19 @@ async def root():
         </div>
         
         <script>
+            // API Authorization Token from server
+            const API_TOKEN = '{api_token}';
+            const AUTH_HEADERS = {
+                'Authorization': `Bearer ${API_TOKEN}`
+            };
+            
             let allBranches = [];
             let filteredBranches = [];
             
             async function loadBranches() {
                 document.getElementById('loading').style.display = 'inline';
                 try {
-                    const response = await fetch('/api/departments/');
+                    const response = await fetch('/api/departments/', { headers: AUTH_HEADERS });
                     allBranches = await response.json();
                     
                     // Populate company filter
@@ -2361,7 +2368,7 @@ async def root():
                 
                 document.getElementById('loading').style.display = 'inline';
                 try {
-                    const response = await fetch('/api/branches/sync', { method: 'POST' });
+                    const response = await fetch('/api/branches/sync', { method: 'POST', headers: AUTH_HEADERS });
                     const result = await response.json();
                     alert(result.message);
                     loadBranches();
@@ -2434,7 +2441,8 @@ async def root():
                 
                 try {
                     const response = await fetch(`/api/departments/${departmentId}`, {
-                        method: 'DELETE'
+                        method: 'DELETE',
+                        headers: AUTH_HEADERS
                     });
                     
                     if (response.ok) {
@@ -2474,6 +2482,7 @@ async def root():
                         response = await fetch(`/api/departments/${departmentId}`, {
                             method: 'PUT',
                             headers: {
+                                ...AUTH_HEADERS,
                                 'Content-Type': 'application/json'
                             },
                             body: JSON.stringify(departmentData)
@@ -2483,6 +2492,7 @@ async def root():
                         response = await fetch('/api/departments/', {
                             method: 'POST',
                             headers: {
+                                ...AUTH_HEADERS,
                                 'Content-Type': 'application/json'
                             },
                             body: JSON.stringify(departmentData)
@@ -2564,7 +2574,8 @@ async def root():
                     // Sync sales data
                     updateProgress(50, 'Синхронизация данных продаж...');
                     const response = await fetch(`/api/sales/sync?from_date=${startDate}&to_date=${endDate}`, {
-                        method: 'POST'
+                        method: 'POST',
+                        headers: AUTH_HEADERS
                     });
                     
                     const result = await response.json();
@@ -2801,7 +2812,7 @@ async def root():
                         url += `&department_id=${departmentId}`;
                     }
                     
-                    const response = await fetch(url);
+                    const response = await fetch(url, { headers: AUTH_HEADERS });
                     const salesData = await response.json();
                     
                     renderDailySalesTable(salesData);
@@ -2838,7 +2849,7 @@ async def root():
                         url += `&hour=${hour}`;
                     }
                     
-                    const response = await fetch(url);
+                    const response = await fetch(url, { headers: AUTH_HEADERS });
                     const salesData = await response.json();
                     
                     renderHourlySalesTable(salesData);
@@ -3327,7 +3338,7 @@ async def root():
                         url += `&department_id=${departmentId}`;
                     }
                     
-                    const response = await fetch(url);
+                    const response = await fetch(url, { headers: AUTH_HEADERS });
                     const forecastData = await response.json();
                     
                     renderForecastTable(forecastData);
@@ -3384,7 +3395,7 @@ async def root():
                         url += `&department_id=${departmentId}`;
                     }
                     
-                    const response = await fetch(url);
+                    const response = await fetch(url, { headers: AUTH_HEADERS });
                     comparisonData = await response.json();
                     
                     renderComparisonTable();
@@ -3856,7 +3867,7 @@ async def root():
             
             async function loadModelInfo() {
                 try {
-                    const response = await fetch('/api/forecast/model/info');
+                    const response = await fetch('/api/forecast/model/info', { headers: AUTH_HEADERS });
                     const modelInfo = await response.json();
                     
                     const infoDiv = document.getElementById('model-info');
@@ -3947,7 +3958,7 @@ async def root():
                 infoDiv.innerHTML = '<p>⏳ Идет обучение модели...</p>';
                 
                 try {
-                    const response = await fetch('/api/forecast/retrain', { method: 'POST' });
+                    const response = await fetch('/api/forecast/retrain', { method: 'POST', headers: AUTH_HEADERS });
                     const result = await response.json();
                     
                     if (result.status === 'success') {
@@ -3985,7 +3996,7 @@ async def root():
                 try {
                     healthDiv.innerHTML = '<div style="text-align: center; padding: 20px;"><div class="loading-spinner"></div><p>Проверка состояния модели...</p></div>';
                     
-                    const response = await fetch('/api/monitoring/health');
+                    const response = await fetch('/api/monitoring/health', { headers: AUTH_HEADERS });
                     const health = await response.json();
                     
                     const statusColor = health.overall_status === 'healthy' ? '#27ae60' : 
@@ -4013,7 +4024,7 @@ async def root():
             async function loadCurrentModelMetrics() {
                 const metricsDiv = document.getElementById('current-metrics');
                 try {
-                    const response = await fetch('/api/monitoring/performance/summary?days=7');
+                    const response = await fetch('/api/monitoring/performance/summary?days=7', { headers: AUTH_HEADERS });
                     const summary = await response.json();
                     
                     if (summary.status === 'no_data') {
@@ -4047,7 +4058,7 @@ async def root():
                 
                 try {
                     // Update summary cards
-                    const response = await fetch(`/api/monitoring/performance/summary?days=${period}`);
+                    const response = await fetch(`/api/monitoring/performance/summary?days=${period}`, { headers: AUTH_HEADERS });
                     const summary = await response.json();
                     
                     if (summary.status === 'no_data') {
@@ -4134,7 +4145,7 @@ async def root():
             async function loadRecentAlerts(days = 7) {
                 const alertsDiv = document.getElementById('recent-alerts');
                 try {
-                    const response = await fetch(`/api/monitoring/alerts/recent?days=${days}`);
+                    const response = await fetch(`/api/monitoring/alerts/recent?days=${days}`, { headers: AUTH_HEADERS });
                     const alertsData = await response.json();
                     
                     if (alertsData.total_alert_days === 0) {
@@ -4168,7 +4179,7 @@ async def root():
             async function loadRetrainingSchedule() {
                 const scheduleDiv = document.getElementById('retraining-schedule');
                 try {
-                    const response = await fetch('/api/monitoring/retrain/status');
+                    const response = await fetch('/api/monitoring/retrain/status', { headers: AUTH_HEADERS });
                     const status = await response.json();
                     
                     let html = '<div style="display: grid; gap: 15px;">';
@@ -4211,7 +4222,7 @@ async def root():
             async function loadCurrentModelStatusForRetraining() {
                 const statusDiv = document.getElementById('current-model-status');
                 try {
-                    const response = await fetch('/api/forecast/model/info');
+                    const response = await fetch('/api/forecast/model/info', { headers: AUTH_HEADERS });
                     const info = await response.json();
                     
                     if (info.status === 'loaded') {
@@ -4281,7 +4292,7 @@ async def root():
                     
                     const response = await fetch('/api/monitoring/retrain/manual', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { ...AUTH_HEADERS, 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             reason: reason,
                             force_deploy: forceDeploy,
@@ -4372,7 +4383,7 @@ async def root():
             
             async function checkRetrainingStatus() {
                 try {
-                    const response = await fetch('/api/monitoring/retrain/status');
+                    const response = await fetch('/api/monitoring/retrain/status', { headers: AUTH_HEADERS });
                     const status = await response.json();
                     
                     alert(`Статус системы переобучения:\\n\\nТекущее время: ${new Date(status.current_time).toLocaleString('ru-RU')}\\n\\nЗапланированные задачи: ${status.scheduled_jobs.length}\\n\\nПоследнее переобучение: ${status.last_retrain.status}`);
@@ -4854,7 +4865,7 @@ async def root():
             
             async function loadAutoSyncStatus() {
                 try {
-                    const response = await fetch('/api/sales/auto-sync/status');
+                    const response = await fetch('/api/sales/auto-sync/status', { headers: AUTH_HEADERS });
                     const data = await response.json();
                     
                     // Update statistics
@@ -4968,7 +4979,7 @@ async def root():
                     button.disabled = true;
                     button.textContent = '⏳ Выполняется...';
                     
-                    const response = await fetch('/api/sales/auto-sync/test', { method: 'POST' });
+                    const response = await fetch('/api/sales/auto-sync/test', { method: 'POST', headers: AUTH_HEADERS });
                     const result = await response.json();
                     
                     if (result.result && result.result.status === 'success') {
@@ -5002,7 +5013,7 @@ async def root():
                 try {
                     console.log('Загрузка подразделений для пост-обработки...');
                     // Fetch departments from API
-                    const response = await fetch('/api/departments/');
+                    const response = await fetch('/api/departments/', { headers: AUTH_HEADERS });
                     const departments = await response.json();
                     
                     console.log('Получено подразделений:', departments.length);
@@ -5043,7 +5054,7 @@ async def root():
             // Postprocessing Settings Functions
             async function loadPostprocessingSettings() {
                 try {
-                    const response = await fetch('/api/forecast/postprocessing/settings');
+                    const response = await fetch('/api/forecast/postprocessing/settings', { headers: AUTH_HEADERS });
                     
                     if (response.ok) {
                         const settings = await response.json();
@@ -5091,6 +5102,7 @@ async def root():
                     const response = await fetch('/api/forecast/postprocessing/settings', {
                         method: 'POST',
                         headers: {
+                            ...AUTH_HEADERS,
                             'Content-Type': 'application/json',
                         },
                         body: JSON.stringify(settings)
@@ -5397,6 +5409,8 @@ async def root():
     </body>
     </html>
     """
+    
+    return html_content.replace('{api_token}', api_token)
 
 
 @app.get("/health")

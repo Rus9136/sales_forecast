@@ -48,6 +48,12 @@ class PostprocessingSettingsRequest(BaseModel):
     confidence_level: float = 0.95
 
 
+class TemporalSmoothingRequest(BaseModel):
+    max_change_threshold: float = 0.5  # 50% максимальное изменение
+    lookback_weeks: int = 4  # количество недель для анализа
+    enable_smoothing: bool = True
+
+
 class PostprocessingSettingsResponse(BaseModel):
     id: int
     enable_smoothing: bool
@@ -65,7 +71,11 @@ class PostprocessingSettingsResponse(BaseModel):
 
 
 @router.post("/retrain")
-async def retrain_model(request: Optional[RetrainRequest] = None, db: Session = Depends(get_db)):
+async def retrain_model(
+    request: Optional[RetrainRequest] = None, 
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """
     Retrain the sales forecasting model with latest data
     
@@ -129,7 +139,9 @@ async def retrain_model(request: Optional[RetrainRequest] = None, db: Session = 
 
 
 @router.get("/model/info")
-async def get_model_info():
+async def get_model_info(
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """
     Get information about the current model
     
@@ -300,7 +312,8 @@ async def export_forecasts_csv(
     to_date: date,
     department_id: Optional[str] = None,
     include_actual: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Export forecasts to CSV format
@@ -369,7 +382,8 @@ async def export_forecasts_csv(
 @router.post("/optimize")
 async def optimize_hyperparameters(
     request: Optional[HyperparameterTuningRequest] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Optimize model hyperparameters using Optuna
@@ -456,7 +470,8 @@ async def optimize_hyperparameters(
 @router.post("/compare_models")
 async def compare_models(
     request: Optional[ModelComparisonRequest] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Compare LightGBM, XGBoost, and CatBoost models
@@ -554,7 +569,8 @@ async def analyze_errors_by_segment(
     from_date: date,
     to_date: date,
     segment_type: str = "department",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Analyze prediction errors by different segments
@@ -595,7 +611,8 @@ async def identify_problematic_branches(
     to_date: date,
     min_samples: int = 5,
     mape_threshold: float = 15.0,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Identify branches with consistently high prediction errors
@@ -641,7 +658,8 @@ async def identify_problematic_branches(
 async def analyze_temporal_errors(
     from_date: date,
     to_date: date,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Analyze how prediction errors vary over time
@@ -679,7 +697,8 @@ async def get_error_distribution(
     from_date: date,
     to_date: date,
     department_id: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Get distribution of prediction errors for statistical analysis
@@ -724,7 +743,8 @@ async def postprocess_forecast(
     apply_business_rules: bool = True,
     apply_anomaly_detection: bool = True,
     calculate_confidence: bool = True,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Apply post-processing to a raw forecast prediction
@@ -777,7 +797,8 @@ async def postprocess_batch_forecasts(
     apply_business_rules: bool = True,
     apply_anomaly_detection: bool = True,
     calculate_confidence: bool = True,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Apply post-processing to a batch of forecasts
@@ -906,7 +927,10 @@ async def get_batch_forecasts_with_postprocessing(
 
 # Postprocessing Settings endpoints
 @router.get("/postprocessing/settings", response_model=PostprocessingSettingsResponse)
-async def get_postprocessing_settings(db: Session = Depends(get_db)):
+async def get_postprocessing_settings(
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """
     Get current active postprocessing settings
     
@@ -937,7 +961,8 @@ async def get_postprocessing_settings(db: Session = Depends(get_db)):
 @router.post("/postprocessing/settings", response_model=PostprocessingSettingsResponse)
 async def save_postprocessing_settings(
     settings_request: PostprocessingSettingsRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Save new postprocessing settings
@@ -980,6 +1005,82 @@ async def save_postprocessing_settings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error saving postprocessing settings: {str(e)}"
+        )
+
+
+@router.post("/test_smoothing")
+async def test_temporal_smoothing(
+    branch_id: str,
+    forecast_date: date,
+    smoothing_params: Optional[TemporalSmoothingRequest] = None,
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
+    """
+    Тестирование временного сглаживания с различными параметрами
+    
+    Returns:
+        Сравнение raw vs smoothed прогнозов
+    """
+    try:
+        # Получаем базовый прогноз
+        forecaster = get_forecaster_agent()
+        
+        # Временно отключаем сглаживание для получения raw прогноза
+        raw_prediction = forecaster.forecast(branch_id, forecast_date, db)
+        
+        if raw_prediction is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not generate forecast"
+            )
+        
+        # Применяем сглаживание с параметрами
+        threshold = smoothing_params.max_change_threshold if smoothing_params else 0.5
+        
+        # Применяем сглаживание
+        smoothed_prediction = forecaster._apply_temporal_smoothing(
+            branch_id, forecast_date, raw_prediction, db, threshold
+        )
+        
+        # Получаем исторические данные для контекста
+        from datetime import timedelta
+        recent_sales = db.query(SalesSummary.total_sales, SalesSummary.date).filter(
+            and_(
+                SalesSummary.department_id == branch_id,
+                SalesSummary.date >= forecast_date - timedelta(days=28),
+                SalesSummary.date < forecast_date
+            )
+        ).order_by(SalesSummary.date.desc()).limit(10).all()
+        
+        historical_context = [
+            {
+                "date": row.date.isoformat(),
+                "sales": float(row.total_sales)
+            }
+            for row in recent_sales
+        ]
+        
+        return {
+            "status": "success",
+            "branch_id": branch_id,
+            "forecast_date": forecast_date.isoformat(),
+            "raw_prediction": round(raw_prediction, 2),
+            "smoothed_prediction": round(smoothed_prediction, 2),
+            "smoothing_applied": bool(raw_prediction != smoothed_prediction),
+            "change_percent": round(((smoothed_prediction - raw_prediction) / raw_prediction) * 100, 2) if raw_prediction != 0 else 0,
+            "parameters": {
+                "max_change_threshold": threshold,
+                "threshold_percent": f"{threshold * 100}%"
+            },
+            "historical_context": historical_context
+        }
+        
+    except Exception as e:
+        logger.error(f"Error testing temporal smoothing: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error testing temporal smoothing: {str(e)}"
         )
 
 

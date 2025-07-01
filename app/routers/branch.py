@@ -5,6 +5,7 @@ from ..db import get_db
 from ..models.branch import Branch as BranchModel
 from ..schemas.branch import Branch, BranchCreate, BranchUpdate
 from ..services.iiko_department_loader import IikoDepartmentLoaderService
+from ..auth import get_api_key_or_bypass, ApiKey
 
 router = APIRouter(prefix="/branches", tags=["branches"])
 
@@ -14,7 +15,8 @@ def get_branches(
     skip: int = Query(0, ge=0),
     limit: int = Query(10000, ge=1, le=10000),
     organization_bin: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get all branches with optional filtering"""
     query = db.query(BranchModel)
@@ -27,7 +29,11 @@ def get_branches(
 
 
 @router.get("/{branch_id}", response_model=Branch)
-def get_branch(branch_id: str, db: Session = Depends(get_db)):
+def get_branch(
+    branch_id: str, 
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """Get a specific branch by ID"""
     branch = db.query(BranchModel).filter(BranchModel.branch_id == branch_id).first()
     if not branch:
@@ -36,7 +42,10 @@ def get_branch(branch_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/sync")
-async def sync_branches(db: Session = Depends(get_db)):
+async def sync_branches(
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """Sync departments from iiko API"""
     try:
         service = IikoDepartmentLoaderService(db)
@@ -50,7 +59,8 @@ async def sync_branches(db: Session = Depends(get_db)):
 def update_branch(
     branch_id: str,
     branch_update: BranchUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Update a branch"""
     branch = db.query(BranchModel).filter(BranchModel.branch_id == branch_id).first()

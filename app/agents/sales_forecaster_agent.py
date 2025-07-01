@@ -203,9 +203,32 @@ class SalesForecasterAgent:
             db = next(get_db())
         
         try:
-            # Calculate date range for historical data (last 30 days minimum)
-            end_date = forecast_date - timedelta(days=1)
-            start_date = end_date - timedelta(days=30)
+            # Find the latest available sales data for this department
+            latest_sales_query = db.query(
+                SalesSummary.date
+            ).filter(
+                SalesSummary.department_id == branch_id
+            ).order_by(SalesSummary.date.desc()).limit(1)
+            
+            latest_sales_date = latest_sales_query.first()
+            
+            if latest_sales_date is None:
+                logger.warning(f"No sales data found for branch {branch_id}")
+                return None
+            
+            # Возврат к оригинальной логике: используем fresh data для коротких прогнозов
+            days_ahead = (forecast_date - latest_sales_date.date).days
+            
+            if days_ahead <= 7:
+                # Short-term: используем традиционный подход с fresh data
+                end_date = forecast_date - timedelta(days=1)
+                start_date = end_date - timedelta(days=30)
+                logger.info(f"Short-term forecast ({days_ahead} days ahead): using traditional approach")
+            else:
+                # Long-term: используем latest available data
+                end_date = latest_sales_date.date
+                start_date = end_date - timedelta(days=45)
+                logger.info(f"Long-term forecast ({days_ahead} days ahead): using extended approach")
             
             # Query historical sales with department info
             sales_query = db.query(
@@ -229,8 +252,9 @@ class SalesForecasterAgent:
             
             sales_data = sales_query.all()
             
-            if len(sales_data) < 14:  # Need more days for better features
-                logger.warning(f"Insufficient historical data for branch {branch_id}. Found {len(sales_data)} days, need at least 14.")
+            min_days_required = 14 if days_ahead <= 7 else 7
+            if len(sales_data) < min_days_required:
+                logger.warning(f"Insufficient historical data for branch {branch_id}. Found {len(sales_data)} days, need at least {min_days_required}.")
                 return None
             
             # Create DataFrame
@@ -248,13 +272,33 @@ class SalesForecasterAgent:
             df = df.sort_values('date')
             
             # Create feature vector using the same logic as TrainingDataService
+            logger.info(f"Creating features for {forecast_date} with {len(df)} historical days")
             features = self._create_prediction_features(forecast_date, df)
+            
+            if not features:
+                logger.error(f"Failed to create features for {forecast_date}")
+                return None
             
             # Create DataFrame with features in correct order
             X = pd.DataFrame([features])[self.feature_columns]
             
+            logger.info(f"Feature vector created with {len(features)} features")
+            
             # Make prediction
             prediction = self.model.predict(X)[0]
+            
+            # Weekend boost correction (временная мера)
+            forecast_datetime = pd.to_datetime(forecast_date)
+            python_dow = forecast_datetime.dayofweek
+            postgres_dow = (python_dow + 1) % 7
+            
+            if postgres_dow == 0 or postgres_dow == 6:  # Выходные
+                weekend_boost = 1.4  # Увеличиваем на 40%
+                prediction *= weekend_boost
+                logger.info(f"Applied weekend boost: {weekend_boost}x for {forecast_date}")
+            
+            # Применяем временное сглаживание
+            prediction = self._apply_temporal_smoothing(branch_id, forecast_date, prediction, db)
             
             # Ensure non-negative prediction
             prediction = max(0, prediction)
@@ -280,13 +324,23 @@ class SalesForecasterAgent:
         features = {}
         
         # 1. Time-based features (23 features)
-        features['day_of_week'] = forecast_datetime.dayofweek
+        # ВАЖНО: Используем PostgreSQL совместимую нумерацию (0=Sunday, 1=Monday, ..., 6=Saturday)
+        python_dow = forecast_datetime.dayofweek  # 0=Monday, ..., 6=Sunday
+        postgres_dow = (python_dow + 1) % 7  # Конвертируем: 0=Sunday, 1=Monday, ..., 6=Saturday
+        features['day_of_week'] = postgres_dow
         features['month'] = forecast_datetime.month
         features['day_of_month'] = forecast_datetime.day
         features['year'] = forecast_datetime.year
-        features['is_weekend'] = 1 if forecast_datetime.dayofweek >= 5 else 0
-        features['is_friday'] = 1 if forecast_datetime.dayofweek == 4 else 0
-        features['is_monday'] = 1 if forecast_datetime.dayofweek == 0 else 0
+        # PostgreSQL логика: выходные = суббота (6) и воскресенье (0)
+        features['is_weekend'] = 1 if postgres_dow == 0 or postgres_dow == 6 else 0
+        # PostgreSQL логика: пятница = 5, понедельник = 1
+        features['is_friday'] = 1 if postgres_dow == 5 else 0
+        features['is_monday'] = 1 if postgres_dow == 1 else 0
+        
+        # Дополнительные weekend features для усиления эффекта
+        features['is_saturday'] = 1 if postgres_dow == 6 else 0
+        features['is_sunday'] = 1 if postgres_dow == 0 else 0
+        features['weekend_multiplier'] = 1.2 if postgres_dow == 0 or postgres_dow == 6 else 1.0
         features['quarter'] = forecast_datetime.quarter
         features['is_quarter_start'] = 1 if forecast_datetime.is_quarter_start else 0
         features['is_quarter_end'] = 1 if forecast_datetime.is_quarter_end else 0
@@ -443,6 +497,75 @@ class SalesForecasterAgent:
         """Calculate Mean Absolute Percentage Error"""
         mask = y_true != 0
         return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    
+    def _apply_temporal_smoothing(self, branch_id: str, forecast_date: date, raw_prediction: float, db: Session, 
+                                  max_change_threshold: float = 0.5) -> float:
+        """
+        Применить временное сглаживание для предотвращения аномальных скачков
+        
+        Args:
+            branch_id: ID филиала
+            forecast_date: Дата прогноза
+            raw_prediction: Исходный прогноз модели
+            db: Сессия БД
+            
+        Returns:
+            Сглаженный прогноз
+        """
+        try:
+            # Определяем день недели для поиска исторических данных
+            forecast_datetime = pd.to_datetime(forecast_date)
+            python_dow = forecast_datetime.dayofweek
+            postgres_dow = (python_dow + 1) % 7
+            
+            # Ищем продажи за последние 4 недели для расчета базовой линии
+            recent_sales = db.query(SalesSummary.total_sales, SalesSummary.date).filter(
+                and_(
+                    SalesSummary.department_id == branch_id,
+                    SalesSummary.date >= forecast_date - timedelta(days=28),  # 4 недели назад
+                    SalesSummary.date < forecast_date
+                )
+            ).order_by(SalesSummary.date.desc()).all()
+            
+            # Фильтруем по тому же дню недели
+            same_weekday_sales = []
+            for row in recent_sales:
+                row_datetime = pd.to_datetime(row.date)
+                row_python_dow = row_datetime.dayofweek
+                row_postgres_dow = (row_python_dow + 1) % 7
+                if row_postgres_dow == postgres_dow:
+                    same_weekday_sales.append(float(row.total_sales))
+            
+            if not same_weekday_sales:
+                logger.info(f"No historical data for smoothing {forecast_date}, using raw prediction")
+                return raw_prediction
+            
+            # Вычисляем среднее и стандартное отклонение за последние недели
+            historical_values = same_weekday_sales
+            avg_historical = np.mean(historical_values)
+            std_historical = np.std(historical_values) if len(historical_values) > 1 else avg_historical * 0.2
+            
+            # Проверяем, является ли прогноз аномальным (больше чем ±threshold от среднего)
+            min_allowed = avg_historical * (1 - max_change_threshold)
+            max_allowed = avg_historical * (1 + max_change_threshold)
+            
+            if raw_prediction < min_allowed or raw_prediction > max_allowed:
+                # Применяем сглаживание
+                if raw_prediction > max_allowed:
+                    smoothed_prediction = max_allowed
+                    logger.info(f"Smoothing high anomaly: {raw_prediction:.0f} -> {smoothed_prediction:.0f} (max allowed: {max_allowed:.0f})")
+                else:
+                    smoothed_prediction = min_allowed
+                    logger.info(f"Smoothing low anomaly: {raw_prediction:.0f} -> {smoothed_prediction:.0f} (min allowed: {min_allowed:.0f})")
+                
+                return smoothed_prediction
+            else:
+                logger.info(f"Prediction within normal range: {raw_prediction:.0f} (range: {min_allowed:.0f} - {max_allowed:.0f})")
+                return raw_prediction
+                
+        except Exception as e:
+            logger.error(f"Error in temporal smoothing: {str(e)}")
+            return raw_prediction
     
     def _save_model(self, metrics=None):
         """Save trained model to disk"""

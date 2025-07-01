@@ -4,6 +4,7 @@ from typing import List, Optional
 from ..db import get_db
 from ..models.branch import Department as DepartmentModel
 from ..schemas.branch import Department, DepartmentCreate, DepartmentUpdate
+from ..auth import get_api_key_or_bypass, ApiKey
 
 router = APIRouter(prefix="/departments", tags=["departments"])
 
@@ -14,7 +15,8 @@ def get_departments(
     limit: int = Query(10000, ge=1, le=10000),
     type: Optional[str] = None,
     parent_id: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get all departments with optional filtering"""
     query = db.query(DepartmentModel)
@@ -51,7 +53,11 @@ def get_departments(
 
 
 @router.get("/{department_id}")
-def get_department(department_id: str, db: Session = Depends(get_db)):
+def get_department(
+    department_id: str, 
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """Get a specific department by ID"""
     department = db.query(DepartmentModel).filter(DepartmentModel.id == department_id).first()
     if not department:
@@ -78,7 +84,8 @@ def get_department(department_id: str, db: Session = Depends(get_db)):
 @router.post("/")
 def create_department(
     department: DepartmentCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Create a new department"""
     db_department = DepartmentModel(**department.dict())
@@ -108,7 +115,8 @@ def create_department(
 def update_department(
     department_id: str,
     department_update: DepartmentUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Update a department"""
     department = db.query(DepartmentModel).filter(DepartmentModel.id == department_id).first()
@@ -141,7 +149,11 @@ def update_department(
 
 
 @router.delete("/{department_id}")
-def delete_department(department_id: str, db: Session = Depends(get_db)):
+def delete_department(
+    department_id: str, 
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """Delete a department"""
     department = db.query(DepartmentModel).filter(DepartmentModel.id == department_id).first()
     if not department:
@@ -153,7 +165,11 @@ def delete_department(department_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{department_id}/children", response_model=List[Department])
-def get_department_children(department_id: str, db: Session = Depends(get_db)):
+def get_department_children(
+    department_id: str, 
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """Get all children of a specific department"""
     department = db.query(DepartmentModel).filter(DepartmentModel.id == department_id).first()
     if not department:

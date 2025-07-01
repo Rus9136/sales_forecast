@@ -9,7 +9,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from ..db import get_db
-from ..auth import ApiKey, ApiKeyUsage, generate_api_key, hash_api_key
+from ..auth import ApiKey, ApiKeyUsage, generate_api_key, hash_api_key, get_api_key_or_bypass
 
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -61,7 +61,8 @@ class ApiKeyUsageStats(BaseModel):
 @router.post("/keys", response_model=ApiKeyCreateResponse)
 async def create_api_key(
     key_data: ApiKeyCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Create a new API key
@@ -118,7 +119,8 @@ async def create_api_key(
 @router.get("/keys", response_model=List[ApiKeyResponse])
 async def list_api_keys(
     include_inactive: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     List all API keys (without the actual key values)
@@ -184,7 +186,8 @@ async def get_api_key(
 @router.delete("/keys/{key_id}")
 async def deactivate_api_key(
     key_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Deactivate an API key (soft delete)
@@ -206,7 +209,8 @@ async def deactivate_api_key(
 @router.post("/keys/{key_id}/activate")
 async def activate_api_key(
     key_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Reactivate a deactivated API key

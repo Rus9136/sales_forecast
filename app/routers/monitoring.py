@@ -12,6 +12,7 @@ import logging
 from ..db import get_db
 from ..services.model_monitoring_service import get_model_monitoring_service
 from ..services.model_retraining_service import model_retrainer
+from ..auth import get_api_key_or_bypass, ApiKey
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,10 @@ class ManualRetrainRequest(BaseModel):
 
 
 @router.get("/health")
-async def get_model_health(db: Session = Depends(get_db)):
+async def get_model_health(
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """
     Get comprehensive model health status
     
@@ -49,7 +53,8 @@ async def get_model_health(db: Session = Depends(get_db)):
 @router.get("/performance/summary")
 async def get_performance_summary(
     days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Get model performance summary for the specified period
@@ -77,7 +82,8 @@ async def get_performance_summary(
 @router.post("/performance/calculate-daily")
 async def calculate_daily_metrics(
     target_date: Optional[date] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Calculate and store daily performance metrics
@@ -104,7 +110,8 @@ async def calculate_daily_metrics(
 
 @router.post("/retrain/manual")
 async def trigger_manual_retrain(
-    request: ManualRetrainRequest = ManualRetrainRequest()
+    request: ManualRetrainRequest = ManualRetrainRequest(),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Manually trigger model retraining
@@ -139,7 +146,9 @@ async def trigger_manual_retrain(
 
 
 @router.get("/retrain/status")
-async def get_retrain_status():
+async def get_retrain_status(
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """
     Get the current retraining schedule and last execution status
     
@@ -183,7 +192,8 @@ async def get_retrain_status():
 @router.get("/alerts/recent")
 async def get_recent_alerts(
     days: int = Query(7, ge=1, le=30, description="Number of days to check"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
     Get recent model performance alerts
@@ -239,7 +249,9 @@ async def get_recent_alerts(
 
 
 @router.get("/comparison/models")
-async def get_model_comparison():
+async def get_model_comparison(
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
     """
     Get comparison between current and previous model versions
     
