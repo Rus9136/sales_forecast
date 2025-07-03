@@ -364,6 +364,17 @@ async def root():
                 color: #666;
             }
             
+            .filter-hint {
+                font-size: 12px;
+                color: #28a745;
+                font-style: italic;
+                margin-left: 10px;
+                padding: 2px 8px;
+                background-color: #d4edda;
+                border-radius: 3px;
+                border: 1px solid #c3e6cb;
+            }
+            
             .sync-btn {
                 background-color: #3498db;
                 color: white;
@@ -831,7 +842,7 @@ async def root():
             
             /* Action buttons in table */
             .edit-btn {
-                background-color: #d4a574;
+                background-color: #3498db;
                 color: white;
                 border: none;
                 padding: 6px 15px;
@@ -843,7 +854,7 @@ async def root():
             }
             
             .edit-btn:hover {
-                background-color: #c49660;
+                background-color: #2980b9;
             }
             
             .delete-btn {
@@ -1061,6 +1072,13 @@ async def root():
                         <h1 class="page-title">Подразделения</h1>
                         
                         <div class="filters-row">
+                            <select class="filter-select" id="type-filter" onchange="applyFilters()">
+                                <option value="DEPARTMENT">🏪 Только торговые точки (рекомендуется)</option>
+                                <option value="JURPERSON">🏛️ Только юридические лица</option>
+                                <option value="CORPORATION">🏢 Только корпорации</option>
+                                <option value="ALL">📋 Все типы подразделений</option>
+                            </select>
+                            
                             <select class="filter-select" id="company-filter">
                                 <option value="">Все компании</option>
                             </select>
@@ -1074,6 +1092,7 @@ async def root():
                             <span class="loading" id="loading">Загрузка...</span>
                             
                             <div class="total-count" id="total-count">Всего: 0</div>
+                            <div class="filter-hint" id="filter-hint">Показаны только торговые точки с данными о продажах</div>
                         </div>
                     </div>
                     
@@ -1109,6 +1128,14 @@ async def root():
                         
                         <form id="department-form" class="department-form">
                             <input type="hidden" id="department-id" name="id">
+                            
+                            <!-- Read-only ID field -->
+                            <div class="form-row" id="id-field-row" style="display: none;">
+                                <div class="form-group">
+                                    <label for="department-id-display">ID подразделения:</label>
+                                    <input type="text" id="department-id-display" readonly style="background-color: #f5f5f5; cursor: not-allowed;">
+                                </div>
+                            </div>
                             
                             <div class="form-row">
                                 <div class="form-group">
@@ -2239,8 +2266,22 @@ async def root():
             async function loadBranches() {
                 document.getElementById('loading').style.display = 'inline';
                 try {
-                    const response = await fetch('/api/departments/', { headers: AUTH_HEADERS });
-                    allBranches = await response.json();
+                    const selectedType = document.getElementById('type-filter').value;
+                    let apiUrl = '/api/departments/';
+                    
+                    // Always load all types to properly populate filters
+                    // We'll filter on the client side for better UX
+                    apiUrl = '/api/departments/?show_all_types=true';
+                    
+                    const response = await fetch(apiUrl, { headers: AUTH_HEADERS });
+                    const responseData = await response.json();
+                    
+                    // Handle different response formats
+                    if (responseData.departments) {
+                        allBranches = responseData.departments; // sales-points endpoint
+                    } else {
+                        allBranches = responseData; // regular departments endpoint
+                    }
                     
                     // Populate company filter
                     populateCompanyFilter();
@@ -2248,56 +2289,128 @@ async def root():
                     // Apply current filters
                     applyFilters();
                     
+                    // Update filter hint
+                    updateFilterHint();
+                    
                 } catch (error) {
                     console.error('Error loading branches:', error);
                     document.getElementById('branches-tbody').innerHTML = 
-                        '<tr><td colspan="4" class="no-data">Ошибка загрузки данных</td></tr>';
+                        '<tr><td colspan="8" class="no-data">Ошибка загрузки данных</td></tr>';
                 } finally {
                     document.getElementById('loading').style.display = 'none';
                 }
             }
             
+            function updateFilterHint() {
+                const selectedType = document.getElementById('type-filter').value;
+                const hintElement = document.getElementById('filter-hint');
+                
+                const hints = {
+                    'DEPARTMENT': 'Показаны только торговые точки с данными о продажах',
+                    'JURPERSON': 'Показаны юридические лица (организационные единицы)',
+                    'CORPORATION': 'Показаны корпорации (верхний уровень управления)',
+                    'ALL': 'Показаны все типы подразделений'
+                };
+                
+                hintElement.textContent = hints[selectedType] || '';
+            }
+            
             function populateCompanyFilter() {
-                const companies = [...new Set(allBranches.filter(b => b.type === 'JURPERSON').map(b => b.name))].sort();
+                const selectedType = document.getElementById('type-filter').value;
                 const filter = document.getElementById('company-filter');
                 
-                // Clear existing options except "Все компании"
+                // Clear existing options
                 filter.innerHTML = '<option value="">Все компании</option>';
                 
-                companies.forEach(company => {
-                    if (company) {
-                        const option = document.createElement('option');
-                        option.value = company;
-                        option.textContent = company;
-                        filter.appendChild(option);
-                    }
-                });
+                // Update label based on selected type
+                const labels = {
+                    'DEPARTMENT': 'Все торговые точки',
+                    'JURPERSON': 'Все юридические лица',
+                    'CORPORATION': 'Все корпорации',
+                    'ALL': 'Все организации'
+                };
+                filter.options[0].textContent = labels[selectedType] || 'Все компании';
+                
+                // Only populate dropdown for types that make sense
+                if (selectedType === 'DEPARTMENT' || selectedType === 'ALL') {
+                    // For departments, show parent companies (JURPERSON)
+                    const parentCompanies = [...new Set(allBranches
+                        .filter(b => b.type === 'JURPERSON')
+                        .map(b => b.name))].sort();
+                    
+                    parentCompanies.forEach(company => {
+                        if (company) {
+                            const option = document.createElement('option');
+                            option.value = company;
+                            option.textContent = company;
+                            filter.appendChild(option);
+                        }
+                    });
+                } else if (selectedType === 'JURPERSON') {
+                    // For JURPERSON, show parent corporations
+                    const parentCorporations = [...new Set(allBranches
+                        .filter(b => b.type === 'CORPORATION')
+                        .map(b => b.name))].sort();
+                    
+                    parentCorporations.forEach(corp => {
+                        if (corp) {
+                            const option = document.createElement('option');
+                            option.value = corp;
+                            option.textContent = corp;
+                            filter.appendChild(option);
+                        }
+                    });
+                } else if (selectedType === 'CORPORATION') {
+                    // For corporations, no parent filter needed - disable dropdown
+                    filter.disabled = true;
+                    filter.innerHTML = '<option value="">Нет родительских компаний</option>';
+                    return;
+                }
+                
+                // Re-enable dropdown if it was disabled
+                filter.disabled = false;
             }
             
             function applyFilters() {
                 const searchTerm = document.getElementById('search-input').value.toLowerCase();
                 const selectedCompany = document.getElementById('company-filter').value;
                 
+                const selectedType = document.getElementById('type-filter').value;
+                
                 filteredBranches = allBranches.filter(branch => {
+                    // First filter by type
+                    const matchesType = selectedType === 'ALL' || branch.type === selectedType;
+                    
                     const matchesSearch = !searchTerm || 
                         branch.name.toLowerCase().includes(searchTerm) ||
                         (branch.code && branch.code.toLowerCase().includes(searchTerm)) ||
                         branch.id.toLowerCase().includes(searchTerm);
                     
-                    // Find parent company for filtering
-                    let parentCompany = '';
-                    if (branch.type === 'JURPERSON') {
-                        parentCompany = branch.name;
-                    } else if (branch.parent_id) {
-                        const parent = allBranches.find(b => b.id === branch.parent_id);
-                        if (parent && parent.type === 'JURPERSON') {
-                            parentCompany = parent.name;
+                    // Find parent entity for filtering based on selected type
+                    let parentEntity = '';
+                    
+                    if (selectedType === 'DEPARTMENT' || selectedType === 'ALL') {
+                        // For departments, filter by parent JURPERSON
+                        if (branch.parent_id) {
+                            const parent = allBranches.find(b => b.id === branch.parent_id);
+                            if (parent && parent.type === 'JURPERSON') {
+                                parentEntity = parent.name;
+                            }
+                        }
+                    } else if (selectedType === 'JURPERSON') {
+                        // For JURPERSON, filter by parent CORPORATION
+                        if (branch.parent_id) {
+                            const parent = allBranches.find(b => b.id === branch.parent_id);
+                            if (parent && parent.type === 'CORPORATION') {
+                                parentEntity = parent.name;
+                            }
                         }
                     }
+                    // For CORPORATION type, no parent filtering is needed
                     
-                    const matchesCompany = !selectedCompany || parentCompany === selectedCompany;
+                    const matchesCompany = !selectedCompany || parentEntity === selectedCompany;
                     
-                    return matchesSearch && matchesCompany;
+                    return matchesType && matchesSearch && matchesCompany;
                 });
                 
                 renderTable();
@@ -2352,9 +2465,6 @@ async def root():
                         <button class="edit-btn" onclick="editDepartment('${branch.id}')">
                             Редактировать
                         </button>
-                        <button class="delete-btn" onclick="deleteDepartment('${branch.id}')">
-                            Удалить
-                        </button>
                     `;
                 });
             }
@@ -2395,6 +2505,8 @@ async def root():
                     title.textContent = 'Создание подразделения';
                     form.reset();
                     document.getElementById('department-id').value = '';
+                    // Hide ID field for new departments
+                    document.getElementById('id-field-row').style.display = 'none';
                 }
                 
                 // Show/hide season fields based on segment type
@@ -2412,6 +2524,14 @@ async def root():
                 document.getElementById('department-code-tco').value = department.code_tco || '';
                 document.getElementById('season-start').value = department.season_start_date || '';
                 document.getElementById('season-end').value = department.season_end_date || '';
+                
+                // Fill and show the ID display field for editing existing departments
+                if (department.id) {
+                    document.getElementById('department-id-display').value = department.id;
+                    document.getElementById('id-field-row').style.display = 'block';
+                } else {
+                    document.getElementById('id-field-row').style.display = 'none';
+                }
             }
             
             function closeDepartmentModal() {
