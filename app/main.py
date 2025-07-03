@@ -98,6 +98,20 @@ app.include_router(forecast.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 
+from fastapi.responses import FileResponse
+import os
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve favicon.ico file"""
+    favicon_path = os.path.join(os.path.dirname(__file__), "..", "favicon.ico")
+    if os.path.exists(favicon_path):
+        return FileResponse(favicon_path, media_type="image/x-icon")
+    else:
+        # Return 404 if favicon doesn't exist
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
 
 def run_daily_metrics_calculation():
     """
@@ -162,7 +176,9 @@ async def root():
         <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
         <meta http-equiv="Pragma" content="no-cache">
         <meta http-equiv="Expires" content="0">
-        <title>AI Модуль - v2.3 (Hourly Charts)</title>
+        <title>AI Прогноз Продаж</title>
+        <link rel="icon" type="image/x-icon" href="/favicon.ico?v=1.0">
+        <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico?v=1.0">
         <style>
             * {
                 margin: 0;
