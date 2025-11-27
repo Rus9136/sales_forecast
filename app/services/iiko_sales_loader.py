@@ -234,18 +234,24 @@ class IikoSalesLoaderService:
         logger.info(f"Synced {new_count} new and {updated_count} updated hourly sales records")
         return new_count + updated_count
     
-    async def sync_sales(self, from_date: date = None, to_date: date = None) -> dict:
-        """Main method to sync sales data from iiko"""
+    async def sync_sales(self, from_date: date = None, to_date: date = None, department_id: str = None) -> dict:
+        """Main method to sync sales data from iiko
+
+        Args:
+            from_date: Start date for sync (default: yesterday)
+            to_date: End date for sync (default: same as from_date)
+            department_id: Optional department ID to filter sync (default: all departments)
+        """
         error_details = []
-        
+
         try:
             # Default to current date if no dates provided
             if not from_date:
                 from_date = date.today() - timedelta(days=1)  # Yesterday
             if not to_date:
                 to_date = from_date
-            
-            logger.info(f"Starting sales sync from {from_date} to {to_date}")
+
+            logger.info(f"Starting sales sync from {from_date} to {to_date}, department_id={department_id}")
             
             # Fetch sales data from iiko API
             try:
@@ -269,11 +275,33 @@ class IikoSalesLoaderService:
                 logger.info(f"Returning result: {result}")
                 return result
             
+            # Filter by department_id if specified
+            if department_id:
+                original_count = len(sales_data)
+                # Log sample of Department.Id values for debugging
+                sample_dept_ids = set(record.get('Department.Id') for record in sales_data[:100])
+                logger.info(f"Sample Department.Id values from iiko: {list(sample_dept_ids)[:5]}")
+                logger.info(f"Looking for department_id: {department_id}")
+                sales_data = [record for record in sales_data if record.get('Department.Id') == department_id]
+                logger.info(f"Filtered sales data by department_id={department_id}: {original_count} -> {len(sales_data)} records")
+
+                if not sales_data:
+                    result = {
+                        "status": "success",
+                        "message": f"No sales data found for department {department_id} in the specified date range",
+                        "summary_records": 0,
+                        "hourly_records": 0,
+                        "total_raw_records": 0,
+                        "details": f"No sales transactions were found for department {department_id} in iiko API for the given period"
+                    }
+                    logger.info(f"Returning result: {result}")
+                    return result
+
             # Debug: log sample data before processing
             logger.info(f"About to process {len(sales_data)} sales records")
             if sales_data:
                 logger.info(f"First record: {sales_data[0]}")
-            
+
             # Process sales data
             try:
                 summary_records, hourly_records = self.process_sales_data(sales_data)

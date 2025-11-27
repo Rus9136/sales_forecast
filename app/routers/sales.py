@@ -106,6 +106,7 @@ def get_sales_by_hour(
 async def sync_sales(
     from_date: Optional[date] = Query(None, description="Start date for sync (default: yesterday)"),
     to_date: Optional[date] = Query(None, description="End date for sync (default: same as from_date)"),
+    department_id: Optional[str] = Query(None, description="Department ID to sync (default: all departments)"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db),
     api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
@@ -113,11 +114,11 @@ async def sync_sales(
     """Sync sales data from iiko API"""
     try:
         sales_loader = IikoSalesLoaderService(db)
-        
-        logger.info(f"API endpoint: Starting sales sync from {from_date} to {to_date}")
-        
+
+        logger.info(f"API endpoint: Starting sales sync from {from_date} to {to_date}, department_id={department_id}")
+
         # Perform sync
-        result = await sales_loader.sync_sales(from_date, to_date)
+        result = await sales_loader.sync_sales(from_date, to_date, department_id)
         
         logger.info(f"API endpoint: Sync completed with status: {result.get('status')}")
         

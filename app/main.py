@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from .config import settings
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth
-from .services.scheduled_sales_loader import run_auto_sync
+from .services.scheduled_sales_loader import run_auto_sync, run_gap_check
 from .services.model_retraining_service import run_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -63,9 +63,21 @@ async def startup_event():
             name='Daily Performance Metrics Calculation',
             replace_existing=True
         )
-        
+
+        # Schedule gap check at 10:00 AM to fill any missing data from earlier sync
+        # (restaurants may close their shift late in the morning)
+        scheduler.add_job(
+            func=run_gap_check,
+            trigger="cron",
+            hour=10,
+            minute=0,
+            id='daily_gap_check',
+            name='Daily Sales Gap Check',
+            replace_existing=True
+        )
+
         scheduler.start()
-        logger.info("✅ Background scheduler started - Daily sales sync at 2:00 AM, Weekly model retraining on Sundays at 3:00 AM, Daily metrics calculation at 4:00 AM")
+        logger.info("✅ Background scheduler started - Daily sales sync at 2:00 AM, Gap check at 10:00 AM, Weekly model retraining on Sundays at 3:00 AM, Daily metrics calculation at 4:00 AM")
         
         # Register shutdown handler
         atexit.register(lambda: scheduler.shutdown() if scheduler.running else None)
@@ -1062,18 +1074,6 @@ async def root():
                     <li><a href="#прогноз" class="section-header">ПРОГНОЗ ПРОДАЖ</a></li>
                     <li><a href="#прогноз-по-филиалам" onclick="showForecastByBranch()">📈 Прогноз по филиалам</a></li>
                     <li><a href="#сравнение-факт-прогноз" onclick="showForecastComparison()">📊 Сравнение факт / прогноз</a></li>
-                    <li><a href="#экспорт-прогноза" onclick="showForecastExport()">📤 Экспорт прогноза</a></li>
-                    <li><a href="#пост-обработка" onclick="showForecastPostprocessing()">🔧 Пост-обработка прогнозов</a></li>
-                    <li><a href="#анализ" class="section-header">АНАЛИЗ ОШИБОК</a></li>
-                    <li><a href="#ошибки-по-сегментам" onclick="showErrorAnalysisBySegment()">📊 Ошибки по сегментам</a></li>
-                    <li><a href="#проблемные-филиалы" onclick="showProblematicBranches()">⚠️ Проблемные филиалы</a></li>
-                    <li><a href="#временной-анализ" onclick="showTemporalAnalysis()">📈 Временной анализ</a></li>
-                    <li><a href="#распределение-ошибок" onclick="showErrorDistribution()">📋 Распределение ошибок</a></li>
-                    <li><a href="#мониторинг" class="section-header">МОНИТОРИНГ МОДЕЛЕЙ</a></li>
-                    <li><a href="#статус-модели" onclick="showModelStatus()">📊 Статус модели</a></li>
-                    <li><a href="#метрики-производительности" onclick="showPerformanceMetrics()">📈 Метрики производительности</a></li>
-                    <li><a href="#история-обучения" onclick="showTrainingHistory()">📋 История обучения</a></li>
-                    <li><a href="#ручное-переобучение" onclick="showManualRetraining()">🔄 Ручное переобучение</a></li>
                     <li><a href="#сервис" class="section-header">СЕРВИС</a></li>
                     <li><a href="#загрузка-данных" onclick="showDataLoading()">Загрузка данных</a></li>
                     <li><a href="#авто-загрузка" onclick="showAutoSyncStatus()">⏰ Автоматическая загрузка</a></li>
@@ -1231,244 +1231,6 @@ async def root():
                     </div>
                 </div>
 
-                <!-- Error Analysis by Segment Page -->
-                <div id="page-error-analysis-segment" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">📊 Анализ ошибок по сегментам</h1>
-                        <p class="page-description">Анализ точности прогнозов в разрезе различных сегментов: филиалы, дни недели, месяцы и локации</p>
-                    </div>
-                    
-                    <div class="form-container">
-                        <form id="error-segment-form">
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label for="error-from-date">Дата с:</label>
-                                    <input type="date" id="error-from-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="error-to-date">Дата по:</label>
-                                    <input type="date" id="error-to-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="segment-type">Тип сегментации:</label>
-                                    <select id="segment-type" class="form-input">
-                                        <option value="department">По филиалам</option>
-                                        <option value="day_of_week">По дням недели</option>
-                                        <option value="month">По месяцам</option>
-                                        <option value="location">По городам</option>
-                                    </select>
-                                </div>
-                                
-                                <button type="submit" class="action-btn">Анализировать</button>
-                            </div>
-                        </form>
-                        
-                        <div id="error-segment-loading" class="loading-indicator" style="display: none;">
-                            <div class="spinner"></div>
-                            <span>Анализ ошибок...</span>
-                        </div>
-                        
-                        <div id="error-segment-results" style="display: none;">
-                            <h3>Результаты анализа</h3>
-                            <div id="error-segment-summary" class="stats-grid"></div>
-                            <div class="table-container">
-                                <table id="error-segment-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Сегмент</th>
-                                            <th>Количество прогнозов</th>
-                                            <th>Средний MAPE (%)</th>
-                                            <th>Стандартное отклонение</th>
-                                            <th>Средние продажи</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Problematic Branches Page -->
-                <div id="page-problematic-branches" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">⚠️ Проблемные филиалы</h1>
-                        <p class="page-description">Выявление филиалов с постоянно высокими ошибками прогнозирования для целенаправленного улучшения</p>
-                    </div>
-                    
-                    <div class="form-container">
-                        <form id="problematic-branches-form">
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label for="prob-from-date">Дата с:</label>
-                                    <input type="date" id="prob-from-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="prob-to-date">Дата по:</label>
-                                    <input type="date" id="prob-to-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="min-samples">Мин. прогнозов:</label>
-                                    <input type="number" id="min-samples" class="form-input" value="5" min="1">
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="mape-threshold">MAPE порог (%):</label>
-                                    <input type="number" id="mape-threshold" class="form-input" value="15" min="1" max="100" step="0.1">
-                                </div>
-                                
-                                <button type="submit" class="action-btn">Найти проблемные</button>
-                            </div>
-                        </form>
-                        
-                        <div id="problematic-loading" class="loading-indicator" style="display: none;">
-                            <div class="spinner"></div>
-                            <span>Поиск проблемных филиалов...</span>
-                        </div>
-                        
-                        <div id="problematic-results" style="display: none;">
-                            <h3>Проблемные филиалы</h3>
-                            <div id="problematic-summary" class="stats-grid"></div>
-                            <div class="table-container">
-                                <table id="problematic-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Филиал</th>
-                                            <th>Прогнозов</th>
-                                            <th>Средний MAPE (%)</th>
-                                            <th>Мин/Макс MAPE (%)</th>
-                                            <th>Средние продажи</th>
-                                            <th>Средняя ошибка</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Temporal Analysis Page -->
-                <div id="page-temporal-analysis" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">📈 Временной анализ ошибок</h1>
-                        <p class="page-description">Исследование паттернов ошибок прогнозирования во временных рядах: тренды по дням, неделям и месяцам</p>
-                    </div>
-                    
-                    <div class="form-container">
-                        <form id="temporal-analysis-form">
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label for="temp-from-date">Дата с:</label>
-                                    <input type="date" id="temp-from-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="temp-to-date">Дата по:</label>
-                                    <input type="date" id="temp-to-date" class="form-input" required>
-                                </div>
-                                
-                                <button type="submit" class="action-btn">Анализировать</button>
-                            </div>
-                        </form>
-                        
-                        <div id="temporal-loading" class="loading-indicator" style="display: none;">
-                            <div class="spinner"></div>
-                            <span>Временной анализ...</span>
-                        </div>
-                        
-                        <div id="temporal-results" style="display: none;">
-                            <h3>Анализ ошибок по времени</h3>
-                            <div id="temporal-summary" class="stats-grid"></div>
-                            
-                            <!-- Chart for temporal trends -->
-                            <div class="chart-container">
-                                <canvas id="temporal-chart" width="800" height="400"></canvas>
-                            </div>
-                            
-                            <div class="analysis-tabs">
-                                <button class="tab-btn active" onclick="showTemporalTab('daily')">По дням</button>
-                                <button class="tab-btn" onclick="showTemporalTab('weekday')">По дням недели</button>
-                                <button class="tab-btn" onclick="showTemporalTab('monthly')">По месяцам</button>
-                            </div>
-                            
-                            <div class="table-container">
-                                <table id="temporal-table">
-                                    <thead id="temporal-table-head"></thead>
-                                    <tbody id="temporal-table-body"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Error Distribution Page -->
-                <div id="page-error-distribution" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">📋 Распределение ошибок</h1>
-                        <p class="page-description">Статистический анализ распределения ошибок прогнозирования с выявлением выбросов и аномалий</p>
-                    </div>
-                    
-                    <div class="form-container">
-                        <form id="error-distribution-form">
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label for="dist-from-date">Дата с:</label>
-                                    <input type="date" id="dist-from-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="dist-to-date">Дата по:</label>
-                                    <input type="date" id="dist-to-date" class="form-input" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="dist-department">Филиал (опционально):</label>
-                                    <select id="dist-department" class="form-input">
-                                        <option value="">Все филиалы</option>
-                                    </select>
-                                </div>
-                                
-                                <button type="submit" class="action-btn">Анализировать</button>
-                            </div>
-                        </form>
-                        
-                        <div id="distribution-loading" class="loading-indicator" style="display: none;">
-                            <div class="spinner"></div>
-                            <span>Анализ распределения...</span>
-                        </div>
-                        
-                        <div id="distribution-results" style="display: none;">
-                            <h3>Статистика распределения ошибок</h3>
-                            <div id="distribution-stats" class="stats-grid"></div>
-                            
-                            <!-- Distribution chart -->
-                            <div class="chart-container">
-                                <canvas id="distribution-chart" width="800" height="400"></canvas>
-                            </div>
-                            
-                            <div class="table-container">
-                                <h4>Распределение по диапазонам точности</h4>
-                                <table id="distribution-ranges-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Диапазон MAPE</th>
-                                            <th>Уровень точности</th>
-                                            <th>Количество</th>
-                                            <th>Процент</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Data Loading Page -->
                 <div id="page-data-loading" class="page-content" style="display: none;">
                     <div class="page-header">
@@ -1485,23 +1247,22 @@ async def root():
                                         <label for="start-date">Дата начала:</label>
                                         <input type="date" id="start-date" name="start-date" required>
                                     </div>
-                                    
+
                                     <div class="form-group">
                                         <label for="end-date">Дата окончания:</label>
                                         <input type="date" id="end-date" name="end-date" required>
                                     </div>
                                 </div>
-                                
+
                                 <div class="form-row">
-                                    <div class="form-group checkbox-group">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" id="clear-existing" name="clear-existing">
-                                            <span class="checkmark"></span>
-                                            Очистить существующие данные за период
-                                        </label>
+                                    <div class="form-group" style="flex: 1;">
+                                        <label for="sync-department-filter">Подразделение:</label>
+                                        <select class="filter-select" id="sync-department-filter" name="department" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                                            <option value="">Все подразделения</option>
+                                        </select>
                                     </div>
                                 </div>
-                                
+
                                 <div class="form-actions">
                                     <button type="submit" class="load-btn" id="load-btn">
                                         Загрузить
@@ -1731,476 +1492,6 @@ async def root():
                                 </tr>
                             </tbody>
                         </table>
-                    </div>
-                </div>
-
-                <!-- Forecast Export Page -->
-                <div id="page-forecast-export" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">Экспорт прогноза</h1>
-                    </div>
-                    
-                    <div class="form-container">
-                        <div class="form-section">
-                            <h2 class="form-section-title">Параметры экспорта</h2>
-                            
-                            <form id="export-form" class="export-form">
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label for="export-start-date">Дата начала:</label>
-                                        <input type="date" id="export-start-date" name="start-date" required>
-                                    </div>
-                                    
-                                    <div class="form-group">
-                                        <label for="export-end-date">Дата окончания:</label>
-                                        <input type="date" id="export-end-date" name="end-date" required>
-                                    </div>
-                                </div>
-                                
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label for="export-department">Подразделение:</label>
-                                        <select class="filter-select" id="export-department" style="width: 100%;">
-                                            <option value="">Все подразделения</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                
-                                <div class="form-row">
-                                    <div class="form-group checkbox-group">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" id="include-actual" name="include-actual">
-                                            <span class="checkmark"></span>
-                                            Включить фактические данные для сравнения
-                                        </label>
-                                    </div>
-                                </div>
-                                
-                                <div class="form-actions">
-                                    <button type="button" class="load-btn" onclick="exportForecast()">
-                                        📥 Экспорт в CSV
-                                    </button>
-                                    <button type="button" class="cancel-btn" onclick="showDepartments()">
-                                        Отмена
-                                    </button>
-                                </div>
-                                
-                                <div class="result-section result-success" id="export-result" style="display: none;">
-                                    <div class="result-content">
-                                        <h3>✅ Экспорт начат</h3>
-                                        <p>Файл будет загружен автоматически.</p>
-                                    </div>
-                                </div>
-                            </form>
-                        </div>
-                        
-                        <div class="form-section" style="margin-top: 30px;">
-                            <h2 class="form-section-title">Информация о модели</h2>
-                            <div id="model-info" style="padding: 20px; background-color: #f8f9fa; border-radius: 8px;">
-                                <p>Загрузка информации о модели...</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Forecast Post-processing Page -->
-                <div id="page-forecast-postprocessing" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">Пост-обработка прогнозов</h1>
-                        <p class="page-description">Настройка и применение правил обработки прогнозов для повышения их надёжности</p>
-                    </div>
-
-                    <!-- Configuration Panel -->
-                    <div class="form-container" style="margin-bottom: 30px;">
-                        <h3 style="margin-bottom: 20px;">⚙️ Настройки пост-обработки</h3>
-                        
-                        <div class="cards-grid">
-                            <!-- Smoothing Options -->
-                            <div class="config-section">
-                                <h4 style="color: #2c3e50; margin-bottom: 15px;">🔄 Сглаживание</h4>
-                                <label style="display: block; margin-bottom: 10px;">
-                                    <input type="checkbox" id="enable-smoothing" checked> 
-                                    Включить сглаживание прогнозов
-                                </label>
-                                <div style="margin-left: 20px;">
-                                    <label style="display: block; margin-bottom: 5px;">Максимальное изменение (%):</label>
-                                    <input type="number" id="max-change-percent" value="50" min="10" max="200" style="width: 100px;">
-                                </div>
-                            </div>
-
-                            <!-- Business Rules -->
-                            <div class="config-section">
-                                <h4 style="color: #2c3e50; margin-bottom: 15px;">🏢 Бизнес-правила</h4>
-                                <label style="display: block; margin-bottom: 10px;">
-                                    <input type="checkbox" id="enable-business-rules" checked> 
-                                    Применять бизнес-ограничения
-                                </label>
-                                <label style="display: block; margin-bottom: 10px;">
-                                    <input type="checkbox" id="enable-weekend-adjustment" checked> 
-                                    Корректировка выходных дней
-                                </label>
-                                <label style="display: block; margin-bottom: 10px;">
-                                    <input type="checkbox" id="enable-holiday-adjustment" checked> 
-                                    Корректировка праздников
-                                </label>
-                            </div>
-
-                            <!-- Anomaly Detection -->
-                            <div class="config-section">
-                                <h4 style="color: #2c3e50; margin-bottom: 15px;">🔍 Обнаружение аномалий</h4>
-                                <label style="display: block; margin-bottom: 10px;">
-                                    <input type="checkbox" id="enable-anomaly-detection" checked> 
-                                    Включить обнаружение аномалий
-                                </label>
-                                <div style="margin-left: 20px;">
-                                    <label style="display: block; margin-bottom: 5px;">Z-score порог:</label>
-                                    <input type="number" id="anomaly-threshold" value="3.0" min="1.0" max="5.0" step="0.1" style="width: 100px;">
-                                </div>
-                            </div>
-
-                            <!-- Confidence Intervals -->
-                            <div class="config-section">
-                                <h4 style="color: #2c3e50; margin-bottom: 15px;">📊 Доверительные интервалы</h4>
-                                <label style="display: block; margin-bottom: 10px;">
-                                    <input type="checkbox" id="enable-confidence" checked> 
-                                    Рассчитывать интервалы
-                                </label>
-                                <div style="margin-left: 20px;">
-                                    <label style="display: block; margin-bottom: 5px;">Уровень доверия (%):</label>
-                                    <select id="confidence-level" style="width: 100px;">
-                                        <option value="0.90">90%</option>
-                                        <option value="0.95" selected>95%</option>
-                                        <option value="0.99">99%</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Save Settings Button -->
-                        <div style="text-align: center; margin-top: 20px;">
-                            <button onclick="savePostprocessingSettings()" class="btn btn-success" style="padding: 10px 30px; font-size: 16px;">
-                                💾 Сохранить настройки
-                            </button>
-                            <div id="save-settings-status" style="margin-top: 10px; font-weight: bold;"></div>
-                        </div>
-                    </div>
-
-                    <!-- Testing Section -->
-                    <div class="form-container" style="margin-bottom: 30px;">
-                        <h3 style="margin-bottom: 20px;">🧪 Тестирование пост-обработки</h3>
-                        
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
-                            <!-- Input Panel -->
-                            <div>
-                                <h4 style="color: #2c3e50; margin-bottom: 15px;">Параметры тестирования</h4>
-                                <div style="margin-bottom: 15px;">
-                                    <label for="test-department">Филиал:</label>
-                                    <select id="test-department" style="width: 100%; margin-top: 5px;"></select>
-                                </div>
-                                <div style="margin-bottom: 15px;">
-                                    <label for="test-date">Дата прогноза:</label>
-                                    <input type="date" id="test-date" style="width: 100%; margin-top: 5px;">
-                                </div>
-                                <div style="margin-bottom: 15px;">
-                                    <label for="test-prediction">Сырой прогноз:</label>
-                                    <input type="number" id="test-prediction" placeholder="Введите значение прогноза" style="width: 100%; margin-top: 5px;">
-                                </div>
-                                <button onclick="testPostprocessing()" class="btn btn-primary" style="width: 100%;">
-                                    Протестировать
-                                </button>
-                            </div>
-
-                            <!-- Results Panel -->
-                            <div>
-                                <h4 style="color: #2c3e50; margin-bottom: 15px;">Результаты обработки</h4>
-                                <div id="test-results" style="background: #f8f9fa; padding: 15px; border-radius: 5px; min-height: 200px;">
-                                    <p style="color: #6c757d; text-align: center;">Результаты появятся после тестирования</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Batch Processing Section -->
-                    <div class="form-container" style="margin-bottom: 30px;">
-                        <h3 style="margin-bottom: 20px;">📦 Массовая обработка</h3>
-                        
-                        <div class="cards-grid-2">
-                            <div>
-                                <label for="batch-from-date">Дата начала:</label>
-                                <input type="date" id="batch-from-date" style="width: 100%; margin-top: 5px;">
-                            </div>
-                            <div>
-                                <label for="batch-to-date">Дата окончания:</label>
-                                <input type="date" id="batch-to-date" style="width: 100%; margin-top: 5px;">
-                            </div>
-                            <div>
-                                <label for="batch-department">Филиал (опционально):</label>
-                                <select id="batch-department" style="width: 100%; margin-top: 5px;">
-                                    <option value="">Все подразделения</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div style="text-align: center;">
-                            <button onclick="runBatchPostprocessing()" class="btn btn-primary" style="margin-right: 10px;">
-                                🚀 Запустить обработку
-                            </button>
-                            <button onclick="downloadBatchResults()" class="btn btn-secondary" id="download-batch-btn" style="display: none;">
-                                📥 Скачать результаты
-                            </button>
-                        </div>
-
-                        <div id="batch-progress" style="margin-top: 20px; display: none;">
-                            <div class="progress-bar" style="background: #e9ecef; border-radius: 10px; overflow: hidden;">
-                                <div id="batch-progress-bar" style="background: #007bff; height: 20px; width: 0%; transition: width 0.3s;"></div>
-                            </div>
-                            <p id="batch-status" style="text-align: center; margin-top: 10px;"></p>
-                        </div>
-
-                        <div id="batch-results" style="margin-top: 20px; display: none;">
-                            <h4 style="color: #2c3e50; margin-bottom: 15px;">Результаты массовой обработки</h4>
-                            <div id="batch-results-content"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Model Status Page -->
-                <div id="page-model-status" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">📊 Статус модели</h1>
-                        <p class="page-description">Текущее состояние и здоровье ML модели прогнозирования</p>
-                    </div>
-                    
-                    <!-- Model Health Cards -->
-                    <div class="cards-grid">
-                        <div class="card">
-                            <h3 style="color: #2c3e50; margin-bottom: 15px;">🏥 Общее состояние</h3>
-                            <div id="model-health-status">
-                                <div style="text-align: center; padding: 20px;">
-                                    <div class="loading-spinner"></div>
-                                    <p>Проверка состояния модели...</p>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="card">
-                            <h3 style="color: #2c3e50; margin-bottom: 15px;">📈 Текущие метрики</h3>
-                            <div id="current-metrics">
-                                <div style="text-align: center; padding: 20px;">
-                                    <div class="loading-spinner"></div>
-                                    <p>Загрузка метрик...</p>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="card">
-                            <h3 style="color: #2c3e50; margin-bottom: 15px;">ℹ️ Информация о модели</h3>
-                            <div id="model-info">
-                                <div style="text-align: center; padding: 20px;">
-                                    <div class="loading-spinner"></div>
-                                    <p>Загрузка информации...</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Detailed Health Checks -->
-                    <div class="card">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">🔍 Детальные проверки</h3>
-                        <div id="detailed-health-checks"></div>
-                    </div>
-                </div>
-
-                <!-- Performance Metrics Page -->
-                <div id="page-performance-metrics" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">📈 Метрики производительности</h1>
-                        <p class="page-description">Анализ производительности модели за различные периоды</p>
-                    </div>
-                    
-                    <!-- Time Period Selector -->
-                    <div class="card" style="margin-bottom: 20px;">
-                        <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap;">
-                            <label><strong>Период анализа:</strong></label>
-                            <select id="metrics-period" style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px;">
-                                <option value="7">Последние 7 дней</option>
-                                <option value="30" selected>Последние 30 дней</option>
-                                <option value="90">Последние 90 дней</option>
-                                <option value="365">Последний год</option>
-                            </select>
-                            <button onclick="loadPerformanceMetrics()" class="load-btn">Обновить</button>
-                        </div>
-                    </div>
-                    
-                    <!-- Performance Summary -->
-                    <div class="cards-grid-2">
-                        <div class="card">
-                            <h4 style="color: #2c3e50; margin-bottom: 10px;">Средний MAPE</h4>
-                            <div id="avg-mape" style="font-size: 2em; font-weight: bold; color: #3498db;">--%</div>
-                        </div>
-                        <div class="card">
-                            <h4 style="color: #2c3e50; margin-bottom: 10px;">Лучший день</h4>
-                            <div id="best-mape" style="font-size: 2em; font-weight: bold; color: #27ae60;">--%</div>
-                        </div>
-                        <div class="card">
-                            <h4 style="color: #2c3e50; margin-bottom: 10px;">Худший день</h4>
-                            <div id="worst-mape" style="font-size: 2em; font-weight: bold; color: #e74c3c;">--%</div>
-                        </div>
-                        <div class="card">
-                            <h4 style="color: #2c3e50; margin-bottom: 10px;">Тренд</h4>
-                            <div id="mape-trend" style="font-size: 2em; font-weight: bold;">--</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Performance Chart -->
-                    <div class="card">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">📊 График производительности</h3>
-                        <div id="performance-chart-container" style="height: 400px;">
-                            <canvas id="performance-chart"></canvas>
-                        </div>
-                    </div>
-                    
-                    <!-- Recent Alerts -->
-                    <div class="card">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">⚠️ Недавние уведомления</h3>
-                        <div id="recent-alerts"></div>
-                    </div>
-                </div>
-
-                <!-- Training History Page -->
-                <div id="page-training-history" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">📋 История обучения</h1>
-                        <p class="page-description">Журнал переобучений модели и расписание</p>
-                    </div>
-                    
-                    <!-- Current Schedule -->
-                    <div class="card" style="margin-bottom: 20px;">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">⏰ Текущее расписание</h3>
-                        <div id="retraining-schedule"></div>
-                    </div>
-                    
-                    <!-- Last Retraining Info -->
-                    <div class="cards-grid">
-                        <div class="card">
-                            <h4 style="color: #2c3e50; margin-bottom: 10px;">Последнее переобучение</h4>
-                            <div id="last-retrain-info">
-                                <div style="text-align: center; padding: 20px;">
-                                    <div class="loading-spinner"></div>
-                                    <p>Загрузка информации...</p>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="card">
-                            <h4 style="color: #2c3e50; margin-bottom: 10px;">Статистика версий</h4>
-                            <div id="version-stats">
-                                <div style="text-align: center; padding: 20px;">
-                                    <div class="loading-spinner"></div>
-                                    <p>Загрузка статистики...</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Training History Table -->
-                    <div class="card">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">📝 История переобучений</h3>
-                        <div style="overflow-x: auto;">
-                            <table id="training-history-table" class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Дата</th>
-                                        <th>Тип</th>
-                                        <th>Предыдущий MAPE</th>
-                                        <th>Новый MAPE</th>
-                                        <th>Улучшение</th>
-                                        <th>Решение</th>
-                                        <th>Статус</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td colspan="7" style="text-align: center; padding: 20px;">
-                                            <div class="loading-spinner"></div>
-                                            <p>Загрузка истории...</p>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Manual Retraining Page -->
-                <div id="page-manual-retraining" class="page-content" style="display: none;">
-                    <div class="page-header">
-                        <h1 class="page-title">🔄 Ручное переобучение</h1>
-                        <p class="page-description">Запуск переобучения модели вне графика</p>
-                    </div>
-                    
-                    <!-- Retraining Form -->
-                    <div class="card" style="margin-bottom: 20px;">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">⚙️ Параметры переобучения</h3>
-                        <div style="display: grid; gap: 20px;">
-                            <div class="form-group">
-                                <label for="retrain-reason"><strong>Причина переобучения:</strong></label>
-                                <textarea id="retrain-reason" placeholder="Опишите причину ручного переобучения..." 
-                                         style="padding: 10px; border: 1px solid #ddd; border-radius: 4px; height: 80px; resize: vertical;"></textarea>
-                            </div>
-                            
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                                <div class="form-group">
-                                    <label for="performance-threshold"><strong>Порог производительности (MAPE %):</strong></label>
-                                    <input type="number" id="performance-threshold" value="10.0" step="0.1" min="0" max="50"
-                                           style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label><strong>Принудительное развертывание:</strong></label>
-                                    <label style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
-                                        <input type="checkbox" id="force-deploy">
-                                        <span>Развернуть даже при ухудшении</span>
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                                <button onclick="startManualRetraining()" class="load-btn" id="retrain-btn">🔄 Начать переобучение</button>
-                                <button onclick="checkRetrainingStatus()" class="cancel-btn">📊 Проверить статус</button>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Current Model Status -->
-                    <div class="card" style="margin-bottom: 20px;">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">📊 Текущая модель</h3>
-                        <div id="current-model-status">
-                            <div style="text-align: center; padding: 20px;">
-                                <div class="loading-spinner"></div>
-                                <p>Загрузка информации о текущей модели...</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Retraining Progress -->
-                    <div id="retraining-progress" class="card" style="display: none;">
-                        <h3 style="color: #2c3e50; margin-bottom: 15px;">🔄 Ход переобучения</h3>
-                        <div class="progress-section">
-                            <div class="progress-bar">
-                                <div id="retrain-progress-fill" class="progress-fill"></div>
-                            </div>
-                            <div id="retrain-progress-text" class="progress-text">Инициализация...</div>
-                        </div>
-                        <div id="retrain-logs" style="margin-top: 15px; padding: 15px; background-color: #f8f9fa; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto;"></div>
-                    </div>
-                    
-                    <!-- Retraining Results -->
-                    <div id="retraining-results" style="display: none; margin-top: 20px;">
-                        <div class="result-section">
-                            <h3 style="color: #2c3e50; margin-bottom: 15px;">📋 Результаты переобучения</h3>
-                            <div id="retrain-results-content" class="result-content"></div>
-                        </div>
                     </div>
                 </div>
 
@@ -2669,47 +1960,77 @@ async def root():
                 document.getElementById('page-data-loading').style.display = 'block';
                 updateSidebarActive('#загрузка-данных');
                 window.scrollTo(0, 0);
-                
+
                 // Set default dates (last 7 days)
                 const today = new Date();
                 const weekAgo = new Date(today);
                 weekAgo.setDate(today.getDate() - 7);
-                
+
                 document.getElementById('end-date').value = today.toISOString().split('T')[0];
                 document.getElementById('start-date').value = weekAgo.toISOString().split('T')[0];
+
+                // Load departments for sync filter
+                loadSyncDepartments();
+            }
+
+            async function loadSyncDepartments() {
+                try {
+                    const response = await fetch('/api/departments/', {
+                        headers: AUTH_HEADERS
+                    });
+                    const departments = await response.json();
+
+                    const select = document.getElementById('sync-department-filter');
+                    // Keep first option (Все подразделения)
+                    select.innerHTML = '<option value="">Все подразделения</option>';
+
+                    // Filter only DEPARTMENT type and sort by name
+                    const filteredDepartments = departments.filter(dept => dept.type === 'DEPARTMENT');
+                    filteredDepartments.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+                    filteredDepartments.forEach(dept => {
+                        const option = document.createElement('option');
+                        option.value = dept.id;
+                        option.textContent = dept.name || dept.id;
+                        select.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Error loading departments for sync:', error);
+                }
             }
             
             // Sales Sync Functions
             async function handleSalesSync(event) {
                 event.preventDefault();
-                
+
                 const startDate = document.getElementById('start-date').value;
                 const endDate = document.getElementById('end-date').value;
-                const clearExisting = document.getElementById('clear-existing').checked;
-                
+                const departmentId = document.getElementById('sync-department-filter').value;
+
                 if (!startDate || !endDate) {
                     alert('Пожалуйста, укажите даты начала и окончания');
                     return;
                 }
-                
+
                 if (new Date(startDate) > new Date(endDate)) {
                     alert('Дата начала не может быть больше даты окончания');
                     return;
                 }
-                
+
                 // Show progress
                 showProgress();
-                
+
                 try {
-                    // If clear existing is checked, first delete existing data
-                    if (clearExisting) {
-                        updateProgress(20, 'Очистка существующих данных...');
-                        await clearExistingData(startDate, endDate);
-                    }
-                    
                     // Sync sales data
                     updateProgress(50, 'Синхронизация данных продаж...');
-                    const response = await fetch(`/api/sales/sync?from_date=${startDate}&to_date=${endDate}`, {
+
+                    // Build URL with optional department_id parameter
+                    let syncUrl = `/api/sales/sync?from_date=${startDate}&to_date=${endDate}`;
+                    if (departmentId) {
+                        syncUrl += `&department_id=${departmentId}`;
+                    }
+
+                    const response = await fetch(syncUrl, {
                         method: 'POST',
                         headers: AUTH_HEADERS
                     });
@@ -2755,12 +2076,6 @@ async def root():
                     document.getElementById('load-btn').disabled = false;
                     document.getElementById('load-btn').textContent = 'Загрузить';
                 }
-            }
-            
-            async function clearExistingData(startDate, endDate) {
-                // This would require implementing delete endpoints with date ranges
-                // For now, we'll just simulate the operation
-                await new Promise(resolve => setTimeout(resolve, 1000));
             }
             
             function showProgress() {
@@ -2864,18 +2179,6 @@ async def root():
                 // Forecast pages
                 document.getElementById('page-forecast-branch').style.display = 'none';
                 document.getElementById('page-forecast-comparison').style.display = 'none';
-                document.getElementById('page-forecast-export').style.display = 'none';
-                document.getElementById('page-forecast-postprocessing').style.display = 'none';
-                // Error analysis pages
-                document.getElementById('page-error-analysis-segment').style.display = 'none';
-                document.getElementById('page-problematic-branches').style.display = 'none';
-                document.getElementById('page-temporal-analysis').style.display = 'none';
-                document.getElementById('page-error-distribution').style.display = 'none';
-                // Model monitoring pages
-                document.getElementById('page-model-status').style.display = 'none';
-                document.getElementById('page-performance-metrics').style.display = 'none';
-                document.getElementById('page-training-history').style.display = 'none';
-                document.getElementById('page-manual-retraining').style.display = 'none';
                 // Service pages
                 document.getElementById('page-auto-sync').style.display = 'none';
             }
@@ -2890,24 +2193,26 @@ async def root():
             
             function populateDepartmentFilters() {
                 const departments = allBranches || [];
-                
+                // Filter only DEPARTMENT type (sales points)
+                const salesPointDepartments = departments.filter(dept => dept.type === 'DEPARTMENT');
+
                 // Populate daily sales department filter
                 const dailyFilter = document.getElementById('daily-department-filter');
                 if (dailyFilter) {
                     dailyFilter.innerHTML = '<option value="">Все подразделения</option>';
-                    departments.forEach(dept => {
+                    salesPointDepartments.forEach(dept => {
                         const option = document.createElement('option');
                         option.value = dept.id;
                         option.textContent = dept.name || dept.code || dept.id;
                         dailyFilter.appendChild(option);
                     });
                 }
-                
+
                 // Populate hourly sales department filter
                 const hourlyFilter = document.getElementById('hourly-department-filter');
                 if (hourlyFilter) {
                     hourlyFilter.innerHTML = '<option value="">Все подразделения</option>';
-                    departments.forEach(dept => {
+                    salesPointDepartments.forEach(dept => {
                         const option = document.createElement('option');
                         option.value = dept.id;
                         option.textContent = dept.name || dept.code || dept.id;
@@ -3245,209 +2550,40 @@ async def root():
                 populateForecastDepartmentFilters();
             }
             
-            function showForecastExport() {
-                hideAllPages();
-                document.getElementById('page-forecast-export').style.display = 'block';
-                updateSidebarActive('#экспорт-прогноза');
-                window.scrollTo(0, 0);
-                
-                // Set default dates
-                const today = new Date();
-                const nextMonth = new Date(today);
-                nextMonth.setDate(today.getDate() + 30);
-                
-                document.getElementById('export-start-date').value = today.toISOString().split('T')[0];
-                document.getElementById('export-end-date').value = nextMonth.toISOString().split('T')[0];
-                
-                // Populate department filter
-                populateForecastDepartmentFilters();
-                
-                // Load model info
-                loadModelInfo();
-            }
-
-            function showForecastPostprocessing() {
-                hideAllPages();
-                document.getElementById('page-forecast-postprocessing').style.display = 'block';
-                updateSidebarActive('#пост-обработка');
-                window.scrollTo(0, 0);
-                
-                // Set default dates (today + 7 days)
-                const today = new Date();
-                const tomorrow = new Date(today);
-                tomorrow.setDate(today.getDate() + 1);
-                const nextWeek = new Date(today);
-                nextWeek.setDate(today.getDate() + 7);
-                
-                document.getElementById('test-date').value = tomorrow.toISOString().split('T')[0];
-                document.getElementById('batch-from-date').value = tomorrow.toISOString().split('T')[0];
-                document.getElementById('batch-to-date').value = nextWeek.toISOString().split('T')[0];
-                
-                // Populate department filters
-                populateForecastDepartmentFilters();
-                populatePostprocessingDepartmentFilters();
-                
-                // Load saved settings
-                loadPostprocessingSettings();
-            }
-            
-            // Error Analysis Functions
-            function showErrorAnalysisBySegment() {
-                hideAllPages();
-                document.getElementById('page-error-analysis-segment').style.display = 'block';
-                updateSidebarActive('#ошибки-по-сегментам');
-                window.scrollTo(0, 0);
-                
-                // Set default dates (last 30 days)
-                const today = new Date();
-                const monthAgo = new Date(today);
-                monthAgo.setDate(today.getDate() - 30);
-                
-                document.getElementById('error-from-date').value = monthAgo.toISOString().split('T')[0];
-                document.getElementById('error-to-date').value = today.toISOString().split('T')[0];
-            }
-            
-            function showProblematicBranches() {
-                hideAllPages();
-                document.getElementById('page-problematic-branches').style.display = 'block';
-                updateSidebarActive('#проблемные-филиалы');
-                window.scrollTo(0, 0);
-                
-                // Set default dates (last 30 days)
-                const today = new Date();
-                const monthAgo = new Date(today);
-                monthAgo.setDate(today.getDate() - 30);
-                
-                document.getElementById('prob-from-date').value = monthAgo.toISOString().split('T')[0];
-                document.getElementById('prob-to-date').value = today.toISOString().split('T')[0];
-            }
-            
-            function showTemporalAnalysis() {
-                hideAllPages();
-                document.getElementById('page-temporal-analysis').style.display = 'block';
-                updateSidebarActive('#временной-анализ');
-                window.scrollTo(0, 0);
-                
-                // Set default dates (last 30 days)
-                const today = new Date();
-                const monthAgo = new Date(today);
-                monthAgo.setDate(today.getDate() - 30);
-                
-                document.getElementById('temp-from-date').value = monthAgo.toISOString().split('T')[0];
-                document.getElementById('temp-to-date').value = today.toISOString().split('T')[0];
-            }
-            
-            function showErrorDistribution() {
-                hideAllPages();
-                document.getElementById('page-error-distribution').style.display = 'block';
-                updateSidebarActive('#распределение-ошибок');
-                window.scrollTo(0, 0);
-                
-                // Set default dates (last 30 days)
-                const today = new Date();
-                const monthAgo = new Date(today);
-                monthAgo.setDate(today.getDate() - 30);
-                
-                document.getElementById('dist-from-date').value = monthAgo.toISOString().split('T')[0];
-                document.getElementById('dist-to-date').value = today.toISOString().split('T')[0];
-                
-                // Populate department filter
-                populateErrorDistributionDepartments();
-            }
-            
-            function populateErrorDistributionDepartments() {
-                const departments = allBranches || [];
-                const select = document.getElementById('dist-department');
-                if (select) {
-                    select.innerHTML = '<option value="">Все филиалы</option>';
-                    departments.forEach(dept => {
-                        const option = document.createElement('option');
-                        option.value = dept.id;
-                        option.textContent = dept.name || dept.code || dept.id;
-                        select.appendChild(option);
-                    });
-                }
-            }
-            
-            // MODEL MONITORING NAVIGATION FUNCTIONS
-            function showModelStatus() {
-                hideAllPages();
-                document.getElementById('page-model-status').style.display = 'block';
-                updateSidebarActive('#статус-модели');
-                window.scrollTo(0, 0);
-                
-                // Load model status
-                loadModelHealthStatus();
-                loadCurrentModelMetrics();
-                loadModelInfo();
-            }
-            
-            function showPerformanceMetrics() {
-                hideAllPages();
-                document.getElementById('page-performance-metrics').style.display = 'block';
-                updateSidebarActive('#метрики-производительности');
-                window.scrollTo(0, 0);
-                
-                // Load performance metrics with default period (30 days)
-                loadPerformanceMetrics();
-            }
-            
-            function showTrainingHistory() {
-                hideAllPages();
-                document.getElementById('page-training-history').style.display = 'block';
-                updateSidebarActive('#история-обучения');
-                window.scrollTo(0, 0);
-                
-                // Load training history and schedule
-                loadRetrainingSchedule();
-                loadTrainingHistory();
-            }
-            
-            function showManualRetraining() {
-                hideAllPages();
-                document.getElementById('page-manual-retraining').style.display = 'block';
-                updateSidebarActive('#ручное-переобучение');
-                window.scrollTo(0, 0);
-                
-                // Load current model status
-                loadCurrentModelStatusForRetraining();
-                
-                // Reset form and hide progress/results
-                resetRetrainingForm();
-            }
-            
             function populateForecastDepartmentFilters() {
                 const departments = allBranches || [];
-                
+                // Filter only DEPARTMENT type (sales points)
+                const salesPointDepartments = departments.filter(dept => dept.type === 'DEPARTMENT');
+
                 // Forecast page filter
                 const forecastFilter = document.getElementById('forecast-department-filter');
                 if (forecastFilter) {
                     forecastFilter.innerHTML = '<option value="">Все подразделения</option>';
-                    departments.forEach(dept => {
+                    salesPointDepartments.forEach(dept => {
                         const option = document.createElement('option');
                         option.value = dept.id;
                         option.textContent = dept.name || dept.code || dept.id;
                         forecastFilter.appendChild(option);
                     });
                 }
-                
+
                 // Comparison page filter
                 const comparisonFilter = document.getElementById('comparison-department-filter');
                 if (comparisonFilter) {
                     comparisonFilter.innerHTML = '<option value="">Все подразделения</option>';
-                    departments.forEach(dept => {
+                    salesPointDepartments.forEach(dept => {
                         const option = document.createElement('option');
                         option.value = dept.id;
                         option.textContent = dept.name || dept.code || dept.id;
                         comparisonFilter.appendChild(option);
                     });
                 }
-                
+
                 // Export page filter
                 const exportFilter = document.getElementById('export-department');
                 if (exportFilter) {
                     exportFilter.innerHTML = '<option value="">Все подразделения</option>';
-                    departments.forEach(dept => {
+                    salesPointDepartments.forEach(dept => {
                         const option = document.createElement('option');
                         option.value = dept.id;
                         option.textContent = dept.name || dept.code || dept.id;
@@ -3964,43 +3100,6 @@ async def root():
                 });
             }
             
-            async function exportForecast() {
-                const startDate = document.getElementById('export-start-date').value;
-                const endDate = document.getElementById('export-end-date').value;
-                const departmentId = document.getElementById('export-department').value;
-                const includeActual = document.getElementById('include-actual').checked;
-                
-                if (!startDate || !endDate) {
-                    alert('Пожалуйста, укажите даты начала и окончания');
-                    return;
-                }
-                
-                try {
-                    let url = `/api/forecast/export/csv?from_date=${startDate}&to_date=${endDate}`;
-                    if (departmentId) {
-                        url += `&department_id=${departmentId}`;
-                    }
-                    if (includeActual) {
-                        url += `&include_actual=true`;
-                    }
-                    
-                    // Show success message
-                    document.getElementById('export-result').style.display = 'block';
-                    
-                    // Trigger download
-                    window.location.href = url;
-                    
-                    // Hide success message after 3 seconds
-                    setTimeout(() => {
-                        document.getElementById('export-result').style.display = 'none';
-                    }, 3000);
-                    
-                } catch (error) {
-                    console.error('Error exporting forecast:', error);
-                    alert('Ошибка при экспорте данных');
-                }
-            }
-            
             async function loadModelInfo() {
                 try {
                     const response = await fetch('/api/forecast/model/info', { headers: AUTH_HEADERS });
@@ -4123,411 +3222,6 @@ async def root():
                 }
             }
             
-            // =============================================================
-            // MODEL MONITORING UTILITY FUNCTIONS
-            // =============================================================
-            
-            async function loadModelHealthStatus() {
-                const healthDiv = document.getElementById('model-health-status');
-                try {
-                    healthDiv.innerHTML = '<div style="text-align: center; padding: 20px;"><div class="loading-spinner"></div><p>Проверка состояния модели...</p></div>';
-                    
-                    const response = await fetch('/api/monitoring/health', { headers: AUTH_HEADERS });
-                    const health = await response.json();
-                    
-                    const statusColor = health.overall_status === 'healthy' ? '#27ae60' : 
-                                       health.overall_status === 'warning' ? '#f39c12' : '#e74c3c';
-                    const statusIcon = health.overall_status === 'healthy' ? '✅' : 
-                                      health.overall_status === 'warning' ? '⚠️' : '❌';
-                    
-                    healthDiv.innerHTML = `
-                        <div style="text-align: center; margin-bottom: 20px;">
-                            <div style="font-size: 3em; margin-bottom: 10px;">${statusIcon}</div>
-                            <h3 style="color: ${statusColor}; margin: 0;">${health.overall_status.toUpperCase()}</h3>
-                            <p style="color: #666; margin: 5px 0;">Проверено: ${new Date(health.check_time).toLocaleString('ru-RU')}</p>
-                        </div>
-                        <div style="text-align: left;">
-                            <p><strong>Недавний MAPE:</strong> ${health.summary.recent_mape.toFixed(2)}%</p>
-                            <p><strong>Возраст модели:</strong> ${health.summary.model_age_days} дней</p>
-                            <p><strong>Проблемных филиалов:</strong> ${health.summary.problematic_branches_count}</p>
-                        </div>
-                    `;
-                } catch (error) {
-                    healthDiv.innerHTML = '<p style="color: #e74c3c;">❌ Ошибка загрузки состояния модели</p>';
-                }
-            }
-            
-            async function loadCurrentModelMetrics() {
-                const metricsDiv = document.getElementById('current-metrics');
-                try {
-                    const response = await fetch('/api/monitoring/performance/summary?days=7', { headers: AUTH_HEADERS });
-                    const summary = await response.json();
-                    
-                    if (summary.status === 'no_data') {
-                        metricsDiv.innerHTML = '<p style="color: #666;">Недостаточно данных за последние 7 дней</p>';
-                        return;
-                    }
-                    
-                    const trendColor = summary.mape_trend > 0 ? '#e74c3c' : '#27ae60';
-                    const trendIcon = summary.mape_trend > 0 ? '📈' : '📉';
-                    
-                    metricsDiv.innerHTML = `
-                        <div style="text-align: center; margin-bottom: 15px;">
-                            <div style="font-size: 2.5em; font-weight: bold; color: #3498db;">
-                                ${summary.avg_mape.toFixed(1)}%
-                            </div>
-                            <p style="color: #666; margin: 0;">Средний MAPE за 7 дней</p>
-                        </div>
-                        <div style="text-align: left; font-size: 14px;">
-                            <p><strong>Лучший день:</strong> ${summary.min_mape.toFixed(1)}%</p>
-                            <p><strong>Худший день:</strong> ${summary.max_mape.toFixed(1)}%</p>
-                            <p style="color: ${trendColor};"><strong>Тренд:</strong> ${trendIcon} ${summary.mape_trend.toFixed(2)}</p>
-                        </div>
-                    `;
-                } catch (error) {
-                    metricsDiv.innerHTML = '<p style="color: #e74c3c;">❌ Ошибка загрузки метрик</p>';
-                }
-            }
-            
-            async function loadPerformanceMetrics() {
-                const period = document.getElementById('metrics-period').value;
-                
-                try {
-                    // Update summary cards
-                    const response = await fetch(`/api/monitoring/performance/summary?days=${period}`, { headers: AUTH_HEADERS });
-                    const summary = await response.json();
-                    
-                    if (summary.status === 'no_data') {
-                        document.getElementById('avg-mape').textContent = 'N/A';
-                        document.getElementById('best-mape').textContent = 'N/A';
-                        document.getElementById('worst-mape').textContent = 'N/A';
-                        document.getElementById('mape-trend').textContent = 'N/A';
-                        return;
-                    }
-                    
-                    document.getElementById('avg-mape').textContent = `${summary.avg_mape.toFixed(1)}%`;
-                    document.getElementById('best-mape').textContent = `${summary.min_mape.toFixed(1)}%`;
-                    document.getElementById('worst-mape').textContent = `${summary.max_mape.toFixed(1)}%`;
-                    
-                    const trendText = summary.mape_trend > 0 ? `+${summary.mape_trend.toFixed(2)}%` : `${summary.mape_trend.toFixed(2)}%`;
-                    const trendColor = summary.mape_trend > 0 ? '#e74c3c' : '#27ae60';
-                    document.getElementById('mape-trend').innerHTML = `<span style="color: ${trendColor};">${trendText}</span>`;
-                    
-                    // Create performance chart
-                    createPerformanceChart(summary.time_series);
-                    
-                    // Load recent alerts
-                    loadRecentAlerts(period);
-                    
-                } catch (error) {
-                    console.error('Error loading performance metrics:', error);
-                }
-            }
-            
-            function createPerformanceChart(timeSeries) {
-                const canvas = document.getElementById('performance-chart');
-                const ctx = canvas.getContext('2d');
-                
-                // Destroy existing chart if exists
-                if (window.performanceChart) {
-                    window.performanceChart.destroy();
-                }
-                
-                const labels = timeSeries.map(item => new Date(item.date).toLocaleDateString('ru-RU'));
-                const data = timeSeries.map(item => item.mape);
-                
-                window.performanceChart = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            label: 'MAPE (%)',
-                            data: data,
-                            borderColor: '#3498db',
-                            backgroundColor: 'rgba(52, 152, 219, 0.1)',
-                            borderWidth: 2,
-                            fill: true,
-                            tension: 0.1
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            y: {
-                                beginAtZero: true,
-                                title: {
-                                    display: true,
-                                    text: 'MAPE (%)'
-                                }
-                            },
-                            x: {
-                                title: {
-                                    display: true,
-                                    text: 'Дата'
-                                }
-                            }
-                        },
-                        plugins: {
-                            legend: {
-                                display: true,
-                                position: 'top'
-                            }
-                        }
-                    }
-                });
-            }
-            
-            async function loadRecentAlerts(days = 7) {
-                const alertsDiv = document.getElementById('recent-alerts');
-                try {
-                    const response = await fetch(`/api/monitoring/alerts/recent?days=${days}`, { headers: AUTH_HEADERS });
-                    const alertsData = await response.json();
-                    
-                    if (alertsData.total_alert_days === 0) {
-                        alertsDiv.innerHTML = '<p style="color: #27ae60;">✅ Никаких уведомлений за указанный период</p>';
-                        return;
-                    }
-                    
-                    let html = `<p><strong>Дней с уведомлениями:</strong> ${alertsData.total_alert_days} из ${alertsData.period_days}</p>`;
-                    
-                    alertsData.daily_alerts.forEach(dayAlerts => {
-                        html += `
-                            <div style="margin: 10px 0; padding: 10px; border-left: 3px solid #f39c12; background: #fff3cd;">
-                                <strong>${new Date(dayAlerts.date).toLocaleDateString('ru-RU')}</strong> (MAPE: ${dayAlerts.daily_mape.toFixed(1)}%)
-                                <ul style="margin: 5px 0 0 20px;">
-                        `;
-                        
-                        dayAlerts.alerts.forEach(alert => {
-                            const color = alert.type === 'critical' ? '#e74c3c' : '#f39c12';
-                            html += `<li style="color: ${color};">${alert.message}</li>`;
-                        });
-                        
-                        html += '</ul></div>';
-                    });
-                    
-                    alertsDiv.innerHTML = html;
-                } catch (error) {
-                    alertsDiv.innerHTML = '<p style="color: #e74c3c;">❌ Ошибка загрузки уведомлений</p>';
-                }
-            }
-            
-            async function loadRetrainingSchedule() {
-                const scheduleDiv = document.getElementById('retraining-schedule');
-                try {
-                    const response = await fetch('/api/monitoring/retrain/status', { headers: AUTH_HEADERS });
-                    const status = await response.json();
-                    
-                    let html = '<div style="display: grid; gap: 15px;">';
-                    
-                    status.scheduled_jobs.forEach(job => {
-                        const nextRun = job.next_run ? new Date(job.next_run).toLocaleString('ru-RU') : 'Не запланирован';
-                        html += `
-                            <div style="padding: 15px; border: 1px solid #ddd; border-radius: 6px; background: #f8f9fa;">
-                                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">${job.name}</h4>
-                                <p style="margin: 5px 0;"><strong>Следующий запуск:</strong> ${nextRun}</p>
-                                <p style="margin: 5px 0;"><strong>Расписание:</strong> ${job.trigger}</p>
-                            </div>
-                        `;
-                    });
-                    
-                    html += '</div>';
-                    scheduleDiv.innerHTML = html;
-                } catch (error) {
-                    scheduleDiv.innerHTML = '<p style="color: #e74c3c;">❌ Ошибка загрузки расписания</p>';
-                }
-            }
-            
-            async function loadTrainingHistory() {
-                const tableBody = document.querySelector('#training-history-table tbody');
-                try {
-                    // For now, show placeholder data since retraining log table isn't implemented yet
-                    tableBody.innerHTML = `
-                        <tr>
-                            <td colspan="7" style="text-align: center; padding: 20px; color: #666;">
-                                История переобучений будет доступна после создания таблиц версионирования модели.<br>
-                                <small>Выполните миграцию: migrations/002_add_model_versioning.sql</small>
-                            </td>
-                        </tr>
-                    `;
-                } catch (error) {
-                    tableBody.innerHTML = '<tr><td colspan="7" style="color: #e74c3c; text-align: center; padding: 20px;">❌ Ошибка загрузки истории</td></tr>';
-                }
-            }
-            
-            async function loadCurrentModelStatusForRetraining() {
-                const statusDiv = document.getElementById('current-model-status');
-                try {
-                    const response = await fetch('/api/forecast/model/info', { headers: AUTH_HEADERS });
-                    const info = await response.json();
-                    
-                    if (info.status === 'loaded') {
-                        statusDiv.innerHTML = `
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                                <div>
-                                    <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Информация о модели</h4>
-                                    <p><strong>Тип:</strong> ${info.model_type}</p>
-                                    <p><strong>Признаков:</strong> ${info.n_features}</p>
-                                    <p><strong>Путь:</strong> ${info.model_path}</p>
-                                </div>
-                                <div>
-                                    <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Метрики</h4>
-                                    <p><strong>Test MAPE:</strong> ${info.training_metrics?.test_mape?.toFixed(2)}%</p>
-                                    <p><strong>Test R²:</strong> ${info.training_metrics?.test_r2?.toFixed(4)}</p>
-                                    <p><strong>Обучающих данных:</strong> ${info.training_metrics?.train_samples}</p>
-                                </div>
-                            </div>
-                        `;
-                    } else {
-                        statusDiv.innerHTML = '<p style="color: #e74c3c;">❌ Модель не загружена</p>';
-                    }
-                } catch (error) {
-                    statusDiv.innerHTML = '<p style="color: #e74c3c;">❌ Ошибка загрузки информации о модели</p>';
-                }
-            }
-            
-            async function startManualRetraining() {
-                const reason = document.getElementById('retrain-reason').value.trim();
-                const threshold = parseFloat(document.getElementById('performance-threshold').value);
-                const forceDeploy = document.getElementById('force-deploy').checked;
-                
-                if (!reason) {
-                    alert('Пожалуйста, укажите причину переобучения');
-                    return;
-                }
-                
-                if (!confirm(`Начать переобучение модели?\\n\\nПричина: ${reason}\\nПорог: ${threshold}%\\nПринудительное развертывание: ${forceDeploy ? 'Да' : 'Нет'}`)) {
-                    return;
-                }
-                
-                // Show progress
-                const progressDiv = document.getElementById('retraining-progress');
-                const resultsDiv = document.getElementById('retraining-results');
-                const btn = document.getElementById('retrain-btn');
-                
-                progressDiv.style.display = 'block';
-                resultsDiv.style.display = 'none';
-                btn.disabled = true;
-                btn.textContent = '⏳ Переобучение...';
-                
-                const progressFill = document.getElementById('retrain-progress-fill');
-                const progressText = document.getElementById('retrain-progress-text');
-                const logs = document.getElementById('retrain-logs');
-                
-                // Simulate progress
-                let progress = 0;
-                const progressInterval = setInterval(() => {
-                    progress += Math.random() * 15;
-                    if (progress > 90) progress = 90;
-                    progressFill.style.width = progress + '%';
-                    progressText.textContent = `Переобучение... ${Math.round(progress)}%`;
-                }, 1000);
-                
-                try {
-                    logs.innerHTML = 'Инициализация переобучения...\\n';
-                    
-                    const response = await fetch('/api/monitoring/retrain/manual', {
-                        method: 'POST',
-                        headers: { ...AUTH_HEADERS, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            reason: reason,
-                            force_deploy: forceDeploy,
-                            performance_threshold: threshold
-                        })
-                    });
-                    
-                    const result = await response.json();
-                    
-                    clearInterval(progressInterval);
-                    progressFill.style.width = '100%';
-                    progressText.textContent = 'Завершено!';
-                    
-                    // Show results
-                    setTimeout(() => {
-                        showRetrainingResults(result);
-                        btn.disabled = false;
-                        btn.textContent = '🔄 Начать переобучение';
-                    }, 1000);
-                    
-                } catch (error) {
-                    clearInterval(progressInterval);
-                    progressText.textContent = 'Ошибка!';
-                    logs.innerHTML += `ОШИБКА: ${error.message}\\n`;
-                    
-                    btn.disabled = false;
-                    btn.textContent = '🔄 Начать переобучение';
-                }
-            }
-            
-            function showRetrainingResults(result) {
-                const resultsDiv = document.getElementById('retraining-results');
-                const contentDiv = document.getElementById('retrain-results-content');
-                
-                if (result.status === 'success') {
-                    const improvement = result.metrics.improvement;
-                    const improvementPercent = result.metrics.improvement_percent;
-                    const deploymentClass = result.deployment_decision === 'deployed' ? 'result-success' : 'result-error';
-                    
-                    contentDiv.innerHTML = `
-                        <div class="${deploymentClass}">
-                            <h4>Результаты переобучения</h4>
-                            <p><strong>Новая версия:</strong> ${result.new_version_id}</p>
-                            <p><strong>Решение:</strong> ${result.deployment_decision}</p>
-                            <p><strong>Причина:</strong> ${result.decision_reason}</p>
-                            
-                            <div style="margin: 15px 0; padding: 15px; background: rgba(255,255,255,0.8); border-radius: 6px;">
-                                <h5>Сравнение метрик:</h5>
-                                <p><strong>Предыдущий MAPE:</strong> ${result.metrics.previous_mape}%</p>
-                                <p><strong>Новый MAPE:</strong> ${result.metrics.new_mape}%</p>
-                                <p><strong>Улучшение:</strong> ${improvement.toFixed(2)} MAPE (${improvementPercent.toFixed(1)}%)</p>
-                            </div>
-                            
-                            <div style="margin: 15px 0; padding: 15px; background: rgba(255,255,255,0.8); border-radius: 6px;">
-                                <h5>Детали обучения:</h5>
-                                <p><strong>Образцов данных:</strong> ${result.training_details.samples}</p>
-                                <p><strong>Признаков:</strong> ${result.training_details.features}</p>
-                                <p><strong>Время выполнения:</strong> ${result.training_details.execution_time} сек</p>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    contentDiv.innerHTML = `
-                        <div class="result-error">
-                            <h4>Ошибка переобучения</h4>
-                            <p><strong>Статус:</strong> ${result.status}</p>
-                            <p><strong>Сообщение:</strong> ${result.message}</p>
-                            ${result.error_type ? `<p><strong>Тип ошибки:</strong> ${result.error_type}</p>` : ''}
-                        </div>
-                    `;
-                }
-                
-                resultsDiv.style.display = 'block';
-                
-                // Refresh current model status
-                setTimeout(() => {
-                    loadCurrentModelStatusForRetraining();
-                }, 2000);
-            }
-            
-            function resetRetrainingForm() {
-                document.getElementById('retrain-reason').value = '';
-                document.getElementById('performance-threshold').value = '10.0';
-                document.getElementById('force-deploy').checked = false;
-                document.getElementById('retraining-progress').style.display = 'none';
-                document.getElementById('retraining-results').style.display = 'none';
-            }
-            
-            async function checkRetrainingStatus() {
-                try {
-                    const response = await fetch('/api/monitoring/retrain/status', { headers: AUTH_HEADERS });
-                    const status = await response.json();
-                    
-                    alert(`Статус системы переобучения:\\n\\nТекущее время: ${new Date(status.current_time).toLocaleString('ru-RU')}\\n\\nЗапланированные задачи: ${status.scheduled_jobs.length}\\n\\nПоследнее переобучение: ${status.last_retrain.status}`);
-                } catch (error) {
-                    alert('Ошибка проверки статуса: ' + error.message);
-                }
-            }
-            
             // Initialize form handler when DOM is loaded
             document.addEventListener('DOMContentLoaded', function() {
                 const salesForm = document.getElementById('sales-sync-form');
@@ -4535,456 +3229,7 @@ async def root():
                     salesForm.addEventListener('submit', handleSalesSync);
                 }
             });
-            
-            // =============================================================
-            // ERROR ANALYSIS EVENT HANDLERS
-            // =============================================================
-            
-            // Error Analysis by Segment Form Handler
-            document.addEventListener('DOMContentLoaded', function() {
-                const errorSegmentForm = document.getElementById('error-segment-form');
-                if (errorSegmentForm) {
-                    errorSegmentForm.addEventListener('submit', async function(e) {
-                        e.preventDefault();
-                        
-                        const fromDate = document.getElementById('error-from-date').value;
-                        const toDate = document.getElementById('error-to-date').value;
-                        const segmentType = document.getElementById('segment-type').value;
-                        
-                        if (!fromDate || !toDate) {
-                            alert('Пожалуйста, укажите даты');
-                            return;
-                        }
-                        
-                        await analyzeErrorsBySegment(fromDate, toDate, segmentType);
-                    });
-                }
-                
-                // Problematic Branches Form Handler
-                const problematicForm = document.getElementById('problematic-branches-form');
-                if (problematicForm) {
-                    problematicForm.addEventListener('submit', async function(e) {
-                        e.preventDefault();
-                        
-                        const fromDate = document.getElementById('prob-from-date').value;
-                        const toDate = document.getElementById('prob-to-date').value;
-                        const minSamples = document.getElementById('min-samples').value;
-                        const mapeThreshold = document.getElementById('mape-threshold').value;
-                        
-                        if (!fromDate || !toDate) {
-                            alert('Пожалуйста, укажите даты');
-                            return;
-                        }
-                        
-                        await identifyProblematicBranches(fromDate, toDate, minSamples, mapeThreshold);
-                    });
-                }
-                
-                // Temporal Analysis Form Handler
-                const temporalForm = document.getElementById('temporal-analysis-form');
-                if (temporalForm) {
-                    temporalForm.addEventListener('submit', async function(e) {
-                        e.preventDefault();
-                        
-                        const fromDate = document.getElementById('temp-from-date').value;
-                        const toDate = document.getElementById('temp-to-date').value;
-                        
-                        if (!fromDate || !toDate) {
-                            alert('Пожалуйста, укажите даты');
-                            return;
-                        }
-                        
-                        await analyzeTemporalErrors(fromDate, toDate);
-                    });
-                }
-                
-                // Error Distribution Form Handler
-                const distributionForm = document.getElementById('error-distribution-form');
-                if (distributionForm) {
-                    distributionForm.addEventListener('submit', async function(e) {
-                        e.preventDefault();
-                        
-                        const fromDate = document.getElementById('dist-from-date').value;
-                        const toDate = document.getElementById('dist-to-date').value;
-                        const departmentId = document.getElementById('dist-department').value;
-                        
-                        if (!fromDate || !toDate) {
-                            alert('Пожалуйста, укажите даты');
-                            return;
-                        }
-                        
-                        await analyzeErrorDistribution(fromDate, toDate, departmentId);
-                    });
-                }
-            });
-            
-            // Error Analysis API Functions
-            async function analyzeErrorsBySegment(fromDate, toDate, segmentType) {
-                const loading = document.getElementById('error-segment-loading');
-                const results = document.getElementById('error-segment-results');
-                
-                loading.style.display = 'block';
-                results.style.display = 'none';
-                
-                try {
-                    const response = await fetch(
-                        `/api/forecast/error-analysis/errors_by_segment?from_date=${fromDate}&to_date=${toDate}&segment_type=${segmentType}`
-                    );
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        displayErrorSegmentResults(data.analysis);
-                    } else {
-                        alert('Ошибка при анализе: ' + (data.detail || 'Неизвестная ошибка'));
-                    }
-                } catch (error) {
-                    console.error('Error analyzing errors by segment:', error);
-                    alert('Ошибка при выполнении анализа');
-                } finally {
-                    loading.style.display = 'none';
-                }
-            }
-            
-            async function identifyProblematicBranches(fromDate, toDate, minSamples, mapeThreshold) {
-                const loading = document.getElementById('problematic-loading');
-                const results = document.getElementById('problematic-results');
-                
-                loading.style.display = 'block';
-                results.style.display = 'none';
-                
-                try {
-                    const response = await fetch(
-                        `/api/forecast/error-analysis/problematic_branches?from_date=${fromDate}&to_date=${toDate}&min_samples=${minSamples}&mape_threshold=${mapeThreshold}`
-                    );
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        displayProblematicBranchesResults(data);
-                    } else {
-                        alert('Ошибка при анализе: ' + (data.detail || 'Неизвестная ошибка'));
-                    }
-                } catch (error) {
-                    console.error('Error identifying problematic branches:', error);
-                    alert('Ошибка при выполнении анализа');
-                } finally {
-                    loading.style.display = 'none';
-                }
-            }
-            
-            async function analyzeTemporalErrors(fromDate, toDate) {
-                const loading = document.getElementById('temporal-loading');
-                const results = document.getElementById('temporal-results');
-                
-                loading.style.display = 'block';
-                results.style.display = 'none';
-                
-                try {
-                    const response = await fetch(
-                        `/api/forecast/error-analysis/temporal_errors?from_date=${fromDate}&to_date=${toDate}`
-                    );
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        displayTemporalAnalysisResults(data.temporal_analysis);
-                    } else {
-                        alert('Ошибка при анализе: ' + (data.detail || 'Неизвестная ошибка'));
-                    }
-                } catch (error) {
-                    console.error('Error analyzing temporal errors:', error);
-                    alert('Ошибка при выполнении анализа');
-                } finally {
-                    loading.style.display = 'none';
-                }
-            }
-            
-            async function analyzeErrorDistribution(fromDate, toDate, departmentId) {
-                const loading = document.getElementById('distribution-loading');
-                const results = document.getElementById('distribution-results');
-                
-                loading.style.display = 'block';
-                results.style.display = 'none';
-                
-                try {
-                    let url = `/api/forecast/error-analysis/error_distribution?from_date=${fromDate}&to_date=${toDate}`;
-                    if (departmentId) {
-                        url += `&department_id=${departmentId}`;
-                    }
-                    
-                    const response = await fetch(url);
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        displayErrorDistributionResults(data.error_distribution);
-                    } else {
-                        alert('Ошибка при анализе: ' + (data.detail || 'Неизвестная ошибка'));
-                    }
-                } catch (error) {
-                    console.error('Error analyzing error distribution:', error);
-                    alert('Ошибка при выполнении анализа');
-                } finally {
-                    loading.style.display = 'none';
-                }
-            }
-            
-            // Display Functions for Error Analysis Results
-            function displayErrorSegmentResults(analysis) {
-                const summary = document.getElementById('error-segment-summary');
-                const table = document.getElementById('error-segment-table');
-                const results = document.getElementById('error-segment-results');
-                
-                // Display summary
-                if (analysis.summary) {
-                    summary.innerHTML = `
-                        <div class="stat-card">
-                            <div class="stat-label">Общий MAPE</div>
-                            <div class="stat-value">${analysis.summary.avg_mape}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Лучший сегмент</div>
-                            <div class="stat-value">${analysis.summary.best_department || analysis.summary.best_day || analysis.summary.best_month || analysis.summary.best_location || 'N/A'}</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Худший сегмент</div>
-                            <div class="stat-value">${analysis.summary.worst_department || analysis.summary.worst_day || analysis.summary.worst_month || analysis.summary.worst_location || 'N/A'}</div>
-                        </div>
-                    `;
-                }
-                
-                // Display table
-                const tbody = table.querySelector('tbody');
-                tbody.innerHTML = '';
-                
-                if (analysis.analysis && analysis.analysis.length > 0) {
-                    analysis.analysis.forEach(item => {
-                        const row = tbody.insertRow();
-                        const segmentName = item.department_name || item.day_of_week || item.month_name || item.location || 'Unknown';
-                        
-                        row.innerHTML = `
-                            <td>${segmentName}</td>
-                            <td>${item.count_error_percentage || 'N/A'}</td>
-                            <td>${item.mean_error_percentage || 'N/A'}%</td>
-                            <td>${item.std_error_percentage || 'N/A'}</td>
-                            <td>${(item.mean_actual_sales || 0).toLocaleString()}</td>
-                        `;
-                    });
-                }
-                
-                results.style.display = 'block';
-            }
-            
-            function displayProblematicBranchesResults(data) {
-                const summary = document.getElementById('problematic-summary');
-                const table = document.getElementById('problematic-table');
-                const results = document.getElementById('problematic-results');
-                
-                // Display summary
-                summary.innerHTML = `
-                    <div class="stat-card">
-                        <div class="stat-label">Проблемных филиалов</div>
-                        <div class="stat-value">${data.problematic_branches_count}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Мин. прогнозов</div>
-                        <div class="stat-value">${data.criteria.min_samples}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">MAPE порог</div>
-                        <div class="stat-value">${data.criteria.mape_threshold}%</div>
-                    </div>
-                `;
-                
-                // Display table
-                const tbody = table.querySelector('tbody');
-                tbody.innerHTML = '';
-                
-                if (data.problematic_branches && data.problematic_branches.length > 0) {
-                    data.problematic_branches.forEach(branch => {
-                        const row = tbody.insertRow();
-                        row.innerHTML = `
-                            <td>${branch.department_name}</td>
-                            <td>${branch.predictions_count}</td>
-                            <td>${branch.avg_mape}%</td>
-                            <td>${branch.min_mape}% / ${branch.max_mape}%</td>
-                            <td>${branch.avg_actual_sales.toLocaleString()}</td>
-                            <td>${branch.avg_error.toLocaleString()}</td>
-                        `;
-                    });
-                } else {
-                    const row = tbody.insertRow();
-                    row.innerHTML = '<td colspan="6" style="text-align: center;">Проблемных филиалов не найдено</td>';
-                }
-                
-                results.style.display = 'block';
-            }
-            
-            function displayTemporalAnalysisResults(analysis) {
-                const summary = document.getElementById('temporal-summary');
-                const results = document.getElementById('temporal-results');
-                
-                // Display summary
-                if (analysis.overall_stats) {
-                    summary.innerHTML = `
-                        <div class="stat-card">
-                            <div class="stat-label">Общий MAPE</div>
-                            <div class="stat-value">${analysis.overall_stats.avg_mape}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Лучший день</div>
-                            <div class="stat-value">${analysis.overall_stats.best_day_mape}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Худший день</div>
-                            <div class="stat-value">${analysis.overall_stats.worst_day_mape}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Всего прогнозов</div>
-                            <div class="stat-value">${analysis.overall_stats.total_predictions}</div>
-                        </div>
-                    `;
-                }
-                
-                // Set current temporal data and show default tab
-                currentTemporalData = analysis;
-                showTemporalTab('weekday');
-                
-                results.style.display = 'block';
-            }
-            
-            function displayErrorDistributionResults(distribution) {
-                const stats = document.getElementById('distribution-stats');
-                const rangesTable = document.getElementById('distribution-ranges-table');
-                const results = document.getElementById('distribution-results');
-                
-                // Display statistics
-                if (distribution.statistics) {
-                    const s = distribution.statistics;
-                    stats.innerHTML = `
-                        <div class="stat-card">
-                            <div class="stat-label">Средний MAPE</div>
-                            <div class="stat-value">${s.mean}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Медиана</div>
-                            <div class="stat-value">${s.median}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Стд. отклонение</div>
-                            <div class="stat-value">${s.std}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">95-й процентиль</div>
-                            <div class="stat-value">${s.percentiles.p95}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Отличных прогнозов</div>
-                            <div class="stat-value">${s.outliers.low_error_count}</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Плохих прогнозов</div>
-                            <div class="stat-value">${s.outliers.high_error_count}</div>
-                        </div>
-                    `;
-                }
-                
-                // Display ranges table
-                const tbody = rangesTable.querySelector('tbody');
-                tbody.innerHTML = '';
-                
-                if (distribution.range_distribution) {
-                    distribution.range_distribution.forEach(range => {
-                        const row = tbody.insertRow();
-                        const rangeClass = getRangeClass(range.label);
-                        row.innerHTML = `
-                            <td>${range.range}</td>
-                            <td class="${rangeClass}">${range.label}</td>
-                            <td>${range.count}</td>
-                            <td>${range.percentage}%</td>
-                        `;
-                    });
-                }
-                
-                results.style.display = 'block';
-            }
-            
-            function getRangeClass(label) {
-                switch(label.toLowerCase()) {
-                    case 'excellent': return 'error-range-excellent';
-                    case 'good': return 'error-range-good';
-                    case 'acceptable': return 'error-range-acceptable';
-                    case 'poor': return 'error-range-poor';
-                    case 'very poor': return 'error-range-very-poor';
-                    default: return '';
-                }
-            }
-            
-            // Temporal Analysis Tab Functions
-            let currentTemporalData = null;
-            
-            function showTemporalTab(tabType) {
-                // Update tab buttons
-                document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-                event.target.classList.add('active');
-                
-                if (!currentTemporalData) return;
-                
-                const table = document.getElementById('temporal-table');
-                const thead = document.getElementById('temporal-table-head');
-                const tbody = document.getElementById('temporal-table-body');
-                
-                let data, headers;
-                
-                switch(tabType) {
-                    case 'daily':
-                        data = currentTemporalData.daily_errors || [];
-                        headers = ['Дата', 'Прогнозов', 'Средний MAPE (%)', 'Стд. откл.', 'Продажи'];
-                        break;
-                    case 'weekday':
-                        data = currentTemporalData.day_of_week_errors || [];
-                        headers = ['День недели', 'Прогнозов', 'Средний MAPE (%)', 'Стд. откл.', 'Средние продажи'];
-                        break;
-                    case 'monthly':
-                        data = currentTemporalData.monthly_errors || [];
-                        headers = ['Месяц', 'Прогнозов', 'Средний MAPE (%)', 'Стд. откл.'];
-                        break;
-                    default:
-                        return;
-                }
-                
-                // Update table headers
-                thead.innerHTML = '<tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
-                
-                // Update table body
-                tbody.innerHTML = '';
-                data.forEach(item => {
-                    const row = tbody.insertRow();
-                    
-                    if (tabType === 'daily') {
-                        row.innerHTML = `
-                            <td>${new Date(item.date).toLocaleDateString()}</td>
-                            <td>${item.count_error_percentage}</td>
-                            <td>${item.mean_error_percentage}%</td>
-                            <td>${item.std_error_percentage || 'N/A'}</td>
-                            <td>${(item.sum_actual_sales || 0).toLocaleString()}</td>
-                        `;
-                    } else if (tabType === 'weekday') {
-                        row.innerHTML = `
-                            <td>${item.day_name}</td>
-                            <td>${item.count_error_percentage}</td>
-                            <td>${item.mean_error_percentage}%</td>
-                            <td>${item.std_error_percentage || 'N/A'}</td>
-                            <td>${(item.mean_actual_sales || 0).toLocaleString()}</td>
-                        `;
-                    } else if (tabType === 'monthly') {
-                        row.innerHTML = `
-                            <td>${item.month}</td>
-                            <td>${item.count_error_percentage}</td>
-                            <td>${item.mean_error_percentage}%</td>
-                            <td>${item.std_error_percentage || 'N/A'}</td>
-                        `;
-                    }
-                });
-            }
-            
+
             // =============================================================
             // AUTO SYNC FUNCTIONS
             // =============================================================
@@ -5135,403 +3380,6 @@ async def root():
                     button.disabled = false;
                     button.textContent = '🧪 Тестовый запуск';
                 }
-            }
-
-            // POST-PROCESSING FUNCTIONS
-            async function populatePostprocessingDepartmentFilters() {
-                const testDeptSelect = document.getElementById('test-department');
-                const batchDeptSelect = document.getElementById('batch-department');
-                
-                // Clear existing options
-                testDeptSelect.innerHTML = '<option value="">Выберите филиал</option>';
-                batchDeptSelect.innerHTML = '<option value="">Все подразделения</option>';
-                
-                try {
-                    console.log('Загрузка подразделений для пост-обработки...');
-                    // Fetch departments from API
-                    const response = await fetch('/api/departments/', { headers: AUTH_HEADERS });
-                    const departments = await response.json();
-                    
-                    console.log('Получено подразделений:', departments.length);
-                    
-                    if (Array.isArray(departments)) {
-                        departments.forEach(dept => {
-                            if (dept.type === 'DEPARTMENT') {  // Only show departments, not organizations
-                                const testOption = document.createElement('option');
-                                testOption.value = dept.id;
-                                testOption.textContent = dept.name;
-                                testDeptSelect.appendChild(testOption);
-                                
-                                const batchOption = document.createElement('option');
-                                batchOption.value = dept.id;
-                                batchOption.textContent = dept.name;
-                                batchDeptSelect.appendChild(batchOption);
-                            }
-                        });
-                        
-                        console.log(`Загружено ${departments.filter(d => d.type === 'DEPARTMENT').length} подразделений в списки пост-обработки`);
-                    }
-                } catch (error) {
-                    console.error('Ошибка загрузки подразделений для пост-обработки:', error);
-                    
-                    // Add error options
-                    const errorOption1 = document.createElement('option');
-                    errorOption1.value = '';
-                    errorOption1.textContent = 'Ошибка загрузки подразделений';
-                    testDeptSelect.appendChild(errorOption1);
-                    
-                    const errorOption2 = document.createElement('option');
-                    errorOption2.value = '';
-                    errorOption2.textContent = 'Ошибка загрузки подразделений';
-                    batchDeptSelect.appendChild(errorOption2);
-                }
-            }
-
-            // Postprocessing Settings Functions
-            async function loadPostprocessingSettings() {
-                try {
-                    const response = await fetch('/api/forecast/postprocessing/settings', { headers: AUTH_HEADERS });
-                    
-                    if (response.ok) {
-                        const settings = await response.json();
-                        
-                        // Load settings into form
-                        document.getElementById('enable-smoothing').checked = settings.enable_smoothing;
-                        document.getElementById('max-change-percent').value = settings.max_change_percent;
-                        document.getElementById('enable-business-rules').checked = settings.enable_business_rules;
-                        document.getElementById('enable-weekend-adjustment').checked = settings.enable_weekend_adjustment;
-                        document.getElementById('enable-holiday-adjustment').checked = settings.enable_holiday_adjustment;
-                        document.getElementById('enable-anomaly-detection').checked = settings.enable_anomaly_detection;
-                        document.getElementById('anomaly-threshold').value = settings.anomaly_threshold;
-                        document.getElementById('enable-confidence').checked = settings.enable_confidence;
-                        document.getElementById('confidence-level').value = settings.confidence_level;
-                        
-                        console.log('Настройки загружены из базы данных:', settings);
-                    } else if (response.status === 404) {
-                        console.log('Настройки не найдены, используются значения по умолчанию');
-                    } else {
-                        console.error('Ошибка загрузки настроек:', response.status);
-                    }
-                } catch (error) {
-                    console.error('Ошибка при загрузке настроек:', error);
-                }
-            }
-
-            async function savePostprocessingSettings() {
-                const statusDiv = document.getElementById('save-settings-status');
-                statusDiv.innerHTML = '<span style="color: #007bff;">Сохранение...</span>';
-                
-                try {
-                    // Collect settings from form
-                    const settings = {
-                        enable_smoothing: document.getElementById('enable-smoothing').checked,
-                        max_change_percent: parseFloat(document.getElementById('max-change-percent').value),
-                        enable_business_rules: document.getElementById('enable-business-rules').checked,
-                        enable_weekend_adjustment: document.getElementById('enable-weekend-adjustment').checked,
-                        enable_holiday_adjustment: document.getElementById('enable-holiday-adjustment').checked,
-                        enable_anomaly_detection: document.getElementById('enable-anomaly-detection').checked,
-                        anomaly_threshold: parseFloat(document.getElementById('anomaly-threshold').value),
-                        enable_confidence: document.getElementById('enable-confidence').checked,
-                        confidence_level: parseFloat(document.getElementById('confidence-level').value)
-                    };
-                    
-                    const response = await fetch('/api/forecast/postprocessing/settings', {
-                        method: 'POST',
-                        headers: {
-                            ...AUTH_HEADERS,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(settings)
-                    });
-                    
-                    if (response.ok) {
-                        const savedSettings = await response.json();
-                        statusDiv.innerHTML = `<span style="color: #28a745;">✅ Настройки сохранены (ID: ${savedSettings.id})</span>`;
-                        
-                        // Auto-hide success message after 3 seconds
-                        setTimeout(() => {
-                            statusDiv.innerHTML = '';
-                        }, 3000);
-                        
-                        console.log('Настройки сохранены:', savedSettings);
-                    } else {
-                        const errorData = await response.json();
-                        statusDiv.innerHTML = `<span style="color: #dc3545;">❌ Ошибка: ${errorData.detail}</span>`;
-                    }
-                } catch (error) {
-                    statusDiv.innerHTML = `<span style="color: #dc3545;">❌ Ошибка сети: ${error.message}</span>`;
-                    console.error('Ошибка при сохранении настроек:', error);
-                }
-            }
-
-            async function testPostprocessing() {
-                const branchId = document.getElementById('test-department').value;
-                const forecastDate = document.getElementById('test-date').value;
-                const rawPrediction = document.getElementById('test-prediction').value;
-                const resultsDiv = document.getElementById('test-results');
-                
-                if (!branchId || !forecastDate || !rawPrediction) {
-                    resultsDiv.innerHTML = '<p style="color: #dc3545;">Заполните все поля</p>';
-                    return;
-                }
-                
-                // Get post-processing settings
-                const applySmoothing = document.getElementById('enable-smoothing').checked;
-                const applyBusinessRules = document.getElementById('enable-business-rules').checked;
-                const applyAnomalyDetection = document.getElementById('enable-anomaly-detection').checked;
-                const calculateConfidence = document.getElementById('enable-confidence').checked;
-                
-                resultsDiv.innerHTML = '<p style="color: #007bff;">Обработка...</p>';
-                
-                try {
-                    // Build URL with query parameters
-                    const url = new URL('/api/forecast/postprocess', window.location.origin);
-                    url.searchParams.append('branch_id', branchId);
-                    url.searchParams.append('forecast_date', forecastDate);
-                    url.searchParams.append('raw_prediction', parseFloat(rawPrediction));
-                    url.searchParams.append('apply_smoothing', applySmoothing);
-                    url.searchParams.append('apply_business_rules', applyBusinessRules);
-                    url.searchParams.append('apply_anomaly_detection', applyAnomalyDetection);
-                    url.searchParams.append('calculate_confidence', calculateConfidence);
-                    
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        }
-                    });
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({}));
-                        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        displayTestResults(data.result);
-                    } else {
-                        resultsDiv.innerHTML = `<p style="color: #dc3545;">Ошибка: ${data.detail || 'Неизвестная ошибка API'}</p>`;
-                    }
-                } catch (error) {
-                    console.error('Error in testPostprocessing:', error);
-                    resultsDiv.innerHTML = `<p style="color: #dc3545;">Ошибка сети: ${error.message || 'Неизвестная ошибка сети'}</p>`;
-                }
-            }
-
-            function displayTestResults(result) {
-                const resultsDiv = document.getElementById('test-results');
-                
-                let html = '<div style="font-size: 14px;">';
-                
-                // Main results
-                html += `<div style="margin-bottom: 15px;">`;
-                html += `<strong>📊 Результаты обработки:</strong><br>`;
-                html += `<span style="color: #6c757d;">Исходный прогноз:</span> ${result.raw_prediction?.toFixed(2) || 'N/A'} ₸<br>`;
-                html += `<span style="color: #28a745; font-weight: bold;">Обработанный прогноз:</span> ${result.processed_prediction?.toFixed(2) || 'N/A'} ₸`;
-                html += `</div>`;
-                
-                // Adjustments applied
-                if (result.adjustments_applied && result.adjustments_applied.length > 0) {
-                    html += `<div style="margin-bottom: 15px;">`;
-                    html += `<strong>🔧 Примененные корректировки:</strong><br>`;
-                    result.adjustments_applied.forEach(adj => {
-                        html += `<div style="margin-left: 15px; margin-bottom: 5px;">`;
-                        html += `• ${adj.type}: ${adj.original?.toFixed(2)} → ${adj.adjusted?.toFixed(2)} (${adj.reason})`;
-                        html += `</div>`;
-                    });
-                    html += `</div>`;
-                } else {
-                    html += `<div style="margin-bottom: 15px; color: #28a745;">✅ Корректировки не требуются</div>`;
-                }
-                
-                // Anomaly detection
-                if (result.anomaly_score !== null) {
-                    const anomalyColor = result.is_anomaly ? '#dc3545' : '#28a745';
-                    const anomalyIcon = result.is_anomaly ? '⚠️' : '✅';
-                    html += `<div style="margin-bottom: 15px;">`;
-                    html += `<strong>🔍 Обнаружение аномалий:</strong><br>`;
-                    html += `<span style="color: ${anomalyColor};">${anomalyIcon} Z-score: ${result.anomaly_score?.toFixed(2)} (${result.is_anomaly ? 'аномалия' : 'норма'})</span>`;
-                    html += `</div>`;
-                }
-                
-                // Confidence interval
-                if (result.confidence_interval) {
-                    const ci = result.confidence_interval;
-                    html += `<div style="margin-bottom: 15px;">`;
-                    html += `<strong>📈 Доверительный интервал (${(ci.confidence_level * 100).toFixed(0)}%):</strong><br>`;
-                    html += `${ci.lower_bound?.toFixed(2)} ₸ - ${ci.upper_bound?.toFixed(2)} ₸`;
-                    html += `</div>`;
-                }
-                
-                // Business flags
-                if (result.business_flags && result.business_flags.length > 0) {
-                    html += `<div style="margin-bottom: 15px;">`;
-                    html += `<strong>🏢 Бизнес-контекст:</strong><br>`;
-                    html += `<div style="margin-left: 15px;">`;
-                    result.business_flags.forEach(flag => {
-                        const flagEmoji = getFlagEmoji(flag);
-                        html += `<span style="margin-right: 10px; color: #6c757d;">${flagEmoji} ${flag}</span>`;
-                    });
-                    html += `</div></div>`;
-                }
-                
-                html += '</div>';
-                resultsDiv.innerHTML = html;
-            }
-
-            function getFlagEmoji(flag) {
-                const emojiMap = {
-                    'weekend': '🎮',
-                    'friday': '🍻',
-                    'monday': '😴',
-                    'month_start': '📅',
-                    'month_end': '💰',
-                    'near_holiday': '🎉',
-                    'holiday': '🎊',
-                    'limited_recent_data': '📊',
-                    'high_recent_volatility': '📈',
-                    'anomaly_detected': '⚠️'
-                };
-                return emojiMap[flag] || '🏷️';
-            }
-
-            async function runBatchPostprocessing() {
-                const fromDate = document.getElementById('batch-from-date').value;
-                const toDate = document.getElementById('batch-to-date').value;
-                const departmentId = document.getElementById('batch-department').value;
-                
-                if (!fromDate || !toDate) {
-                    alert('Укажите даты начала и окончания');
-                    return;
-                }
-                
-                // Show progress
-                const progressDiv = document.getElementById('batch-progress');
-                const resultsDiv = document.getElementById('batch-results');
-                const statusP = document.getElementById('batch-status');
-                const progressBar = document.getElementById('batch-progress-bar');
-                
-                progressDiv.style.display = 'block';
-                resultsDiv.style.display = 'none';
-                statusP.textContent = 'Получение прогнозов...';
-                progressBar.style.width = '20%';
-                
-                try {
-                    // Get batch forecasts with post-processing
-                    const url = new URL('/api/forecast/batch_with_postprocessing', window.location.origin);
-                    url.searchParams.append('from_date', fromDate);
-                    url.searchParams.append('to_date', toDate);
-                    url.searchParams.append('apply_postprocessing', 'true');
-                    if (departmentId) {
-                        url.searchParams.append('department_id', departmentId);
-                    }
-                    
-                    statusP.textContent = 'Применение пост-обработки...';
-                    progressBar.style.width = '60%';
-                    
-                    const response = await fetch(url);
-                    const data = await response.json();
-                    
-                    statusP.textContent = 'Обработка завершена';
-                    progressBar.style.width = '100%';
-                    
-                    if (Array.isArray(data)) {
-                        displayBatchResults(data);
-                        
-                        // Store results for download
-                        window.batchResultsData = data;
-                        document.getElementById('download-batch-btn').style.display = 'inline-block';
-                    } else {
-                        throw new Error(data.detail || 'Неизвестная ошибка');
-                    }
-                    
-                } catch (error) {
-                    statusP.textContent = `Ошибка: ${error.message}`;
-                    progressBar.style.width = '0%';
-                }
-            }
-
-            function displayBatchResults(results) {
-                const resultsDiv = document.getElementById('batch-results');
-                const contentDiv = document.getElementById('batch-results-content');
-                
-                // Calculate summary statistics
-                const processedResults = results.filter(r => r.processed_prediction !== null);
-                const totalForecasts = processedResults.length;
-                const adjustmentsCount = processedResults.filter(r => r.adjustments_applied && r.adjustments_applied.length > 0).length;
-                const anomaliesCount = processedResults.filter(r => r.is_anomaly).length;
-                
-                let html = '<div style="margin-bottom: 20px;">';
-                html += '<h5>📊 Сводка по обработке</h5>';
-                html += `<p><strong>Всего прогнозов:</strong> ${totalForecasts}</p>`;
-                html += `<p><strong>С корректировками:</strong> ${adjustmentsCount} (${(adjustmentsCount/totalForecasts*100).toFixed(1)}%)</p>`;
-                html += `<p><strong>Обнаружено аномалий:</strong> ${anomaliesCount} (${(anomaliesCount/totalForecasts*100).toFixed(1)}%)</p>`;
-                html += '</div>';
-                
-                // Show first 10 results
-                html += '<h5>📋 Примеры результатов (первые 10)</h5>';
-                html += '<div style="max-height: 400px; overflow-y: auto;">';
-                html += '<table style="width: 100%; border-collapse: collapse; font-size: 12px;">';
-                html += '<thead><tr style="background: #f8f9fa;">';
-                html += '<th style="border: 1px solid #dee2e6; padding: 8px;">Дата</th>';
-                html += '<th style="border: 1px solid #dee2e6; padding: 8px;">Филиал</th>';
-                html += '<th style="border: 1px solid #dee2e6; padding: 8px;">Исходный</th>';
-                html += '<th style="border: 1px solid #dee2e6; padding: 8px;">Обработанный</th>';
-                html += '<th style="border: 1px solid #dee2e6; padding: 8px;">Корректировки</th>';
-                html += '<th style="border: 1px solid #dee2e6; padding: 8px;">Аномалия</th>';
-                html += '</tr></thead><tbody>';
-                
-                processedResults.slice(0, 10).forEach(result => {
-                    html += '<tr>';
-                    html += `<td style="border: 1px solid #dee2e6; padding: 8px;">${result.forecast_date || result.date}</td>`;
-                    html += `<td style="border: 1px solid #dee2e6; padding: 8px;">${result.department_name || 'N/A'}</td>`;
-                    html += `<td style="border: 1px solid #dee2e6; padding: 8px;">${result.raw_prediction?.toFixed(0) || 'N/A'}</td>`;
-                    html += `<td style="border: 1px solid #dee2e6; padding: 8px;">${result.processed_prediction?.toFixed(0) || 'N/A'}</td>`;
-                    html += `<td style="border: 1px solid #dee2e6; padding: 8px;">${result.adjustments_applied?.length || 0}</td>`;
-                    html += `<td style="border: 1px solid #dee2e6; padding: 8px;">${result.is_anomaly ? '⚠️' : '✅'}</td>`;
-                    html += '</tr>';
-                });
-                
-                html += '</tbody></table></div>';
-                
-                contentDiv.innerHTML = html;
-                resultsDiv.style.display = 'block';
-            }
-
-            function downloadBatchResults() {
-                if (!window.batchResultsData) {
-                    alert('Нет данных для скачивания');
-                    return;
-                }
-                
-                // Convert to CSV
-                const headers = ['Date', 'Department', 'Raw_Prediction', 'Processed_Prediction', 'Adjustments_Count', 'Is_Anomaly', 'Anomaly_Score', 'Confidence_Lower', 'Confidence_Upper'];
-                const csvContent = [
-                    headers.join(','),
-                    ...window.batchResultsData.map(row => [
-                        row.forecast_date || row.date,
-                        (row.department_name || '').replace(/,/g, ';'),
-                        row.raw_prediction || '',
-                        row.processed_prediction || '',
-                        row.adjustments_applied?.length || 0,
-                        row.is_anomaly ? 'Yes' : 'No',
-                        row.anomaly_score || '',
-                        row.confidence_interval?.lower_bound || '',
-                        row.confidence_interval?.upper_bound || ''
-                    ].join(','))
-                ].join('\\n');
-                
-                // Download file
-                const blob = new Blob([csvContent], { type: 'text/csv' });
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `forecast_postprocessing_${new Date().toISOString().split('T')[0]}.csv`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
             }
 
             // Load data on page load
