@@ -3,15 +3,25 @@
 ## Project Overview
 Sales Forecast API — система прогнозирования продаж на FastAPI с LightGBM для ML. Интеграция с iiko API и 1C Exchange для получения данных о подразделениях и продажах.
 
+## Production Server
+
+**Этот проект расположен на production-сервере (aqniet.site).** Все изменения в коде напрямую влияют на боевой сервис.
+
+- **Сервер**: aqniet.site (VPS, Linux)
+- **Домен**: https://aqniet.site/
+- **Проект на диске**: `/root/projects/SalesForecast/sales_forecast/`
+- **Docker Compose**: `docker-compose.prod.yml` — основной файл для запуска
+- **Nginx**: reverse proxy → Docker containers
+
 ## ВАЖНЫЕ ПРЕДУПРЕЖДЕНИЯ
 
 **НЕ ТРОГАЙТЕ 1C Exchange Service на порту 8000!** Это отдельный независимый проект.
 
 ### Разделение портов:
 - **Порт 8000**: 1C Exchange Service (ОТДЕЛЬНЫЙ ПРОЕКТ - НЕ ТРОГАТЬ!)
-- **Порт 8002**: Sales Forecast API (ЭТОТ ПРОЕКТ)
-- **Порт 5173**: Vite dev server (React frontend, proxy → 8002)
-- **Порт 5435**: PostgreSQL для Sales Forecast
+- **Порт 8002**: Sales Forecast API (ЭТОТ ПРОЕКТ, маппинг 8002→8000 внутри контейнера)
+- **Порт 5173**: Vite dev server (React frontend, proxy → 8002) — только для разработки
+- **Порт 5435**: PostgreSQL для Sales Forecast (маппинг 5435→5432 внутри контейнера)
 - **Порт 5433**: PostgreSQL для других проектов
 
 ## Architecture
@@ -21,7 +31,7 @@ Sales Forecast API — система прогнозирования прода�
 - **Database**: PostgreSQL 15
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (4 задачи: sync, retrain, metrics, gap check)
+- **Scheduler**: APScheduler (6 задач: employees, sales, waiter sales, retrain, metrics, gap check)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -43,12 +53,14 @@ sales_forecast/
 │   │   │   ├── department.ts      # Department, DepartmentCreate, SegmentType
 │   │   │   ├── sales.ts           # SalesSummary, SalesByHour, SyncResult
 │   │   │   ├── forecast.ts        # BatchForecast, ForecastComparison
-│   │   │   └── sync.ts            # AutoSyncLog, SyncStatusResponse
+│   │   │   ├── sync.ts            # AutoSyncLog, SyncStatusResponse
+│   │   │   └── waiter.ts          # Employee, SalesByWaiter, WaiterSyncResult
 │   │   ├── hooks/
-│   │   │   ├── use-departments.ts # CRUD + sync mutations
-│   │   │   ├── use-sales.ts       # Daily + hourly queries
-│   │   │   ├── use-forecast.ts    # Batch, comparison, retrain
-│   │   │   └── use-sync.ts        # Auto-sync status, manual sync
+│   │   │   ├── use-departments.ts    # CRUD + sync mutations
+│   │   │   ├── use-sales.ts          # Daily + hourly queries
+│   │   │   ├── use-forecast.ts       # Batch, comparison, retrain
+│   │   │   ├── use-sync.ts           # Auto-sync status, manual sync
+│   │   │   └── use-waiter-sales.ts   # Employees + waiter sales queries / mutations
 │   │   ├── components/
 │   │   │   ├── ui/                # shadcn/ui primitives (12 компонентов)
 │   │   │   ├── layout/            # AppLayout, Sidebar (4 секции навигации)
@@ -57,6 +69,7 @@ sales_forecast/
 │   │       ├── departments-page.tsx       # CRUD + фильтры (тип/компания/поиск)
 │   │       ├── daily-sales-page.tsx       # Таблица дневных продаж
 │   │       ├── hourly-sales-page.tsx      # Recharts BarChart + таблица
+│   │       ├── waiter-sales-page.tsx      # Продажи по официантам + ручной sync
 │   │       ├── forecast-branch-page.tsx   # Прогнозы по филиалам
 │   │       ├── forecast-comparison-page.tsx # LineChart + сортируемая таблица + ошибка
 │   │       └── sync-page.tsx              # Статус-карточки + ручная синхронизация
@@ -78,7 +91,8 @@ sales_forecast/
 │   │   ├── auth.py                # API key management endpoints
 │   │   ├── branch.py              # Branches CRUD
 │   │   ├── department.py          # Departments CRUD + serialize_department()
-│   │   ├── sales.py               # Sales sync, summary, hourly, stats
+│   │   ├── employee.py            # Employees catalog (list + sync)
+│   │   ├── sales.py               # Sales sync, summary, hourly, by-waiter, stats
 │   │   ├── forecast/              # ML forecasting package
 │   │   │   ├── __init__.py        # Router aggregation
 │   │   │   ├── core.py            # Retrain, model info, comparison, batch, CSV export
@@ -86,24 +100,28 @@ sales_forecast/
 │   │   │   ├── error_analysis.py  # Error segments, problematic branches, temporal errors
 │   │   │   └── postprocessing.py  # Forecast smoothing, business rules, settings
 │   │   └── monitoring.py          # Model health, performance, alerts
-│   ├── models/                    # SQLAlchemy models (11 моделей, разделены по файлам)
+│   ├── models/                    # SQLAlchemy models (13 моделей, разделены по файлам)
 │   │   ├── __init__.py            # Re-exports all models for mapper registration
 │   │   ├── department.py          # Department
 │   │   ├── sales.py               # SalesSummary, SalesByHour, AutoSyncLog
 │   │   ├── forecast.py            # Forecast, ForecastAccuracyLog, PostprocessingSettings
 │   │   ├── ml.py                  # ModelVersion, ModelRetrainingLog
+│   │   ├── employee.py            # Employee, SalesByWaiter
 │   │   └── branch.py              # Branch, Sale (legacy) + backward-compat re-exports
 │   ├── schemas/
 │   │   └── branch.py              # Pydantic schemas (18 схем)
 │   ├── agents/
 │   │   └── sales_forecaster_agent.py  # LightGBM agent
 │   └── services/
-│       ├── iiko_auth.py               # iiko API auth (credentials из settings)
-│       ├── iiko_department_loader.py   # Department sync (N+1 optimized)
-│       ├── iiko_sales_loader.py       # Sales sync (domains из settings)
-│       ├── scheduled_sales_loader.py  # Auto-sync scheduler wrapper
-│       ├── branch_loader.py           # Branch loading
-│       ├── training_service.py        # ML data preparation + feature engineering
+│       ├── iiko_auth.py                  # iiko API auth (credentials из settings)
+│       ├── iiko_department_loader.py     # Department sync (N+1 optimized)
+│       ├── iiko_sales_loader.py          # Daily/hourly sales sync (domains из settings)
+│       ├── iiko_employee_loader.py       # Employees catalog sync (XML, includeDeleted=true)
+│       ├── iiko_waiter_sales_loader.py   # Per-waiter sales OLAP + name→employee_id resolve
+│       ├── scheduled_sales_loader.py     # Auto-sync scheduler wrapper (sales + gap check)
+│       ├── scheduled_waiter_loader.py    # Scheduler wrappers for employees + waiter sales
+│       ├── branch_loader.py              # Branch loading
+│       ├── training_service.py           # ML data preparation + feature engineering
 │       ├── hyperparameter_tuning_service.py  # Optuna integration
 │       ├── model_retraining_service.py       # Auto-retraining logic
 │       ├── model_monitoring_service.py       # Performance monitoring
@@ -134,12 +152,13 @@ sales_forecast/
 - **Recharts 3** — графики (BarChart, LineChart)
 - **pnpm** — пакетный менеджер
 
-### Роутинг (6 страниц)
+### Роутинг (7 страниц)
 | Путь | Страница | API |
 |------|----------|-----|
 | `/departments` | Подразделения (CRUD + фильтры) | GET/POST/PUT/DELETE `/api/departments/` |
 | `/sales/daily` | Продажи по дням | GET `/api/sales/summary` |
 | `/sales/hourly` | Продажи по часам + BarChart | GET `/api/sales/hourly` |
+| `/sales/waiters` | Продажи по официантам + ручной sync | GET `/api/sales/by-waiter`, POST `/api/sales/sync-waiters`, POST `/api/employees/sync` |
 | `/forecast/branches` | Прогноз по филиалам | GET `/api/forecast/batch` |
 | `/forecast/comparison` | Сравнение факт/прогноз + LineChart | GET `/api/forecast/comparison` |
 | `/sync` | Синхронизация данных | POST `/api/sales/sync`, GET `/api/sales/auto-sync/status` |
@@ -208,13 +227,14 @@ ALLOWED_ORIGINS=https://aqniet.site
 
 ## Key Components
 
-### Database Models (11 моделей в `app/models/`)
+### Database Models (13 моделей в `app/models/`)
 | Файл | Модели | Описание |
 |------|--------|----------|
 | `department.py` | Department | Подразделения, организации, сегменты |
 | `sales.py` | SalesSummary, SalesByHour, AutoSyncLog | Продажи и логи синхронизации |
 | `forecast.py` | Forecast, ForecastAccuracyLog, PostprocessingSettings | Прогнозы и настройки |
 | `ml.py` | ModelVersion, ModelRetrainingLog | Версии моделей и логи переобучения |
+| `employee.py` | Employee, SalesByWaiter | Каталог сотрудников iiko + продажи по официантам |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -222,9 +242,13 @@ ALLOWED_ORIGINS=https://aqniet.site
 ### API Endpoints
 - `/api/departments/` — CRUD подразделений + serialize_department()
 - `/api/departments/sync` — Синхронизация с 1C Exchange API
+- `/api/employees/` — Список сотрудников (фильтры: search, role_code, department_code, include_deleted)
+- `/api/employees/sync` — Синхронизация каталога сотрудников из iiko (XML)
 - `/api/sales/sync` — Синхронизация продаж из iiko API
 - `/api/sales/summary` — Дневные итоги
 - `/api/sales/hourly` — Почасовые данные
+- `/api/sales/by-waiter` — Продажи по официантам (фильтры: department_id, employee_id, waiter_name, период)
+- `/api/sales/sync-waiters` — Синхронизация продаж по официантам (OLAP)
 - `/api/sales/stats` — Статистика
 - `/api/sales/auto-sync/status` — Статус автозагрузок
 - `/api/forecast/retrain` — Переобучение модели
@@ -244,7 +268,9 @@ ALLOWED_ORIGINS=https://aqniet.site
 - `/health` — Health check
 
 ### Scheduled Tasks (APScheduler via lifespan)
+- **01:30** — Daily employees catalog sync (iiko XML)
 - **02:00** — Daily sales auto-sync
+- **02:30** — Daily waiter sales sync (per-waiter OLAP)
 - **03:00 Sun** — Weekly model retraining
 - **04:00** — Daily performance metrics calculation
 - **10:00** — Daily sales gap check
@@ -257,12 +283,17 @@ ALLOWED_ORIGINS=https://aqniet.site
 
 ### iiko API Integration
 - **Domains**: Конфигурируются через `IIKO_DOMAINS` в .env
-- **Authentication**: Username/password с 1-hour token refresh
-- **Endpoints**: /resto/api/auth, /resto/api/v2/reports/olap
+- **Authentication**: Username/password с 1-hour token refresh (`/resto/api/auth`)
+- **Sales OLAP** (`POST /resto/api/v2/reports/olap`):
+  - Daily/hourly: `groupBy=[Department.Id, CloseTime, OrderNum]`, `aggregate=DishSumInt`
+  - Per-waiter: `groupBy=[Department.Id, WaiterName, OpenDate]`, `aggregate=[DishSumInt, DishDiscountSumInt]`
+  - **Важно**: фильтр периода — `OpenDate.Typed` (не `OpenDate` из публичного PDF)
+- **Employees** (`GET /resto/api/employees?includeDeleted=true`): XML, мерж по UUID между доменами
+- **Resolution `WaiterName → employee_id`**: `WaiterName` из OLAP — это `employee.name` из справочника. На вставке делается lookup; FK `employee_id` остаётся NULL при 0 или >1 совпадений
 
 ## Common Commands
 
-### Development
+### Development (локальная разработка без Docker)
 ```bash
 # Backend (НА ПОРТУ 8002!)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
@@ -274,26 +305,11 @@ cd frontend && pnpm dev
 # Сборка frontend
 cd frontend && pnpm build
 
-# Копирование SPA в бэкенд (для проверки через :8002)
-cp -r frontend/dist/* app/static/spa/
-
 # Тесты
 pytest
 
 # Миграции
 alembic upgrade head
-```
-
-### Production (Docker)
-```bash
-# Запуск
-docker-compose -f docker-compose.prod.yml up -d
-
-# Перестройка (включая frontend)
-docker-compose -f docker-compose.prod.yml build --no-cache sales-forecast-app
-
-# Логи
-docker-compose -f docker-compose.prod.yml logs -f sales-forecast-app
 ```
 
 ### API Operations
@@ -303,6 +319,17 @@ curl -X POST http://localhost:8002/api/departments/sync
 
 # Синхронизация продаж
 curl -X POST "http://localhost:8002/api/sales/sync?from_date=2025-03-01&to_date=2025-03-31"
+
+# Синхронизация каталога сотрудников (XML)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" http://localhost:8002/api/employees/sync
+
+# Синхронизация продаж по официантам (OLAP)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/sales/sync-waiters?from_date=2025-04-01&to_date=2025-04-03"
+
+# Список сотрудников с фильтром по роли (например, официанты WR1)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/employees/?role_code=WR1&limit=50"
 
 # Health check
 curl http://localhost:8002/health
@@ -339,14 +366,89 @@ curl -X POST "http://localhost:8002/api/forecast/compare_models" \
 - **Temporal Smoothing**: +-50% ограничение от среднего по дню недели за 4 недели
 - **Hybrid Forecasting**: Short-term (1-7 days, MAPE 5-15%) / Long-term (8+ days, MAPE 15-25%)
 
-## Deployment
+## Deployment (Production)
 
-### Production Server: aqniet.site
-- **Domain**: https://aqniet.site/
-- **Port Mapping**: 8002:8000 (sales-forecast-app)
-- **Database Port**: 5435:5432 (sales-forecast-db)
-- **Nginx**: Proxy to Docker containers
-- **Docker**: 3-stage build (Node.js frontend → Python deps → final image), non-root user, healthcheck
+### Инфраструктура
+- **Сервер**: aqniet.site (VPS)
+- **Домен**: https://aqniet.site/
+- **Nginx**: reverse proxy → `localhost:8002`
+- **Docker Compose**: `docker-compose.prod.yml`
+- **Контейнеры**:
+  - `sales-forecast-app` — FastAPI + React SPA (порт 8002→8000)
+  - `sales-forecast-db` — PostgreSQL 15 (порт 5435→5432)
+  - `exchange-service` — 1C Exchange (порт 8000→8000, отдельный проект)
+
+### Env-файлы (обязательны для запуска)
+- `.env.prod` — переменные для sales-forecast-app и sales-forecast-db
+- `.env.exchange` — переменные для exchange-service
+- Шаблоны: `.env.prod.example`, `.env.exchange.example`
+
+### Деплой (пошагово)
+
+```bash
+# 1. Перейти в директорию проекта
+cd /root/projects/SalesForecast/sales_forecast
+
+# 2. Пересобрать образ (frontend + backend в одном образе)
+docker-compose -f docker-compose.prod.yml build --no-cache sales-forecast-app
+
+# 3. Перезапустить контейнер
+docker-compose -f docker-compose.prod.yml up -d sales-forecast-app
+
+# 4. Проверить что запустился
+docker-compose -f docker-compose.prod.yml ps
+curl -s http://localhost:8002/health
+curl -s https://aqniet.site/health
+
+# 5. Посмотреть логи (если что-то не так)
+docker-compose -f docker-compose.prod.yml logs -f --tail=50 sales-forecast-app
+```
+
+### Деплой только backend (без пересборки frontend)
+Если изменения только в Python-коде, Docker всё равно пересобирает frontend (кеш).
+Для ускорения можно использовать `--build` вместо `--no-cache`:
+```bash
+docker-compose -f docker-compose.prod.yml build sales-forecast-app
+docker-compose -f docker-compose.prod.yml up -d sales-forecast-app
+```
+
+### Деплой frontend отдельно (без Docker)
+Для быстрой проверки можно собрать frontend локально и скопировать в контейнер:
+```bash
+cd frontend && pnpm build
+cp -r dist/* ../app/static/spa/
+# Перезапуск контейнера не нужен — FastAPI читает файлы с диска
+# Но volume не смонтирован для SPA, поэтому нужен rebuild Docker
+```
+
+### Полный перезапуск всех сервисов
+```bash
+docker-compose -f docker-compose.prod.yml down
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+### Откат к предыдущей версии
+```bash
+# Посмотреть историю коммитов
+git log --oneline -10
+
+# Откатить до нужного коммита
+git checkout <commit-hash> -- .
+
+# Пересобрать и перезапустить
+docker-compose -f docker-compose.prod.yml build --no-cache sales-forecast-app
+docker-compose -f docker-compose.prod.yml up -d sales-forecast-app
+```
+
+### Docker: 3-stage build
+1. **Stage 1** (`node:20-slim`): `pnpm install` + `pnpm build` → `frontend/dist/`
+2. **Stage 2** (`python:3.11-slim`): `pip install` requirements
+3. **Stage 3** (`python:3.11-slim`): копирует Python deps + app + SPA build, `libgomp1` для LightGBM, non-root user, healthcheck
+
+### Git
+- **Repository**: https://github.com/Rus9136/sales_forecast.git
+- **Branch**: master
+- **SSH-ключ для GitHub** не настроен на сервере — `git push` требует настройки SSH или переключения на HTTPS с токеном
 
 ## Known Issues & Solutions
 
@@ -362,10 +464,13 @@ curl -X POST "http://localhost:8002/api/forecast/compare_models" \
 **Problem**: `baseUrl` в tsconfig.json вызывает ошибку TS5101
 **Solution**: Использовать `paths` без `baseUrl` (TS 6+ поддерживает `paths` самостоятельно)
 
-## Version Control
+### 4. iiko OLAP — `OpenDate` vs `OpenDate.Typed`
+**Problem**: Запросы с фильтром `OpenDate` (как в публичном PDF iiko) возвращают `OLAP-запрос отклонен, поскольку в запросе не найден ни один из необходимых фильтров: Учетный день (OpenDate.Typed)`
+**Solution**: Всегда использовать `OpenDate.Typed` в фильтрах OLAP
 
-- **Repository**: https://github.com/Rus9136/sales_forecast.git
-- **Branch**: master
+### 5. Waiter sales — резолв имени в employee_id
+**Problem**: OLAP-отчёт `Выручка по официантам` возвращает только строку `WaiterName`. Поле `OrderWaiter.Id` существует, но соответствует владельцу заказа (терминал/кассир), а не назначенному официанту
+**Solution**: Использовать `WaiterName` как естественный ключ. Сотрудника резолвить через lookup `employees.name`. Перед синхронизацией продаж обновить справочник (`includeDeleted=true`), иначе уволенные официанты не привяжутся. FK `employee_id` остаётся NULL при 0 или >1 совпадений по имени — UI показывает баджик «не найден»
 
 ## Code Audit (2026-04-29)
 
