@@ -31,7 +31,7 @@ Sales Forecast API — система прогнозирования прода�
 - **Database**: PostgreSQL 15
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (6 задач: employees, sales, waiter sales, retrain, metrics, gap check)
+- **Scheduler**: APScheduler (7 задач: employees, sales, waiter sales, retrain, metrics, gap check, bonus auto-calc)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -274,6 +274,8 @@ ALLOWED_ORIGINS=https://aqniet.site
 - **03:00 Sun** — Weekly model retraining
 - **04:00** — Daily performance metrics calculation
 - **10:00** — Daily sales gap check
+- **11:00** — Daily waiter sales gap check
+- **5th @ 05:00** — Monthly bonus auto-calculation (draft за прошлый месяц)
 
 ## External Dependencies
 
@@ -338,6 +340,38 @@ curl http://localhost:8002/health
 curl http://localhost:8002/api/monitoring/health
 ```
 
+### Bonus Commands
+```bash
+# Залить справочники (компании, должности, KPI), схемы и KITCHEN-команды
+docker exec sales-forecast-app python -m app.bonus.seeds.run_all
+
+# Список схем
+curl -H "Authorization: Bearer $API_TOKEN" http://localhost:8002/api/bonus/schemes
+
+# Ввести план продаж (для KPI sales_plan)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  http://localhost:8002/api/bonus/monthly-plans \
+  -d '{"department_id": "<uuid>", "metric": "sales", "year": 2026, "month": 4, "target_value": "50000000"}'
+
+# Ввести ручной KPI (например, аудит)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  http://localhost:8002/api/bonus/manual-kpi \
+  -d '{"department_id": "<uuid>", "kpi_code": "manual_audit", "period_year": 2026, "period_month": 4, "fact_value": "95"}'
+
+# Запустить расчёт за период (всех с активным assignment)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  http://localhost:8002/api/bonus/calculations/run \
+  -d '{"department_id": "<uuid>", "year": 2026, "month": 4, "scope": "all"}'
+
+# Список расчётов с итогом
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/bonus/calculations?year=2026&month=4&status=draft"
+
+# Утвердить расчёт
+curl -X POST -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/bonus/calculations/<id>/approve"
+```
+
 ### ML Commands
 ```bash
 # Прогноз для филиала
@@ -365,6 +399,64 @@ curl -X POST "http://localhost:8002/api/forecast/compare_models" \
 - **Weekend Logic**: PostgreSQL DOW конвертация `postgres_dow = (python_dow + 1) % 7`
 - **Temporal Smoothing**: +-50% ограничение от среднего по дню недели за 4 недели
 - **Hybrid Forecasting**: Short-term (1-7 days, MAPE 5-15%) / Long-term (8+ days, MAPE 15-25%)
+
+## Bonus Subsystem
+
+Подсистема расчёта KPI-бонусов сотрудников. Находится в `app/bonus/`, переиспользует `departments`/`employees`/`sales_by_waiter` из основного приложения.
+
+### Архитектура
+- **Слои**: API (`routers/`) → Service (`services/`) → Repository (`repositories/`) → Model + Calculator (`calculator/`) → Data sources (`data_sources/`)
+- **Calculator engine** — чистая логика без БД. 5 моделей расчёта зарегистрированы через `@register_model`:
+  - `flat_by_kpi` — KPI → грейд → фикс. сумма (Управляющий)
+  - `revenue_percent_by_kpi` — KPI → ставка × выручка (Менеджер, Официант)
+  - `revenue_direct` — выручка × фикс. % (Кассир, Старший бариста)
+  - `combined_products` — выручка по компонентам с разными ставками (Бариста)
+  - `team_revenue_by_kpi` — коллективный (KITCHEN с распределением по слотам)
+- **Data sources** — 19 источников зарегистрированы в `DataSourceRegistry`. Реальные читают из `sales_by_waiter`/`sales_summary`. Заглушки: ready/prepared products, CRM-отзывы, HR-укомплектованность (через `bonus_manual_kpi`)
+- **Versioning** — схемы (`bonus_scheme`) и слоты команд (`bonus_team_position`) версионируются через `effective_from`/`effective_to`
+- **Snapshots** — каждый `bonus_calculation` сохраняет `scheme_config_snapshot`, `kpi_values`, `breakdown` (JSONB) для аудита
+
+### Database tables (12)
+- `bonus_company` — юрлица
+- `bonus_position` — должности с маппингом `iiko_role_code` → `employees.main_role_code`
+- `bonus_team`, `bonus_team_position` — команды (KITCHEN) и слоты с весами
+- `bonus_kpi_definition` — справочник KPI
+- `bonus_monthly_plan` — планы продаж/рентабельности/норма смен
+- `bonus_employee_assignment` — назначения сотрудника на должность/слот
+- `bonus_scheme` — схемы расчёта (department × position/team)
+- `bonus_manual_kpi` — ручной ввод KPI (аудит, отзывы, укомплектованность)
+- `bonus_calculation`, `bonus_calculation_penalty` — расчёты + удержания
+- `departments.company_id` — добавлено к `departments` для связи с юрлицом
+
+### API endpoints (под `/api/bonus/`)
+- `GET /companies` `/positions` `/kpi-definitions` `/config/calculation-models` `/config/data-sources`
+- `GET /schemes` `/schemes/{id}`, `POST /schemes`, `POST /schemes/validate`
+- `GET /teams` `/teams/{id}`
+- `GET/POST /manual-kpi`, `DELETE /manual-kpi/{id}`
+- `GET/POST /monthly-plans`
+- `POST /calculations/run` (`scope: all|employee:<uuid>|position:<code>`)
+- `GET /calculations` `/calculations/{id}`
+- `POST /calculations/{id}/penalties` `/approve` `/reject`
+- `GET /reports/summary?year=&month=`
+
+### Frontend pages (`/bonus/*`)
+- `/bonus/calculations` — список расчётов, batch-запуск, детали с breakdown, approve/reject
+- `/bonus/schemes` — список схем по department, просмотр config (JSONB)
+- `/bonus/manual-kpi` — таблица + форма ввода KPI
+- `/bonus/monthly-plans` — таблица + форма планов
+
+### Tests
+53 unit-теста в `tests/bonus/`:
+- `test_kpi_engine.py` — score/overall (TC-50..52)
+- `test_grading.py` — find_grade с ceil-rounding (TC-60..61)
+- `test_calculation_models.py` — все 5 моделей с числами из `bonus_service/bonus_docs/10-testing.md`
+
+```bash
+docker exec sales-forecast-app python -m pytest tests/bonus/ -v
+```
+
+### Документация моделей
+Полная спецификация в `bonus_service/bonus_docs/`. Конфиги локаций — `07-config-examples.md`. Числовые тест-кейсы — `10-testing.md`.
 
 ## Deployment (Production)
 

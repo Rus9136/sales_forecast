@@ -1,5 +1,8 @@
 import { NavLink } from 'react-router-dom'
-import { Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw, UserRound, Users } from 'lucide-react'
+import {
+  Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
+  UserRound, Users, Calculator, FileText, ClipboardList, Target,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navSections = [
@@ -23,6 +26,15 @@ const navSections = [
     items: [
       { path: '/forecast/branches', label: 'Прогноз по филиалам', icon: TrendingUp },
       { path: '/forecast/comparison', label: 'Сравнение факт / прогноз', icon: GitCompare },
+    ],
+  },
+  {
+    label: 'БОНУСЫ',
+    items: [
+      { path: '/bonus/calculations', label: 'Расчёты бонусов', icon: Calculator },
+      { path: '/bonus/schemes', label: 'Схемы расчёта', icon: FileText },
+      { path: '/bonus/manual-kpi', label: 'Ручной ввод KPI', icon: ClipboardList },
+      { path: '/bonus/monthly-plans', label: 'Помесячные планы', icon: Target },
     ],
   },
   {

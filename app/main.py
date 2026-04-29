@@ -10,6 +10,9 @@ from .config import settings
 from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
+from .bonus.routers import bonus_api as bonus_router
+from .bonus.data_sources.bootstrap import register_all_sources as register_bonus_sources
+from .bonus.services.scheduled_calc import run_monthly_auto_calc as run_bonus_monthly_calc
 from .services.scheduled_sales_loader import run_auto_sync, run_gap_check
 from .services.scheduled_waiter_loader import (
     run_employees_sync,
@@ -107,10 +110,22 @@ async def lifespan(app: FastAPI):
             replace_existing=True
         )
 
+        scheduler.add_job(
+            func=run_bonus_monthly_calc,
+            trigger="cron",
+            day=5,
+            hour=5,
+            minute=0,
+            id='monthly_bonus_auto_calc',
+            name='Monthly Bonus Auto-Calculation (5th @ 5:00)',
+            replace_existing=True,
+        )
+
         scheduler.start()
         logger.info(
             "Background scheduler started - Employees 1:30, Sales 2:00, Waiter sales 2:30, "
-            "Retrain Sun 3:00, Metrics 4:00, Gap check 10:00, Waiter gap check 11:00"
+            "Retrain Sun 3:00, Metrics 4:00, Gap check 10:00, Waiter gap check 11:00, "
+            "Bonus auto-calc 5th-of-month 5:00"
         )
 
     except Exception as e:
@@ -176,6 +191,10 @@ app.include_router(forecast.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(employee.router, prefix="/api")
+app.include_router(bonus_router, prefix="/api")
+
+# Register bonus data sources at import time so all endpoints can resolve them
+register_bonus_sources()
 
 # SPA static files (React frontend build output)
 SPA_DIR = pathlib.Path(__file__).parent / "static" / "spa"

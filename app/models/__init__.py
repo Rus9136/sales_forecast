@@ -6,3 +6,6 @@ from .forecast import Forecast, ForecastAccuracyLog, PostprocessingSettings  # n
 from .ml import ModelVersion, ModelRetrainingLog  # noqa: F401
 from .employee import Employee, SalesByWaiter  # noqa: F401
 from .branch import Branch, Sale  # noqa: F401
+
+# Register bonus subsystem models with the shared Base metadata
+from ..bonus import models as _bonus_models  # noqa: F401
