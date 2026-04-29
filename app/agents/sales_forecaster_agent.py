@@ -25,7 +25,16 @@ class SalesForecasterAgent:
         self.model = None
         self.feature_columns = None
         self._training_metrics = None
+        self._target_transform = "identity"
         self._load_model()
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Predict, applying inverse target transform if model was trained on log1p."""
+        raw = self.model.predict(X)
+        if getattr(self, "_target_transform", "identity") == "log1p":
+            raw = np.expm1(raw)
+            raw = np.maximum(raw, 0.0)
+        return raw
     
     def train_model(
         self, 
@@ -87,44 +96,49 @@ class SalesForecasterAgent:
                 self.feature_columns = temp_training_service.get_feature_columns()
                 target_column = temp_training_service.get_target_column()
         
-        # Prepare datasets
+        # Prepare datasets — train in log1p space to balance loss across
+        # vastly different sales scales (500..3M ₸/day). Metrics computed
+        # on the original scale via expm1 so they remain interpretable.
+        self._target_transform = "log1p"
+
         X_train = train_df[self.feature_columns]
         y_train = train_df[target_column]
         X_val = val_df[self.feature_columns]
         y_val = val_df[target_column]
         X_test = test_df[self.feature_columns]
         y_test = test_df[target_column]
-        
+
+        y_train_t = np.log1p(y_train)
+        y_val_t = np.log1p(y_val)
+
         logger.info(f"Dataset sizes - Train: {len(X_train)}, Validation: {len(X_val)}, Test: {len(X_test)}")
-        
-        # Initialize and train model
+        logger.info(f"Target transform: {self._target_transform}")
+
         self.model = lgb.LGBMRegressor(
-            n_estimators=200,  # Увеличиваем для better performance
-            learning_rate=0.1,
-            max_depth=5,
+            n_estimators=500,
+            learning_rate=0.05,
+            max_depth=6,
             num_leaves=31,
             random_state=42,
             n_jobs=-1,
-            verbosity=-1
+            verbosity=-1,
         )
-        
-        # Train model with validation set for early stopping
+
         self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],  # Используем validation set для early stopping
-            eval_metric='rmse',
-            callbacks=[lgb.early_stopping(15), lgb.log_evaluation(0)]
+            X_train, y_train_t,
+            eval_set=[(X_val, y_val_t)],
+            eval_metric='mae',
+            callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)],
         )
-        
-        # Evaluate on validation set (for monitoring during training)
-        y_val_pred = self.model.predict(X_val)
+
+        # Predictions back to original scale
+        y_val_pred = np.maximum(np.expm1(self.model.predict(X_val)), 0.0)
         val_mae = mean_absolute_error(y_val, y_val_pred)
         val_mape = self._calculate_mape(y_val, y_val_pred)
         val_r2 = r2_score(y_val, y_val_pred)
         val_rmse = np.sqrt(mean_squared_error(y_val, y_val_pred))
-        
-        # Evaluate on test set (honest evaluation - never seen during training)
-        y_test_pred = self.model.predict(X_test)
+
+        y_test_pred = np.maximum(np.expm1(self.model.predict(X_test)), 0.0)
         test_mae = mean_absolute_error(y_test, y_test_pred)
         test_mape = self._calculate_mape(y_test, y_test_pred)
         test_r2 = r2_score(y_test, y_test_pred)
@@ -292,8 +306,8 @@ class SalesForecasterAgent:
             
             logger.info(f"Feature vector created with {len(features)} features")
             
-            # Make prediction
-            prediction = self.model.predict(X)[0]
+            # Make prediction (predict() applies inverse target transform)
+            prediction = float(self.predict(X)[0])
 
             # Применяем временное сглаживание
             prediction = self._apply_temporal_smoothing(branch_id, forecast_date, prediction, db)
@@ -604,18 +618,18 @@ class SalesForecasterAgent:
     def _save_model(self, metrics=None):
         """Save trained model to disk"""
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        
+
         model_data = {
             'model': self.model,
             'feature_columns': self.feature_columns,
-            'version': '2.0',  # Обновляем версию для train/val/test split
+            'version': '2.1',
             'trained_at': datetime.now().isoformat(),
-            'training_metrics': metrics  # Теперь включает validation и test метрики
+            'training_metrics': metrics,
+            'target_transform': getattr(self, '_target_transform', 'identity'),
         }
-        
+
         joblib.dump(model_data, self.model_path)
-        logger.info(f"✅ Model v2.0 saved to {self.model_path}")
-        logger.info(f"📊 Saved metrics include both validation and test performance")
+        logger.info(f"Model v2.1 saved to {self.model_path}")
     
     def _load_model(self):
         """Load model from disk if exists"""
@@ -626,9 +640,11 @@ class SalesForecasterAgent:
                 self.feature_columns = model_data['feature_columns']
                 self._training_metrics = model_data.get('training_metrics', None)
                 self._trained_at = model_data.get('trained_at', 'unknown')
+                self._target_transform = model_data.get('target_transform', 'identity')
                 logger.info(f"Model loaded from {self.model_path}")
                 logger.info(f"Model version: {model_data.get('version', 'unknown')}")
                 logger.info(f"Trained at: {self._trained_at}")
+                logger.info(f"Target transform: {self._target_transform}")
                 if self._training_metrics:
                     logger.info(f"Training metrics: MAE={self._training_metrics.get('mae', 'N/A'):.2f}, MAPE={self._training_metrics.get('mape', 'N/A'):.2f}%")
             except Exception as e:

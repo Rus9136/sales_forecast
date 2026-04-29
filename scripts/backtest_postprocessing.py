@@ -120,8 +120,7 @@ def main() -> None:
 
             features = agent._create_prediction_features(d, hist.copy())
             X = pd.DataFrame([features])[agent.feature_columns]
-            raw = float(agent.model.predict(X)[0])
-            raw = max(0.0, raw)
+            raw = max(0.0, float(agent.predict(X)[0]))
 
             python_dow = pd.Timestamp(d).dayofweek
             postgres_dow = (python_dow + 1) % 7

@@ -101,7 +101,11 @@ Single-model для всех масштабов не справляется — 
 
 Цель: исправить системные изъяны модели — масштаб, leakage, multi-step.
 
-- [ ] **3.1 Логарифм target.** Обучать на `np.log1p(total_sales)`, при инференсе `np.expm1(pred)`. Выровняет вклад мелких и крупных отделений в loss.
+- [x] **3.1 Логарифм target.** **Применено 2026-04-29.** Обучение на `np.log1p(total_sales)`, при inference `np.expm1(pred)`. Метаданные `target_transform='log1p'` сохраняются в pickle. Helper `agent.predict()` инкапсулирует inverse. Параметры обучения подкручены: n_estimators 200→500, learning_rate 0.1→0.05, max_depth 5→6, eval_metric `rmse`→`mae`, early_stopping 15→20.
+  - **Эффект:** in-sample test MAPE 9.48% → 7.59%; разрыв val/test уменьшился (10.4/9.5 → 7.7/7.6 — модель меньше переобучается).
+  - **Out-of-sample:** MAPE 44.35% → **42.88%** (−1.47 п.п.).
+  - **Главный win — крупные отделения (Q4):** 67.18% → **61.15%** (−6.03 п.п.). Именно это и должен был лечить log-target — баланс вклада в loss.
+  - **Побочный эффект:** общий bias стал −11% (раньше −5%). Jensen correction (`expm1(pred + 0.5·σ²)`) — отложено: bias не критичен, MAPE главнее.
 - [ ] **3.2 Сегментные модели.** Обучить отдельные LGBM на segment_type (или на 3 кластера: малые/средние/крупные по avg sales). Файлы: один `.pkl` на сегмент, диспетчер в `agent.forecast()`.
 - [ ] **3.3 Корректные lag-фичи для multi-step.** Либо recursive forecasting (предсказали день N → подставили в lag → предсказали день N+1), либо direct multi-step (отдельные модели на горизонты 1, 3, 7, 14 дней).
 - [ ] **3.4 GroupKFold по `department_id`** для CV в Optuna (`hyperparameter_tuning_service.py:76`) вместо чистого TimeSeriesSplit. Сейчас Optuna оптимизирует «как хорошо запоминать те же отделения».
@@ -160,6 +164,7 @@ Single-model для всех масштабов не справляется — 
 | 2026-04-29 | Claude | **Этап 2.1**: исправлен deployment-баг — при пустом current_mape deploy безусловно. Добавлен sanity-check >50% | Auto-retrain разблокирован |
 | 2026-04-29 | Claude | **Этап 2.2**: миграция `008_forecast_logging_fix.sql`, `_upsert_forecast()` в agent, backfill 1 865 строк | Мониторинг работает, baseline MAPE = 44.54% записан |
 | 2026-04-29 | Claude | **Этап 2.4-2.6**: chmod 1000:1000 на `models/`, retrain через `/api/forecast/retrain` (4.5 сек), новая `.pkl`. Test MAPE 9.48% (in-sample) | Out-of-sample MAPE 44.54% → **44.35%** (−0.19 п.п., незначимо). **Найдено: структурный overfit 5x in-sample vs out-of-sample** |
+| 2026-04-29 | Claude | **Этап 3.1**: log-target transform — обучение на `log1p(y)`, inverse `expm1(pred)`, helper `agent.predict()`, метаданные `target_transform` в pickle. Параметры: n_est 500, lr 0.05, max_depth 6, eval_metric mae | Out-of-sample MAPE 44.35% → **42.88%** (−1.47 п.п.). **Q4 (крупные): 67% → 61% (−6 п.п.)** |
 | | | | |
 
 ---
