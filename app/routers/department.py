@@ -5,6 +5,7 @@ from typing import List, Optional
 from ..db import get_db
 from ..models.branch import Department as DepartmentModel, SalesSummary
 from ..schemas.branch import Department, DepartmentCreate, DepartmentUpdate
+from ..services.iiko_department_loader import IikoDepartmentLoaderService
 from ..auth import get_api_key_or_bypass, ApiKey
 
 router = APIRouter(prefix="/departments", tags=["departments"])
@@ -140,6 +141,20 @@ def get_sales_points_only(
         'filter_applied': 'DEPARTMENT type only',
         'sales_data_filter': with_sales_data
     }
+
+
+@router.post("/sync")
+async def sync_departments(
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
+    """Sync departments from iiko API"""
+    try:
+        service = IikoDepartmentLoaderService(db)
+        total_processed = await service.sync_departments()
+        return {"message": f"Successfully processed {total_processed} departments from iiko"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{department_id}")

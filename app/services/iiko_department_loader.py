@@ -73,17 +73,28 @@ class IikoDepartmentLoaderService:
                 code = item.find('code')
                 name = item.find('name')
                 dept_type = item.find('type')
-                taxpayer_id = item.find('taxpayerIdNumber')
-                
+
+                # iiko stores BIN/ИИН in two different locations depending on type:
+                # - DEPARTMENT: top-level <taxpayerIdNumber>
+                # - JURPERSON: nested <jurPersonAdditionalPropertiesDto><taxpayerId>
+                taxpayer_id_value = None
+                top_tin = item.find('taxpayerIdNumber')
+                if top_tin is not None and top_tin.text and top_tin.text.strip():
+                    taxpayer_id_value = top_tin.text.strip()
+                else:
+                    nested = item.find('jurPersonAdditionalPropertiesDto/taxpayerId')
+                    if nested is not None and nested.text and nested.text.strip():
+                        taxpayer_id_value = nested.text.strip()
+
                 department = {
                     'id': dept_id.text if dept_id is not None else None,
                     'parent_id': parent_id.text if parent_id is not None else None,
                     'code': code.text if code is not None else None,
                     'name': name.text if name is not None else '',
                     'type': dept_type.text if dept_type is not None else 'DEPARTMENT',
-                    'taxpayer_id_number': taxpayer_id.text if taxpayer_id is not None and taxpayer_id.text else None
+                    'taxpayer_id_number': taxpayer_id_value
                 }
-                
+
                 departments.append(department)
             
             return departments
@@ -118,38 +129,50 @@ class IikoDepartmentLoaderService:
                 departments_processed_this_iteration = 0
 
                 for dept_id, iiko_dept in list(remaining_departments.items()):
-                    # Check if this department can be processed (in-memory lookup)
+                    # Check if this department can be processed (in-memory lookup).
+                    # If parent is also in this iiko batch, wait for it first so
+                    # children inherit the freshly-synced parent BIN.
                     parent_id = iiko_dept['parent_id']
+                    parent_pending = parent_id in remaining_departments
                     can_process = (parent_id is None or
                                  parent_id in processed_departments or
-                                 parent_id in existing_ids)
+                                 (parent_id in existing_ids and not parent_pending))
 
                     if can_process:
                         existing_dept = existing_departments.get(dept_id)
+                        parent_dept = existing_departments.get(parent_id) if parent_id else None
+
+                        # BIN resolution priority:
+                        #   1. iiko (authoritative when non-empty)
+                        #   2. existing manual value (preserve UI edits)
+                        #   3. inherit from parent JURPERSON (covers iiko gaps)
+                        iiko_bin = iiko_dept['taxpayer_id_number']
+                        existing_bin = existing_dept.taxpayer_id_number if existing_dept else None
+                        parent_bin = parent_dept.taxpayer_id_number if parent_dept else None
+                        resolved_bin = iiko_bin or existing_bin or parent_bin or None
 
                         if existing_dept:
-                            # Update existing department
                             existing_dept.code = iiko_dept['code']
                             existing_dept.name = iiko_dept['name']
                             existing_dept.type = iiko_dept['type']
-                            existing_dept.taxpayer_id_number = iiko_dept['taxpayer_id_number']
+                            existing_dept.taxpayer_id_number = resolved_bin
                             existing_dept.parent_id = parent_id
                             existing_dept.updated_at = datetime.utcnow()
                             existing_dept.synced_at = datetime.utcnow()
                             updated_count += 1
                         else:
-                            # Create new department
                             new_dept = Department(
                                 id=dept_id,
                                 parent_id=parent_id,
                                 code=iiko_dept['code'],
                                 name=iiko_dept['name'],
                                 type=iiko_dept['type'],
-                                taxpayer_id_number=iiko_dept['taxpayer_id_number'],
+                                taxpayer_id_number=resolved_bin,
                                 synced_at=datetime.utcnow()
                             )
                             self.db.add(new_dept)
                             self.db.flush()  # Flush to make FK visible in this session
+                            existing_departments[dept_id] = new_dept
                             existing_ids.add(dept_id)
                             new_count += 1
 
