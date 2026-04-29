@@ -5,16 +5,14 @@ services:
   sales-forecast-db:
     image: postgres:15
     container_name: sales-forecast-db
-    environment:
-      POSTGRES_USER: sales_user
-      POSTGRES_PASSWORD: sales_password
-      POSTGRES_DB: sales_forecast
+    env_file:
+      - .env.prod
     ports:
       - "5435:5432"
     volumes:
       - sales_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sales_user -d sales_forecast"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,34 +24,29 @@ services:
     container_name: sales-forecast-app
     ports:
       - "8002:8000"
+    env_file:
+      - .env.prod
     environment:
-      DATABASE_URL: postgresql://sales_user:sales_password@sales-forecast-db:5432/sales_forecast
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sales-forecast-db:5432/${POSTGRES_DB}
       POSTGRES_HOST: sales-forecast-db
       POSTGRES_PORT: 5432
-      POSTGRES_USER: sales_user
-      POSTGRES_PASSWORD: sales_password
-      POSTGRES_DB: sales_forecast
-      API_BASE_URL: "http://tco.aqnietgroup.com:5555/v1"
     volumes:
-      - ./models:/app/models  # Монтируем директорию models для сохранения ML модели
+      - ./models:/app/models
     depends_on:
       sales-forecast-db:
         condition: service_healthy
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-  # 1C Exchange Service  
+  # 1C Exchange Service
   exchange-service:
     build:
       context: /root/projects/1c-exchange-service
     container_name: exchange-service
     ports:
       - "8000:8000"
-    environment:
-      API_KEY: "SdSWhiCAv8nZR67"
-      LOG_LEVEL: "INFO"
-      PROJECT_NAME: "1C Exchange Service"
-      VERSION: "1.0.0"
+    env_file:
+      - .env.exchange
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 

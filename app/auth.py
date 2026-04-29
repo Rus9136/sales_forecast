@@ -6,8 +6,10 @@ from fastapi import HTTPException, Security, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, String, DateTime, Boolean, Integer
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
+import threading
 import secrets
 import hashlib
 from .db import Base, get_db
@@ -155,50 +157,96 @@ def get_current_api_key(
     return db_api_key
 
 
-def check_rate_limit(
-    api_key: ApiKey,
-    endpoint: str,
-    db: Session
-) -> bool:
+class InMemoryRateLimiter:
     """
-    Check if API key has exceeded rate limits
-    
-    Returns:
-        bool: True if within limits, False if exceeded
+    In-memory sliding window rate limiter.
+    Replaces 3 SQL COUNT queries per request with O(1) dict/deque lookups.
     """
-    now = datetime.utcnow()
-    
-    # Check minute limit
-    minute_ago = now - timedelta(minutes=1)
-    minute_usage = db.query(ApiKeyUsage).filter(
-        ApiKeyUsage.key_id == api_key.key_id,
-        ApiKeyUsage.timestamp >= minute_ago
-    ).count()
-    
-    if minute_usage >= api_key.rate_limit_per_minute:
-        return False
-    
-    # Check hour limit
-    hour_ago = now - timedelta(hours=1)
-    hour_usage = db.query(ApiKeyUsage).filter(
-        ApiKeyUsage.key_id == api_key.key_id,
-        ApiKeyUsage.timestamp >= hour_ago
-    ).count()
-    
-    if hour_usage >= api_key.rate_limit_per_hour:
-        return False
-    
-    # Check day limit
-    day_ago = now - timedelta(days=1)
-    day_usage = db.query(ApiKeyUsage).filter(
-        ApiKeyUsage.key_id == api_key.key_id,
-        ApiKeyUsage.timestamp >= day_ago
-    ).count()
-    
-    if day_usage >= api_key.rate_limit_per_day:
-        return False
-    
-    return True
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        # key_id -> deque of timestamps (sorted ascending)
+        self._requests: dict[str, deque] = {}
+
+    def _prune(self, key_id: str, now: datetime) -> deque:
+        """Remove entries older than 24h (the largest window)."""
+        dq = self._requests.get(key_id)
+        if dq is None:
+            dq = deque()
+            self._requests[key_id] = dq
+        cutoff = now - timedelta(days=1)
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        return dq
+
+    def check_and_record(
+        self,
+        key_id: str,
+        limit_minute: int,
+        limit_hour: int,
+        limit_day: int,
+    ) -> bool:
+        """
+        Check rate limits and record the request if within limits.
+        Returns True if allowed, False if rate-limited.
+        """
+        now = datetime.utcnow()
+        with self._lock:
+            dq = self._prune(key_id, now)
+
+            minute_ago = now - timedelta(minutes=1)
+            hour_ago = now - timedelta(hours=1)
+
+            minute_count = 0
+            hour_count = 0
+            day_count = len(dq)
+
+            for ts in reversed(dq):
+                if ts >= minute_ago:
+                    minute_count += 1
+                if ts >= hour_ago:
+                    hour_count += 1
+                else:
+                    break  # older entries are only day-level
+
+            if minute_count >= limit_minute:
+                return False
+            if hour_count >= limit_hour:
+                return False
+            if day_count >= limit_day:
+                return False
+
+            dq.append(now)
+            return True
+
+
+# Module-level singleton
+_rate_limiter = InMemoryRateLimiter()
+
+
+def get_current_api_key_with_rate_limit(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db: Session = Depends(get_db)
+) -> ApiKey:
+    """
+    Validate API key and check rate limits (in-memory, zero SQL for rate checks).
+    """
+    api_key = get_current_api_key(credentials, db)
+
+    # In-memory rate limit check (0 SQL queries)
+    allowed = _rate_limiter.check_and_record(
+        key_id=api_key.key_id,
+        limit_minute=api_key.rate_limit_per_minute,
+        limit_hour=api_key.rate_limit_per_hour,
+        limit_day=api_key.rate_limit_per_day,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please reduce request frequency."
+        )
+
+    return api_key
 
 
 def log_api_usage(
@@ -208,7 +256,7 @@ def log_api_usage(
     user_agent: Optional[str] = None,
     db: Session = None
 ):
-    """Log API usage for rate limiting and analytics"""
+    """Log API usage to DB for analytics (not used for rate limiting)."""
     if db:
         usage_log = ApiKeyUsage(
             key_id=api_key.key_id,
@@ -218,28 +266,6 @@ def log_api_usage(
         )
         db.add(usage_log)
         db.commit()
-
-
-def get_current_api_key_with_rate_limit(
-    credentials: HTTPAuthorizationCredentials = Security(security),
-    db: Session = Depends(get_db)
-) -> ApiKey:
-    """
-    Validate API key and check rate limits
-    """
-    api_key = get_current_api_key(credentials, db)
-    
-    # Check rate limits
-    if not check_rate_limit(api_key, "forecast", db):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Please reduce request frequency."
-        )
-    
-    # Log usage
-    log_api_usage(api_key, "forecast", db=db)
-    
-    return api_key
 
 
 # Optional dependency for endpoints that can work with or without auth
@@ -259,17 +285,26 @@ def get_optional_api_key(
         return None
 
 
-# Environment-based auth bypass for development
 def get_api_key_or_bypass(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
     db: Session = Depends(get_db)
 ) -> Optional[ApiKey]:
     """
-    Get API key or bypass in development mode
+    Validate API key. In DEBUG mode, validate against API_TOKEN from env
+    instead of the database (allows dev without DB-stored keys).
+    In production mode, use full database-based validation with rate limiting.
     """
-    # Bypass authentication in development mode
     if settings.DEBUG:
-        return None
-    
-    # Require authentication in production
+        # In debug mode, validate against env token (no DB lookup required)
+        if not credentials:
+            return None
+        if settings.API_TOKEN and credentials.credentials == settings.API_TOKEN:
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Production: full database-based validation with rate limiting
     return get_current_api_key_with_rate_limit(credentials, db)

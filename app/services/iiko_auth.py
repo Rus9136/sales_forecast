@@ -3,14 +3,16 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+from ..config import settings
+
 logger = logging.getLogger(__name__)
 
 
 class IikoAuthService:
     def __init__(self, base_url: str):
         self.base_url = base_url
-        self.login = "Tanat"
-        self.password = "7c4a8d09ca3762af61e59520943dc26494f8941b"
+        self.login = settings.IIKO_LOGIN
+        self.password = settings.IIKO_PASSWORD
         self.token = None
         self.token_expires_at = None
     

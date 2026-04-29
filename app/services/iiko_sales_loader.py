@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from datetime import datetime, date, timedelta
 from ..models.branch import SalesSummary, SalesByHour, Department
 from ..services.iiko_auth import IikoAuthService
+from ..config import settings
 import logging
 import pandas as pd
 from collections import defaultdict
@@ -14,10 +15,7 @@ logger = logging.getLogger(__name__)
 class IikoSalesLoaderService:
     def __init__(self, db: Session):
         self.db = db
-        self.domains = [
-            "https://sandy-co-co.iiko.it",
-            "https://madlen-group-so.iiko.it"
-        ]
+        self.domains = [d.strip() for d in settings.IIKO_DOMAINS.split(",") if d.strip()]
     
     async def fetch_sales_from_single_domain(self, base_url: str, from_date: date, to_date: date) -> List[dict]:
         """Fetch sales data from a single iiko domain"""
@@ -25,7 +23,7 @@ class IikoSalesLoaderService:
             # Always get fresh token before making request
             auth_service = IikoAuthService(base_url)
             token = await auth_service._refresh_token()  # Force fresh token
-            logger.info(f"Got fresh token for {base_url}: {token[:10]}...")
+            logger.info(f"Got fresh token for {base_url}")
             
             # Prepare request body
             request_body = {

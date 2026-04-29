@@ -5,6 +5,7 @@ from xml.etree import ElementTree as ET
 from datetime import datetime
 from ..models.branch import Department
 from ..services.iiko_auth import IikoAuthService
+from ..config import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,10 +14,7 @@ logger = logging.getLogger(__name__)
 class IikoDepartmentLoaderService:
     def __init__(self, db: Session):
         self.db = db
-        self.domains = [
-            "https://sandy-co-co.iiko.it",
-            "https://madlen-group-so.iiko.it"
-        ]
+        self.domains = [d.strip() for d in settings.IIKO_DOMAINS.split(",") if d.strip()]
     
     async def fetch_departments_from_single_domain(self, base_url: str) -> List[dict]:
         """Fetch departments from a single iiko domain"""
@@ -98,32 +96,37 @@ class IikoDepartmentLoaderService:
         """Sync departments from iiko API to database"""
         try:
             iiko_departments = await self.fetch_departments_from_iiko()
-            
+
             new_count = 0
             updated_count = 0
             processed_departments = set()
             remaining_departments = {dept['id']: dept for dept in iiko_departments if dept['id']}
-            
+
+            # Pre-load all existing department IDs and objects to avoid N+1 queries
+            existing_departments = {
+                str(dept.id): dept
+                for dept in self.db.query(Department).all()
+            }
+            existing_ids = set(existing_departments.keys())
+
             # Process departments in multiple passes to handle parent-child dependencies
             max_iterations = len(iiko_departments)
             iteration = 0
-            
+
             while remaining_departments and iteration < max_iterations:
                 iteration += 1
                 departments_processed_this_iteration = 0
-                
+
                 for dept_id, iiko_dept in list(remaining_departments.items()):
-                    # Check if this department can be processed
+                    # Check if this department can be processed (in-memory lookup)
                     parent_id = iiko_dept['parent_id']
-                    can_process = (parent_id is None or 
+                    can_process = (parent_id is None or
                                  parent_id in processed_departments or
-                                 self.db.query(Department).filter(Department.id == parent_id).first() is not None)
-                    
+                                 parent_id in existing_ids)
+
                     if can_process:
-                        existing_dept = self.db.query(Department).filter(
-                            Department.id == dept_id
-                        ).first()
-                        
+                        existing_dept = existing_departments.get(dept_id)
+
                         if existing_dept:
                             # Update existing department
                             existing_dept.code = iiko_dept['code']
@@ -146,30 +149,31 @@ class IikoDepartmentLoaderService:
                                 synced_at=datetime.utcnow()
                             )
                             self.db.add(new_dept)
-                            self.db.commit()  # Commit immediately for new records
+                            self.db.flush()  # Flush to make FK visible in this session
+                            existing_ids.add(dept_id)
                             new_count += 1
-                        
+
                         processed_departments.add(dept_id)
                         del remaining_departments[dept_id]
                         departments_processed_this_iteration += 1
-                
+
                 # If no departments were processed in this iteration, break to avoid infinite loop
                 if departments_processed_this_iteration == 0:
                     logger.warning(f"Could not process {len(remaining_departments)} departments due to missing parent dependencies")
                     for dept_id, dept in remaining_departments.items():
                         logger.warning(f"Department {dept_id} ({dept['name']}) has missing parent {dept['parent_id']}")
                     break
-            
-            # Commit any remaining updates
+
+            # Commit all changes at once
             self.db.commit()
             total_processed = new_count + updated_count
             logger.info(f"Successfully synced {new_count} new and {updated_count} updated departments")
-            
+
             if remaining_departments:
                 logger.warning(f"{len(remaining_departments)} departments could not be processed due to dependency issues")
-            
+
             return total_processed
-            
+
         except Exception as e:
             self.db.rollback()
             logger.error(f"Error syncing departments: {e}")

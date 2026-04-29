@@ -145,6 +145,8 @@ Thumbs.db
 *.log
 .env.local
 .env.production
+.env.prod
+.env.exchange
 screenshots/
 backup/
 
@@ -154,3 +156,8 @@ test_production_api_key.py
 PRODUCTION_API_KEY_SUMMARY.md
 *api_key*
 *API_KEY*
+
+# Frontend (React SPA)
+frontend/node_modules/
+frontend/dist/
+app/static/spa/

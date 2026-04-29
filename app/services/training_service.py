@@ -142,11 +142,6 @@ class TrainingDataService:
     
     def _load_sales_data(self, start_date: Optional[datetime], end_date: datetime) -> pd.DataFrame:
         """Load sales data from database"""
-        logger.info(f"DEBUG: self.db type: {type(self.db)}")
-        logger.info(f"DEBUG: self.db has query attr: {hasattr(self.db, 'query')}")
-        if hasattr(self.db, 'query'):
-            logger.info(f"DEBUG: self.db.query type: {type(self.db.query)}")
-        
         query = self.db.query(
             SalesSummary.department_id,
             SalesSummary.date,

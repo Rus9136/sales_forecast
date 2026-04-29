@@ -9,7 +9,6 @@ from ..schemas.branch import SalesSummary, SalesByHour
 from ..services.iiko_sales_loader import IikoSalesLoaderService
 from ..auth import get_api_key_or_bypass, ApiKey
 import logging
-from typing import Optional as OptionalType
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sales", tags=["sales"])
@@ -23,7 +22,7 @@ def get_sales_summary(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get sales summary data with optional filtering"""
     query = db.query(SalesSummaryModel)
@@ -65,7 +64,7 @@ def get_sales_by_hour(
     to_date: Optional[date] = None,
     hour: Optional[int] = Query(None, ge=0, le=23),
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get hourly sales data with optional filtering"""
     query = db.query(SalesByHourModel)
@@ -109,7 +108,7 @@ async def sync_sales(
     department_id: Optional[str] = Query(None, description="Department ID to sync (default: all departments)"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Sync sales data from iiko API"""
     try:
@@ -174,7 +173,7 @@ def get_sales_stats(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get sales statistics"""
     try:
@@ -226,7 +225,7 @@ def get_sales_stats(
 def delete_sales_summary(
     record_id: int, 
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Delete a sales summary record"""
     record = db.query(SalesSummaryModel).filter(SalesSummaryModel.id == record_id).first()
@@ -242,7 +241,7 @@ def delete_sales_summary(
 def delete_sales_hourly(
     record_id: int, 
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Delete a sales hourly record"""
     record = db.query(SalesByHourModel).filter(SalesByHourModel.id == record_id).first()
@@ -259,7 +258,7 @@ def get_auto_sync_status(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get automatic sync logs and status"""
     try:
@@ -336,7 +335,7 @@ def get_auto_sync_status(
 @router.post("/auto-sync/test")
 async def test_auto_sync(
     db: Session = Depends(get_db),
-    api_key: OptionalType[ApiKey] = Depends(get_api_key_or_bypass)
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Test automatic sync function (for debugging)"""
     try:

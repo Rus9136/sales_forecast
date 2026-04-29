@@ -222,7 +222,7 @@ async def get_recent_alerts(
                         'alerts': metrics.get('alerts', []),
                         'daily_mape': metrics.get('daily_mape', 0)
                     })
-            except:
+            except Exception:
                 # Skip if no data for that date
                 pass
             
