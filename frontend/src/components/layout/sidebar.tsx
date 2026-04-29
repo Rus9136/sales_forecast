@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw } from 'lucide-react'
+import { Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw, UserRound, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navSections = [
@@ -7,6 +7,7 @@ const navSections = [
     label: 'СПРАВОЧНИКИ',
     items: [
       { path: '/departments', label: 'Подразделения', icon: Building2 },
+      { path: '/employees', label: 'Сотрудники', icon: Users },
     ],
   },
   {
@@ -14,6 +15,7 @@ const navSections = [
     items: [
       { path: '/sales/daily', label: 'Продажи по дням', icon: CalendarDays },
       { path: '/sales/hourly', label: 'Продажи по часам', icon: Clock },
+      { path: '/sales/waiters', label: 'Продажи по официантам', icon: UserRound },
     ],
   },
   {

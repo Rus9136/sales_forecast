@@ -5,8 +5,10 @@ from typing import List, Optional
 from datetime import date, datetime, timedelta
 from ..db import get_db
 from ..models.branch import SalesSummary as SalesSummaryModel, SalesByHour as SalesByHourModel, AutoSyncLog
+from ..models.employee import SalesByWaiter as SalesByWaiterModel, Employee as EmployeeModel
 from ..schemas.branch import SalesSummary, SalesByHour
 from ..services.iiko_sales_loader import IikoSalesLoaderService
+from ..services.iiko_waiter_sales_loader import IikoWaiterSalesLoaderService
 from ..auth import get_api_key_or_bypass, ApiKey
 import logging
 
@@ -251,6 +253,67 @@ def delete_sales_hourly(
     db.delete(record)
     db.commit()
     return {"message": f"Sales hourly record {record_id} deleted successfully"}
+
+
+@router.get("/by-waiter")
+def get_sales_by_waiter(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(1000, ge=1, le=10000),
+    department_id: Optional[str] = None,
+    employee_id: Optional[str] = None,
+    waiter_name: Optional[str] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass),
+):
+    """Get sales aggregated by waiter."""
+    query = db.query(SalesByWaiterModel)
+    if department_id:
+        query = query.filter(SalesByWaiterModel.department_id == department_id)
+    if employee_id:
+        query = query.filter(SalesByWaiterModel.employee_id == employee_id)
+    if waiter_name:
+        query = query.filter(SalesByWaiterModel.waiter_name.ilike(f"%{waiter_name}%"))
+    if from_date:
+        query = query.filter(SalesByWaiterModel.date >= from_date)
+    if to_date:
+        query = query.filter(SalesByWaiterModel.date <= to_date)
+
+    rows = (
+        query.order_by(SalesByWaiterModel.date.desc(), SalesByWaiterModel.waiter_name)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "department_id": str(row.department_id),
+            "date": row.date,
+            "waiter_name": row.waiter_name,
+            "employee_id": str(row.employee_id) if row.employee_id else None,
+            "total_sales": row.total_sales,
+            "total_sales_with_discount": row.total_sales_with_discount,
+            "synced_at": row.synced_at,
+        }
+        for row in rows
+    ]
+
+
+@router.post("/sync-waiters")
+async def sync_waiter_sales(
+    from_date: Optional[date] = Query(None, description="Start date (default: yesterday)"),
+    to_date: Optional[date] = Query(None, description="End date (default: same as from_date)"),
+    department_id: Optional[str] = Query(None, description="Filter by Department.Id"),
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass),
+):
+    """Sync per-waiter sales data from iiko OLAP."""
+    loader = IikoWaiterSalesLoaderService(db)
+    result = await loader.sync(from_date, to_date, department_id)
+    result["from_date"] = from_date
+    result["to_date"] = to_date
+    return result
 
 
 @router.get("/auto-sync/status")

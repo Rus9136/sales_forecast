@@ -9,8 +9,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .config import settings
 from .logging_config import setup_logging
 from .db import engine, Base
-from .routers import branch, department, sales, forecast, monitoring, auth
+from .routers import branch, department, sales, forecast, monitoring, auth, employee
 from .services.scheduled_sales_loader import run_auto_sync, run_gap_check
+from .services.scheduled_waiter_loader import (
+    run_employees_sync,
+    run_waiter_gap_check,
+    run_waiter_sales_sync,
+)
 from .services.model_retraining_service import run_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -72,8 +77,41 @@ async def lifespan(app: FastAPI):
             replace_existing=True
         )
 
+        scheduler.add_job(
+            func=run_employees_sync,
+            trigger="cron",
+            hour=1,
+            minute=30,
+            id='daily_employees_sync',
+            name='Daily Employees Catalog Sync',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_waiter_sales_sync,
+            trigger="cron",
+            hour=2,
+            minute=30,
+            id='daily_waiter_sales_sync',
+            name='Daily Waiter Sales Sync',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_waiter_gap_check,
+            trigger="cron",
+            hour=11,
+            minute=0,
+            id='daily_waiter_gap_check',
+            name='Daily Waiter Sales Gap Check',
+            replace_existing=True
+        )
+
         scheduler.start()
-        logger.info("Background scheduler started - Sales sync 2:00, Gap check 10:00, Retrain Sun 3:00, Metrics 4:00")
+        logger.info(
+            "Background scheduler started - Employees 1:30, Sales 2:00, Waiter sales 2:30, "
+            "Retrain Sun 3:00, Metrics 4:00, Gap check 10:00, Waiter gap check 11:00"
+        )
 
     except Exception as e:
         logger.error(f"Failed to start scheduler: {e}")
@@ -137,6 +175,7 @@ app.include_router(sales.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
+app.include_router(employee.router, prefix="/api")
 
 # SPA static files (React frontend build output)
 SPA_DIR = pathlib.Path(__file__).parent / "static" / "spa"
