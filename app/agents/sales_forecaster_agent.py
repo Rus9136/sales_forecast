@@ -182,15 +182,23 @@ class SalesForecasterAgent:
         
         return self.model, metrics
     
-    def forecast(self, branch_id: str, forecast_date: date, db: Session = None) -> Optional[float]:
+    def forecast(
+        self,
+        branch_id: str,
+        forecast_date: date,
+        db: Session = None,
+        save_to_db: bool = True,
+    ) -> Optional[float]:
         """
         Forecast sales for a specific branch and date
-        
+
         Args:
             branch_id: Department/branch ID (UUID as string)
             forecast_date: Date to forecast
             db: Database session (will create one if not provided)
-            
+            save_to_db: If True, UPSERT result into forecasts table for monitoring.
+                        Set False from backtest/analytical scripts.
+
         Returns:
             Predicted sales amount or None if cannot forecast
         """
@@ -286,25 +294,18 @@ class SalesForecasterAgent:
             
             # Make prediction
             prediction = self.model.predict(X)[0]
-            
-            # Weekend boost correction (временная мера)
-            forecast_datetime = pd.to_datetime(forecast_date)
-            python_dow = forecast_datetime.dayofweek
-            postgres_dow = (python_dow + 1) % 7
-            
-            if postgres_dow == 0 or postgres_dow == 6:  # Выходные
-                weekend_boost = 1.4  # Увеличиваем на 40%
-                prediction *= weekend_boost
-                logger.info(f"Applied weekend boost: {weekend_boost}x for {forecast_date}")
-            
+
             # Применяем временное сглаживание
             prediction = self._apply_temporal_smoothing(branch_id, forecast_date, prediction, db)
             
             # Ensure non-negative prediction
             prediction = max(0, prediction)
-            
+
             logger.info(f"Forecast for branch {branch_id} on {forecast_date}: {prediction:.2f}")
-            
+
+            if save_to_db:
+                self._upsert_forecast(db, branch_id, forecast_date, float(prediction))
+
             return float(prediction)
             
         except Exception as e:
@@ -497,9 +498,42 @@ class SalesForecasterAgent:
         """Calculate Mean Absolute Percentage Error"""
         mask = y_true != 0
         return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+
+    def _upsert_forecast(
+        self,
+        db: Session,
+        branch_id: str,
+        forecast_date: date,
+        predicted_amount: float,
+    ) -> None:
+        """UPSERT prediction into forecasts table for monitoring sweep."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from ..models.branch import Forecast
+
+        try:
+            model_version = str(getattr(self, "_trained_at", "unknown") or "unknown")
+
+            stmt = pg_insert(Forecast).values(
+                branch_id=str(branch_id),
+                forecast_date=forecast_date,
+                predicted_amount=predicted_amount,
+                model_version=model_version,
+            ).on_conflict_do_update(
+                index_elements=["branch_id", "forecast_date"],
+                set_={
+                    "predicted_amount": predicted_amount,
+                    "model_version": model_version,
+                    "created_at": datetime.utcnow(),
+                },
+            )
+            db.execute(stmt)
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to UPSERT forecast for {branch_id}/{forecast_date}: {e}")
+            db.rollback()
     
-    def _apply_temporal_smoothing(self, branch_id: str, forecast_date: date, raw_prediction: float, db: Session, 
-                                  max_change_threshold: float = 0.5) -> float:
+    def _apply_temporal_smoothing(self, branch_id: str, forecast_date: date, raw_prediction: float, db: Session,
+                                  max_change_threshold: float = 0.3) -> float:
         """
         Применить временное сглаживание для предотвращения аномальных скачков
         
@@ -591,9 +625,10 @@ class SalesForecasterAgent:
                 self.model = model_data['model']
                 self.feature_columns = model_data['feature_columns']
                 self._training_metrics = model_data.get('training_metrics', None)
+                self._trained_at = model_data.get('trained_at', 'unknown')
                 logger.info(f"Model loaded from {self.model_path}")
                 logger.info(f"Model version: {model_data.get('version', 'unknown')}")
-                logger.info(f"Trained at: {model_data.get('trained_at', 'unknown')}")
+                logger.info(f"Trained at: {self._trained_at}")
                 if self._training_metrics:
                     logger.info(f"Training metrics: MAE={self._training_metrics.get('mae', 'N/A'):.2f}, MAPE={self._training_metrics.get('mape', 'N/A'):.2f}%")
             except Exception as e:

@@ -295,39 +295,68 @@ class ModelRetrainingService:
         return f"v_{timestamp}_{short_uuid}"
     
     def _make_deployment_decision(
-        self, 
-        current_mape: float, 
-        new_mape: float, 
-        threshold: float
+        self,
+        current_mape: float,
+        new_mape: float,
+        threshold: float,
+        absolute_max_mape: float = 50.0,
     ) -> Dict[str, str]:
-        """Decide whether to deploy new model"""
-        improvement = current_mape - new_mape
-        improvement_percent = (improvement / current_mape * 100) if current_mape > 0 else 0
-        
-        # Deploy if new model is better
-        if new_mape < current_mape:
-            if improvement_percent > 5:  # Significant improvement (>5%)
-                return {
-                    "decision": "deployed",
-                    "reason": f"Significant improvement: {improvement_percent:.1f}% better"
-                }
-            elif improvement_percent > 1:  # Minor improvement (1-5%)
-                return {
-                    "decision": "deployed",
-                    "reason": f"Minor improvement: {improvement_percent:.1f}% better"
-                }
-            else:  # Negligible improvement (<1%)
-                return {
-                    "decision": "rejected",
-                    "reason": f"Negligible improvement: only {improvement_percent:.1f}% better"
-                }
-        else:
-            # Reject if new model is worse
-            deterioration = abs(improvement_percent)
+        """Decide whether to deploy new model.
+
+        Rules:
+        1. Reject if new model fails sanity check (MAPE > absolute_max_mape).
+        2. If current_mape is missing/zero (no monitoring data yet), deploy
+           unconditionally — first honest baseline.
+        3. Otherwise compare relative improvement.
+        """
+        if new_mape is None or new_mape <= 0:
             return {
                 "decision": "rejected",
-                "reason": f"Performance degradation: {deterioration:.1f}% worse"
+                "reason": f"Invalid new_mape: {new_mape}",
             }
+
+        if new_mape > absolute_max_mape:
+            return {
+                "decision": "rejected",
+                "reason": (
+                    f"Sanity check failed: new MAPE {new_mape:.1f}% > "
+                    f"{absolute_max_mape}%"
+                ),
+            }
+
+        if current_mape is None or current_mape <= 0:
+            return {
+                "decision": "deployed",
+                "reason": (
+                    f"No baseline MAPE available; deploying new model "
+                    f"({new_mape:.1f}%) as first honest baseline"
+                ),
+            }
+
+        improvement = current_mape - new_mape
+        improvement_percent = improvement / current_mape * 100
+
+        if new_mape < current_mape:
+            if improvement_percent > 5:
+                return {
+                    "decision": "deployed",
+                    "reason": f"Significant improvement: {improvement_percent:.1f}% better",
+                }
+            if improvement_percent > 1:
+                return {
+                    "decision": "deployed",
+                    "reason": f"Minor improvement: {improvement_percent:.1f}% better",
+                }
+            return {
+                "decision": "rejected",
+                "reason": f"Negligible improvement: only {improvement_percent:.1f}% better",
+            }
+
+        deterioration = abs(improvement_percent)
+        return {
+            "decision": "rejected",
+            "reason": f"Performance degradation: {deterioration:.1f}% worse",
+        }
     
     def _deploy_model(self, version_id: str, model_path: Path):
         """Deploy new model by replacing the current one"""
