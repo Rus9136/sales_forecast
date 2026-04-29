@@ -36,7 +36,6 @@ export function Sidebar() {
     <aside className="w-64 min-h-screen bg-sidebar text-sidebar-foreground flex flex-col shrink-0">
       <div className="p-4 border-b border-sidebar-accent">
         <h1 className="text-lg font-bold">Sales Forecast</h1>
-        <p className="text-xs text-sidebar-foreground/60">Admin Panel</p>
       </div>
       <nav className="flex-1 py-2 overflow-y-auto">
         {navSections.map((section) => (
