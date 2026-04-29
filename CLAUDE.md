@@ -458,6 +458,40 @@ docker exec sales-forecast-app python -m pytest tests/bonus/ -v
 ### Документация моделей
 Полная спецификация в `bonus_service/bonus_docs/`. Конфиги локаций — `07-config-examples.md`. Числовые тест-кейсы — `10-testing.md`.
 
+### Правила доработки bonus subsystem
+
+**❌ НЕЛЬЗЯ:**
+- Хардкодить ставки/проценты/грейды в Python — всё через БД (`bonus_scheme.config` JSONB) и seeds
+- Делать отдельные таблицы под конкретное подразделение (`KitchenDistribution`, `BarStaff`) — использовать `bonus_team` + `bonus_team_position`
+- Звать iiko/TCO/CRM напрямую из калькулятора или service — только через `DataSourceRegistry`
+- Использовать `float` для денег и процентов — только `Decimal` (см. `app/bonus/utils/decimal_utils.py`)
+- Удалять `bonus_scheme` записи — версионировать через `effective_to` (старая закрывается, новая создаётся с `version+1`)
+- Изменять старые `bonus_calculation` со статусом `approved`/`paid` — перерасчёт даёт новую запись со статусом `recalculated`
+
+**✅ ОБЯЗАТЕЛЬНО:**
+- Сохранять снапшот при расчёте (`scheme_config_snapshot`, `kpi_values`, `breakdown` JSONB) — для аудита через 6 месяцев
+- Валидировать `bonus_scheme.config` через Pydantic-схему модели расчёта при сохранении (`SchemeService.create()`)
+- Возвращать `BonusBreakdown` с детализацией: KPI значения → грейд → ставка → выручка → смены → итог
+- Поддерживать proration по сменам там, где `apply_shifts_proration: true` в config
+- Логировать каждый расчёт с разбивкой через `app.logging_config`
+
+**Точность Decimal в БД:**
+- Деньги — `DECIMAL(14, 2)` (тенге с тиынами)
+- Проценты-доли — `DECIMAL(8, 6)` (`0.000700` хранится точно — это 0.07%)
+- Грейды (5..100) — `DECIMAL(5, 2)`
+- Веса слотов команды — `DECIMAL(8, 6)` (распределение KITCHEN)
+
+**Добавление новой модели расчёта:**
+1. Создать `app/bonus/calculator/models/<name>.py` с классом, унаследованным от `BaseBonusModel`
+2. Декоратор `@register_model('<code>')` — попадает в `CALCULATION_MODELS` registry
+3. Создать Pydantic-схему конфига в `app/bonus/schemas/calc_configs/<name>.py` и зарегистрировать в `CONFIG_VALIDATORS`
+4. Добавить тесты в `tests/bonus/test_calculation_models.py` с конкретными числами
+
+**Добавление нового источника данных:**
+1. Создать класс, унаследованный от `BonusDataSource`, с `code = '<name>'` и методом `fetch(db, params)`
+2. Зарегистрировать в `app/bonus/data_sources/bootstrap.py` через `DataSourceRegistry.register(...)`
+3. Можно ссылаться на новый код в `bonus_scheme.config["revenue_source"]` или `kpis[*].source`
+
 ## Deployment (Production)
 
 ### Инфраструктура
