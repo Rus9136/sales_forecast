@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, ForeignKey, DateTime, Date, CheckConstraint, Boolean
+from sqlalchemy import Column, String, ForeignKey, DateTime, Date, CheckConstraint, Boolean, SmallInteger
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
@@ -26,6 +26,20 @@ class Department(Base):
     )
     season_start_date = Column(Date, nullable=True)
     season_end_date = Column(Date, nullable=True)
+
+    # Operational characteristics (manual-only, used as ML features).
+    # iiko sync MUST NOT overwrite these — see iiko_department_loader.py.
+    brand = Column(String(50), nullable=True, index=True)
+    location_type = Column(String(30), nullable=True, index=True)
+    tourist_traffic_dependent = Column(Boolean, nullable=False, default=False)
+    is_24_7 = Column(Boolean, nullable=False, default=False)
+    opening_hour = Column(SmallInteger, nullable=True)
+    closing_hour = Column(SmallInteger, nullable=True)
+    seasonality_intensity = Column(String(10), nullable=False, default='none')
+    city = Column(String(100), nullable=True)
+    opened_date = Column(Date, nullable=True)
+    season_start_month = Column(SmallInteger, nullable=True)
+    season_end_month = Column(SmallInteger, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

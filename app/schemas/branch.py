@@ -1,6 +1,6 @@
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Literal
 from uuid import UUID
 from enum import Enum
 
@@ -16,6 +16,19 @@ class SegmentType(str, Enum):
     BAKERY = "bakery"                # Пекарня
     CAFE = "cafe"                    # Кафе
     BAR = "bar"                      # Бар
+
+
+LocationType = Literal[
+    'city_center',
+    'mall',
+    'business_district',
+    'resort_mountain',
+    'resort_lake',
+    'visit_center',
+    'other',
+]
+
+SeasonalityIntensity = Literal['none', 'low', 'medium', 'high']
 
 
 class BranchBase(BaseModel):
@@ -101,6 +114,19 @@ class DepartmentBase(BaseModel):
     season_start_date: Optional[date] = None
     season_end_date: Optional[date] = None
 
+    # Operational characteristics (manual-only, ML features)
+    brand: Optional[str] = None
+    location_type: Optional[LocationType] = None
+    tourist_traffic_dependent: bool = False
+    is_24_7: bool = False
+    opening_hour: Optional[int] = Field(default=None, ge=0, le=23)
+    closing_hour: Optional[int] = Field(default=None, ge=0, le=24)
+    seasonality_intensity: SeasonalityIntensity = 'none'
+    city: Optional[str] = None
+    opened_date: Optional[date] = None
+    season_start_month: Optional[int] = Field(default=None, ge=1, le=12)
+    season_end_month: Optional[int] = Field(default=None, ge=1, le=12)
+
 
 class DepartmentCreate(DepartmentBase):
     pass
@@ -117,6 +143,19 @@ class DepartmentUpdate(BaseModel):
     season_start_date: Optional[date] = None
     season_end_date: Optional[date] = None
 
+    # Operational characteristics (manual-only, ML features)
+    brand: Optional[str] = None
+    location_type: Optional[LocationType] = None
+    tourist_traffic_dependent: Optional[bool] = None
+    is_24_7: Optional[bool] = None
+    opening_hour: Optional[int] = Field(default=None, ge=0, le=23)
+    closing_hour: Optional[int] = Field(default=None, ge=0, le=24)
+    seasonality_intensity: Optional[SeasonalityIntensity] = None
+    city: Optional[str] = None
+    opened_date: Optional[date] = None
+    season_start_month: Optional[int] = Field(default=None, ge=1, le=12)
+    season_end_month: Optional[int] = Field(default=None, ge=1, le=12)
+
 
 class Department(BaseModel):
     id: str
@@ -129,10 +168,23 @@ class Department(BaseModel):
     segment_type: Optional[SegmentType] = SegmentType.RESTAURANT
     season_start_date: Optional[date] = None
     season_end_date: Optional[date] = None
+
+    brand: Optional[str] = None
+    location_type: Optional[LocationType] = None
+    tourist_traffic_dependent: bool = False
+    is_24_7: bool = False
+    opening_hour: Optional[int] = None
+    closing_hour: Optional[int] = None
+    seasonality_intensity: SeasonalityIntensity = 'none'
+    city: Optional[str] = None
+    opened_date: Optional[date] = None
+    season_start_month: Optional[int] = None
+    season_end_month: Optional[int] = None
+
     created_at: datetime
     updated_at: datetime
     synced_at: datetime
-    
+
     class Config:
         from_attributes = True
 

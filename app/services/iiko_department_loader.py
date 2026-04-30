@@ -152,6 +152,12 @@ class IikoDepartmentLoaderService:
                         resolved_bin = iiko_bin or existing_bin or parent_bin or None
 
                         if existing_dept:
+                            # iiko-managed fields only — DO NOT touch manual-only
+                            # columns (segment_type, season_*, brand, location_type,
+                            # tourist_traffic_dependent, is_24_7, opening_hour,
+                            # closing_hour, seasonality_intensity, city, opened_date,
+                            # season_start_month, season_end_month). Those are filled
+                            # via the UI and feed the ML model.
                             existing_dept.code = iiko_dept['code']
                             existing_dept.name = iiko_dept['name']
                             existing_dept.type = iiko_dept['type']

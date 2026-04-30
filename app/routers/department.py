@@ -24,6 +24,18 @@ def serialize_department(dept, **extra_fields) -> dict:
         "segment_type": dept.segment_type if dept.segment_type else "restaurant",
         "season_start_date": dept.season_start_date.isoformat() if dept.season_start_date else None,
         "season_end_date": dept.season_end_date.isoformat() if dept.season_end_date else None,
+        # Operational characteristics (manual-only, ML features)
+        "brand": dept.brand,
+        "location_type": dept.location_type,
+        "tourist_traffic_dependent": bool(dept.tourist_traffic_dependent),
+        "is_24_7": bool(dept.is_24_7),
+        "opening_hour": dept.opening_hour,
+        "closing_hour": dept.closing_hour,
+        "seasonality_intensity": dept.seasonality_intensity or "none",
+        "city": dept.city,
+        "opened_date": dept.opened_date.isoformat() if dept.opened_date else None,
+        "season_start_month": dept.season_start_month,
+        "season_end_month": dept.season_end_month,
         "created_at": dept.created_at,
         "updated_at": dept.updated_at,
         "synced_at": dept.synced_at
