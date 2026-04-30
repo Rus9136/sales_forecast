@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o"
     CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
 
+    # UI auth bootstrap (creates first admin if none exists)
+    BOOTSTRAP_ADMIN_PHONE: str = ""
+    BOOTSTRAP_ADMIN_NAME: str = "Администратор"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

@@ -30,6 +30,7 @@ Sales Forecast API — система прогнозирования прода�
 - **Frontend**: React 19 SPA (`frontend/`) — Vite, TypeScript, shadcn/ui, TanStack Query, Recharts
 - **Database**: PostgreSQL 15
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
+- **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
 - **Scheduler**: APScheduler (7 задач: employees, sales, waiter sales, retrain, metrics, gap check, bonus auto-calc)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
@@ -54,16 +55,18 @@ sales_forecast/
 │   │   │   ├── sales.ts           # SalesSummary, SalesByHour, SyncResult
 │   │   │   ├── forecast.ts        # BatchForecast, ForecastComparison
 │   │   │   ├── sync.ts            # AutoSyncLog, SyncStatusResponse
-│   │   │   └── waiter.ts          # Employee, SalesByWaiter, WaiterSyncResult
+│   │   │   ├── waiter.ts          # Employee, SalesByWaiter, WaiterSyncResult
+│   │   │   └── ai.ts              # AIProvider, AIAnalyzeRequest, AIPromptInfo, AIAnalysisDetail
 │   │   ├── hooks/
 │   │   │   ├── use-departments.ts    # CRUD + sync mutations
 │   │   │   ├── use-sales.ts          # Daily + hourly queries
 │   │   │   ├── use-forecast.ts       # Batch, comparison, retrain
 │   │   │   ├── use-sync.ts           # Auto-sync status, manual sync
-│   │   │   └── use-waiter-sales.ts   # Employees + waiter sales queries / mutations
+│   │   │   ├── use-waiter-sales.ts   # Employees + waiter sales queries / mutations
+│   │   │   └── use-ai-recommendations.ts # 7 хуков: providers/prompts/history/analyze/rerun
 │   │   ├── components/
-│   │   │   ├── ui/                # shadcn/ui primitives (12 компонентов)
-│   │   │   ├── layout/            # AppLayout, Sidebar (4 секции навигации)
+│   │   │   ├── ui/                # shadcn/ui primitives (Tabs, Textarea, и др.)
+│   │   │   ├── layout/            # AppLayout, Sidebar (5 секций навигации)
 │   │   │   └── shared/            # DateRangePicker, DepartmentSelect, ConfirmDialog, etc.
 │   │   └── pages/
 │   │       ├── departments-page.tsx       # CRUD + фильтры (тип/компания/поиск)
@@ -72,7 +75,8 @@ sales_forecast/
 │   │       ├── waiter-sales-page.tsx      # Продажи по официантам + ручной sync
 │   │       ├── forecast-branch-page.tsx   # Прогнозы по филиалам
 │   │       ├── forecast-comparison-page.tsx # LineChart + сортируемая таблица + ошибка
-│   │       └── sync-page.tsx              # Статус-карточки + ручная синхронизация
+│   │       ├── sync-page.tsx              # Статус-карточки + ручная синхронизация
+│   │       └── ai-recommendations-page.tsx # Мультиагентный анализ + редактор промптов + история
 │   ├── vite.config.ts             # Proxy /api→:8002, build→dist
 │   ├── tsconfig.json              # TypeScript 6, paths: @/→src/
 │   ├── package.json               # pnpm, React 19, Vite 8
@@ -93,6 +97,7 @@ sales_forecast/
 │   │   ├── department.py          # Departments CRUD + serialize_department()
 │   │   ├── employee.py            # Employees catalog (list + sync)
 │   │   ├── sales.py               # Sales sync, summary, hourly, by-waiter, stats
+│   │   ├── ai_recommendations.py  # AI multi-agent analysis (8 endpoints)
 │   │   ├── forecast/              # ML forecasting package
 │   │   │   ├── __init__.py        # Router aggregation
 │   │   │   ├── core.py            # Retrain, model info, comparison, batch, CSV export
@@ -100,16 +105,18 @@ sales_forecast/
 │   │   │   ├── error_analysis.py  # Error segments, problematic branches, temporal errors
 │   │   │   └── postprocessing.py  # Forecast smoothing, business rules, settings
 │   │   └── monitoring.py          # Model health, performance, alerts
-│   ├── models/                    # SQLAlchemy models (13 моделей, разделены по файлам)
+│   ├── models/                    # SQLAlchemy models (16 моделей, разделены по файлам)
 │   │   ├── __init__.py            # Re-exports all models for mapper registration
 │   │   ├── department.py          # Department
 │   │   ├── sales.py               # SalesSummary, SalesByHour, AutoSyncLog
 │   │   ├── forecast.py            # Forecast, ForecastAccuracyLog, PostprocessingSettings
 │   │   ├── ml.py                  # ModelVersion, ModelRetrainingLog
 │   │   ├── employee.py            # Employee, SalesByWaiter
+│   │   ├── ai.py                  # AIRecommendation, AIPromptLog, AIPrompt
 │   │   └── branch.py              # Branch, Sale (legacy) + backward-compat re-exports
 │   ├── schemas/
-│   │   └── branch.py              # Pydantic schemas (18 схем)
+│   │   ├── branch.py              # Pydantic schemas (18 схем)
+│   │   └── ai.py                  # AnalyzeRequest/Response, HistoryItem, PromptInfo, RerunAgentRequest
 │   ├── agents/
 │   │   └── sales_forecaster_agent.py  # LightGBM agent
 │   └── services/
@@ -126,7 +133,18 @@ sales_forecast/
 │       ├── model_retraining_service.py       # Auto-retraining logic
 │       ├── model_monitoring_service.py       # Performance monitoring
 │       ├── forecast_postprocessing_service.py # Post-processing rules
-│       └── error_analysis_service.py         # Error analysis
+│       ├── error_analysis_service.py         # Error analysis
+│       └── ai/                               # AI Recommendations subsystem
+│           ├── data_collector.py             # Direct SQL (replaces hr-miniapp MCP)
+│           ├── multi_agent_system.py         # Phase 1→2 orchestrator + compress + render
+│           ├── prompts.py                    # Default prompts + DB-backed get/upsert
+│           └── engines/                      # AI provider engines
+│               ├── base.py                   # BaseEngine ABC + AgentResult dataclass
+│               ├── claude_engine.py          # AsyncAnthropic + 529 backoff + isolated keys
+│               ├── openai_engine.py          # AsyncOpenAI + RateLimit handling
+│               ├── gemini_engine.py          # Stub (not implemented)
+│               ├── dispatcher.py             # Provider routing + lru_cache singleton
+│               └── _logging.py               # Audit log to ai_prompt_logs
 ├── models/                        # Trained ML models (.pkl)
 ├── migrations/                    # SQL migration files
 ├── scripts/                       # Utilities and test scripts
@@ -152,7 +170,7 @@ sales_forecast/
 - **Recharts 3** — графики (BarChart, LineChart)
 - **pnpm** — пакетный менеджер
 
-### Роутинг (7 страниц)
+### Роутинг (8 страниц)
 | Путь | Страница | API |
 |------|----------|-----|
 | `/departments` | Подразделения (CRUD + фильтры) | GET/POST/PUT/DELETE `/api/departments/` |
@@ -162,6 +180,7 @@ sales_forecast/
 | `/forecast/branches` | Прогноз по филиалам | GET `/api/forecast/batch` |
 | `/forecast/comparison` | Сравнение факт/прогноз + LineChart | GET `/api/forecast/comparison` |
 | `/sync` | Синхронизация данных | POST `/api/sales/sync`, GET `/api/sales/auto-sync/status` |
+| `/ai-recommendations` | Мультиагентный анализ (Sales/Optimization/Narrative) + редактор промптов + история | `/api/ai-recommendations/*` (8 endpoints) |
 
 ### Auth-токен
 - **Production**: FastAPI (`_serve_spa()` в `main.py`) инжектирует `<script>window.__API_TOKEN__="..."</script>` в `index.html`
@@ -214,6 +233,20 @@ IIKO_DOMAINS=https://sandy-co-co.iiko.it,https://madlen-group-so.iiko.it
 
 # CORS
 ALLOWED_ORIGINS=https://aqniet.site
+
+# UI auth bootstrap (создаёт первого admin при старте, если admin отсутствует)
+BOOTSTRAP_ADMIN_PHONE=                       # Любой формат, нормализуется до digits-only
+BOOTSTRAP_ADMIN_NAME=Администратор
+
+# AI Recommendations (Claude/OpenAI)
+ANTHROPIC_API_KEY=sk-ant-api03-...           # Основной ключ Claude
+ANTHROPIC_API_KEY_PAYROLL=                   # Опционально: per-agent ключи (fallback на основной)
+ANTHROPIC_API_KEY_STAFFING=
+ANTHROPIC_API_KEY_NARRATIVE=
+ANTHROPIC_API_KEY_REPUTATION=
+OPENAI_API_KEY=                              # Опционально (если включаете OpenAI как provider)
+OPENAI_MODEL=gpt-4o
+CLAUDE_MODEL=claude-sonnet-4-20250514
 ```
 
 ### Security Model:
@@ -225,9 +258,71 @@ ALLOWED_ORIGINS=https://aqniet.site
 - **Security headers:** CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy (middleware в main.py)
 - **Config:** `extra="ignore"` — неизвестные переменные в .env не ломают запуск
 
+## UI Auth & Roles
+
+Поверх API-токена добавлен слой UI-авторизации: вход в SPA по номеру телефона + role-based видимость разделов sidebar. **Это визуальная защита, не security.** Все API-эндпоинты (кроме `/api/auth/*` и `/api/users/*`) по-прежнему авторизуются общим `API_TOKEN` — пользователь с DevTools технически может дёрнуть любой endpoint напрямую.
+
+### Поток
+1. Открытие SPA → `AuthProvider` читает `localStorage["sf.session_token"]` → `GET /api/auth/me`
+2. Нет токена / 401 → редирект на `/login` (форма с одним полем «телефон»)
+3. `POST /api/auth/login {phone}` → если `app_user.phone` существует и `is_active=true` → возврат `{session_token, user}`
+4. Токен отправляется в каждом запросе как `X-Session-Token`. При 401 чистится автоматически
+5. `Sidebar` фильтрует пункты меню по `user.allowed_sections`; `ProtectedRoute` редиректит на `/forbidden` при прямом заходе на запрещённый URL
+6. `/` ведёт на первый доступный раздел роли (HomeRedirect)
+
+### Таблицы (миграция `011_app_users_and_roles.sql`)
+- `app_role` — `code` PK, `name`, `allowed_sections` JSONB (массив section keys), `is_system` (системные нельзя удалить/переименовать)
+- `app_user` — `id` UUID, `phone` UNIQUE (digits-only с auto-нормализацией `8XXX→7XXX`), `full_name`, `role_code` FK, `password_hash` зарезервировано на будущее, `is_active`, `last_login_at`
+- `app_session` — `token` PK (43 chars `secrets.token_urlsafe(32)`), `user_id` FK, `expires_at` (TTL 30 дней)
+
+### Системные роли (засеяны при старте)
+| Code | Name | Дефолтные разделы |
+|------|------|-------------------|
+| `admin` | Администратор | все 15 секций (включая `users`, `roles`) |
+| `manager` | Менеджер | departments, employees, sales.*, forecast.*, ai.recommendations, sync |
+| `accountant` | Бухгалтер | departments, employees, sales.daily, sales.waiters, bonus.* |
+| `viewer` | Наблюдатель | sales.daily, sales.hourly, forecast.* |
+
+Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
+
+### Section keys (15 шт)
+`departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `bonus.calculations`, `bonus.schemes`, `bonus.manual-kpi`, `bonus.monthly-plans`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`.
+
+### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
+- `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
+- `require_admin` — guard для admin-эндпоинтов (роль `admin`)
+- `seed_default_roles(db)` — идемпотентно создаёт 4 системные роли при старте
+- `bootstrap_admin(db, phone, name)` — если задан `BOOTSTRAP_ADMIN_PHONE` и нет ни одного admin, создаёт первого
+- Эндпоинты:
+  - `POST /api/auth/login` — `{phone}` → `{session_token, expires_at, user}`
+  - `POST /api/auth/logout` — удаляет текущую сессию по токену
+  - `GET /api/auth/me` — текущий пользователь + `allowed_sections`
+  - `GET /api/auth/roles` — список ролей + `available_sections`
+  - `PUT /api/auth/roles/{code}` — admin only, `{name?, allowed_sections?}` (имя системной роли менять нельзя)
+  - `GET/POST/PUT/DELETE /api/users/` — admin only, CRUD пользователей. Защита: нельзя деактивировать/удалить себя, нельзя снять admin с последнего активного admin
+
+### Frontend (`frontend/src/`)
+- `contexts/auth-context.tsx` — `AuthProvider`, `useAuth()` (`status`, `user`, `login`, `logout`, `hasSection(key)`, `isAdmin`)
+- `lib/api-client.ts` — добавляет `X-Session-Token` ко всем запросам, при 401 чистит сессию + триггерит redirect
+- `components/auth/protected-route.tsx` — guard роутов, опционально `<ProtectedRoute section="..."/>`
+- `components/auth/home-redirect.tsx` — `/` → первый доступный раздел роли
+- `pages/login-page.tsx`, `pages/forbidden-page.tsx`
+- `pages/users-page.tsx` — таблица + dialog-форма создания/редактирования (телефон, ФИО, роль, активность)
+- `pages/roles-page.tsx` — карточки ролей с чекбокс-матрицей разделов
+- `components/layout/sidebar.tsx` — фильтрует пункты по `hasSection(item.section)`, секция «АДМИНИСТРИРОВАНИЕ» (`/users`, `/roles`), блок текущего пользователя + кнопка «Выйти»
+
+### Bootstrap
+Установить `BOOTSTRAP_ADMIN_PHONE` в `.env.prod` → перезапустить контейнер. На startup создастся admin-пользователь с указанным телефоном (если admin ещё не существует).
+
+```bash
+# Создать admin вручную через psql
+docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
+  -c "INSERT INTO app_user (phone, full_name, role_code, is_active) VALUES ('77001234567', 'Администратор', 'admin', true);"
+```
+
 ## Key Components
 
-### Database Models (13 моделей в `app/models/`)
+### Database Models (16 моделей в `app/models/`)
 | Файл | Модели | Описание |
 |------|--------|----------|
 | `department.py` | Department | Подразделения, организации, сегменты |
@@ -235,6 +330,7 @@ ALLOWED_ORIGINS=https://aqniet.site
 | `forecast.py` | Forecast, ForecastAccuracyLog, PostprocessingSettings | Прогнозы и настройки |
 | `ml.py` | ModelVersion, ModelRetrainingLog | Версии моделей и логи переобучения |
 | `employee.py` | Employee, SalesByWaiter | Каталог сотрудников iiko + продажи по официантам |
+| `ai.py` | AIRecommendation, AIPromptLog, AIPrompt | Запуски AI-анализа, аудит промптов, шаблоны |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -264,6 +360,13 @@ ALLOWED_ORIGINS=https://aqniet.site
 - `/api/monitoring/performance/summary` — Метрики производительности
 - `/api/monitoring/alerts/recent` — Уведомления
 - `/api/auth/` — Управление API-ключами
+- `/api/ai-recommendations/analyze` — Запуск мультиагентного анализа (POST)
+- `/api/ai-recommendations/history` — История запусков (фильтр `department_id`)
+- `/api/ai-recommendations/analysis/{id}` — Детали запуска
+- `/api/ai-recommendations/prompts/{analysis_id}` — UI-shaped payload для вкладок (агент → результат + лог промпта)
+- `/api/ai-recommendations/prompts` — GET/PUT шаблонов промптов (DB > default)
+- `/api/ai-recommendations/rerun-agent` — Перезапуск одного агента в существующем анализе (POST)
+- `/api/ai-recommendations/providers` — Информация о настроенных AI-провайдерах
 - `/` — React SPA (fallback: Jinja2 admin.html)
 - `/health` — Health check
 
@@ -391,6 +494,35 @@ curl -X POST "http://localhost:8002/api/forecast/compare_models" \
   -d '{"days": 365}'
 ```
 
+### AI Recommendations Commands
+```bash
+# Информация о провайдерах (что настроено)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  http://localhost:8002/api/ai-recommendations/providers
+
+# Запуск анализа (Claude, ~90-110с)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  http://localhost:8002/api/ai-recommendations/analyze \
+  -d '{"department_id":"<uuid>","date_start":"2026-03-01","date_end":"2026-03-07","provider":"claude"}'
+
+# История запусков
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/ai-recommendations/history?limit=10"
+
+# UI-shaped данные одного анализа (агенты + промпты + логи)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  http://localhost:8002/api/ai-recommendations/prompts/<analysis_id>
+
+# Перезапустить одного агента в существующем анализе
+curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  http://localhost:8002/api/ai-recommendations/rerun-agent \
+  -d '{"analysis_id":1,"agent_name":"SalesAnalysisAgent","provider":"claude"}'
+
+# Просмотр текущих шаблонов промптов
+curl -H "Authorization: Bearer $API_TOKEN" \
+  http://localhost:8002/api/ai-recommendations/prompts
+```
+
 ## ML System v2.3
 
 - **Test MAPE**: 6.18%
@@ -491,6 +623,57 @@ docker exec sales-forecast-app python -m pytest tests/bonus/ -v
 1. Создать класс, унаследованный от `BonusDataSource`, с `code = '<name>'` и методом `fetch(db, params)`
 2. Зарегистрировать в `app/bonus/data_sources/bootstrap.py` через `DataSourceRegistry.register(...)`
 3. Можно ссылаться на новый код в `bonus_scheme.config["revenue_source"]` или `kpis[*].source`
+
+## AI Recommendations Subsystem
+
+Мультиагентный AI-анализ работы подразделения. Портирован из `hr-miniapp` (Node.js); MCP-зависимость убрана — данные читаются прямыми SQL к локальной БД. Основные файлы — `app/services/ai/`, `app/routers/ai_recommendations.py`, `app/models/ai.py`, `frontend/src/pages/ai-recommendations-page.tsx`.
+
+### Архитектура
+- **Слои**: Router → `MultiAgentSystem` (orchestrator) → `BaseEngine` (Claude/OpenAI/Gemini) → `data_collector` (SQL).
+- **Phase 1 → Phase 2**: Phase 1 — агенты, потребляющие сырые данные (Sales/Payroll/Staffing/Reputation). Phase 2 — синтез (Optimization → Narrative) использует результаты Phase 1.
+- **Provider isolation**: `EngineDispatcher` — синглтон через `lru_cache`, выбирает движок по `provider` (`claude`/`openai`/`gemini`).
+- **Per-agent изолированные ключи** (Claude): `ANTHROPIC_API_KEY_PAYROLL/_STAFFING/_NARRATIVE/_REPUTATION` — fallback на основной `ANTHROPIC_API_KEY`. Это разнесённые rate-limit'ы, как в hr-miniapp.
+- **Retry**: для 529 (overload) — экспоненциальный backoff 30/90/180/360/600s + jitter; для прочих 5xx — стандартный exponential backoff cap 30s.
+- **Variant A (текущий)**: 3 агента включены — `SalesAnalysisAgent`, `OptimizationAgent`, `NarrativeAgent`. 3 агента (`PayrollAnalysisAgent`, `StaffingAgent`, `ReputationAgent`) лежат в registry с `enabled=False` — данные `payroll`/`reviews` сейчас `None`.
+- **Промпты**: `DEFAULT_PROMPTS` (hardcoded) + `ai_prompts` таблица. DB-row побеждает дефолт. Шаблоны редактируются через UI (PUT `/api/ai-recommendations/prompts`).
+- **Token compression**: `compress_data_for_tokens()` — сжимает суммы в `Nk`, обрезает forecast/plan_vs_fact до 10 строк, `hourly_sales` до 168 (7 дней × 24 часа), сокращает агенту-результаты до 500 символов.
+- **Audit log**: каждый вызов AI пишется в `ai_prompt_logs` (full_prompt, response_text, tokens, success, request/response timestamps). Не валит транзакцию при ошибке.
+- **Snapshot входа**: при `analyze` сырые данные складываются в `ai_recommendations.mcp_response` JSONB (имя унаследовано от hr-miniapp; смысл — `input_data`). Это позволяет `rerun-agent` повторно прогнать одного агента без перезапроса БД.
+
+### Database tables (3)
+- `ai_recommendations` — запуск анализа (department_id, period, mcp_response JSONB, agent_results JSONB, provider)
+- `ai_prompt_logs` — аудит каждого вызова AI (analysis_id FK, agent_name, full_prompt, response_text, tokens_used, success)
+- `ai_prompts` — редактируемые шаблоны промптов (agent_name PK, prompt_text)
+
+### Реальные метрики (Claude Sonnet 4, 7-дневный период)
+- SalesAnalysisAgent: ~7k токенов / 20-25с
+- OptimizationAgent: ~3k токенов / 28-35с
+- NarrativeAgent: ~5k токенов / 28-30с
+- Полный цикл: ~90-110 секунд
+
+**Nginx таймаут**: для `/api/ai-recommendations/` в `aqniet.conf` стоит `proxy_read_timeout 180s` — без этого 60-секундный дефолт обрывал запросы.
+
+### Правила доработки
+
+**❌ НЕЛЬЗЯ:**
+- Использовать `httpx.get(MCP_URL)` или другой внешний HTTP — данные только через `data_collector.py` (прямой SQL)
+- Хардкодить промпты в коде — они в `DEFAULT_PROMPTS` и могут перезаписываться через `ai_prompts`. Обновлять — только через `upsert_prompt()`
+- Удалять записи из `ai_prompt_logs` — это аудит-лог, нужен для воспроизводимости
+- Изменять `ai_recommendations.agent_results` без `flag_modified(rec, "agent_results")` — SQLAlchemy не увидит in-place мутацию JSONB
+- Делать sync-вызовы к Claude/OpenAI — все engine-методы async, оркестратор использует `asyncio.sleep` для пауз между агентами
+
+**✅ ОБЯЗАТЕЛЬНО:**
+- Логировать каждый AI-вызов через `log_prompt()` — даже при ошибке
+- При добавлении нового агента — заполнить `AGENTS` registry в `multi_agent_system.py` с `data_fields` и `enabled=False` пока данные не подъехали; добавить дефолтный промпт в `DEFAULT_PROMPTS`
+- При добавлении нового AI-провайдера — наследоваться от `BaseEngine`, реализовать `analyze_with_agent` + `is_configured`, зарегистрировать в `EngineDispatcher.__init__`
+- Проверять `cfg.enabled` перед запуском агента — отключённые агенты должны попадать в `skipped`, а не падать с ошибкой
+
+### Включение отключённых агентов
+
+Когда появятся источники данных:
+1. **Payroll/Staffing**: заполнить `payroll` секцию в `data_collector.collect_dashboard_data()` (например, через `sales_by_waiter` + смены из новой таблицы или подключение к hr-miniapp DB на 5437)
+2. **Reputation**: подключиться к `reviews-parser` (порт 8004) и заполнить `reviews` секцию
+3. В `multi_agent_system.AGENTS` поменять `enabled=False` на `True` — оркестратор сам подхватит. Промпты уже в `DEFAULT_PROMPTS`.
 
 ## Deployment (Production)
 

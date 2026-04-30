@@ -11,9 +11,12 @@ from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
 from .routers import ai_recommendations
+from .routers.users_ui import ui_auth_router, ui_users_router
 from .bonus.routers import bonus_api as bonus_router
 from .bonus.data_sources.bootstrap import register_all_sources as register_bonus_sources
 from .bonus.services.scheduled_calc import run_monthly_auto_calc as run_bonus_monthly_calc
+from .auth_ui import bootstrap_admin, seed_default_roles
+from .db import SessionLocal
 from .services.scheduled_sales_loader import run_auto_sync, run_gap_check
 from .services.scheduled_waiter_loader import (
     run_employees_sync,
@@ -39,6 +42,20 @@ scheduler = BackgroundScheduler()
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic"""
     # --- Startup ---
+    # Seed default roles + bootstrap admin (idempotent)
+    try:
+        with SessionLocal() as db:
+            seed_default_roles(db)
+            created = bootstrap_admin(
+                db,
+                settings.BOOTSTRAP_ADMIN_PHONE,
+                settings.BOOTSTRAP_ADMIN_NAME,
+            )
+            if created is not None:
+                logger.info(f"Bootstrap admin user created/promoted: {created.phone}")
+    except Exception as e:
+        logger.error(f"Failed to seed UI auth tables: {e}", exc_info=True)
+
     try:
         scheduler.add_job(
             func=run_auto_sync,
@@ -194,6 +211,8 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(employee.router, prefix="/api")
 app.include_router(ai_recommendations.router, prefix="/api")
 app.include_router(bonus_router, prefix="/api")
+app.include_router(ui_auth_router, prefix="/api")
+app.include_router(ui_users_router, prefix="/api")
 
 # Register bonus data sources at import time so all endpoints can resolve them
 register_bonus_sources()
