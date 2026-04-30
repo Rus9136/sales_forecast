@@ -166,6 +166,78 @@ body {
 .topbar .topbar-search { width: 320px; }
 .topbar .topbar-actions { display: flex; align-items: center; gap: 6px; }
 
+/* === Buttons (BEM) — ported from design_handoff/components.css === */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px; font-weight: 500; line-height: 1;
+  cursor: pointer;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease), transform 80ms var(--ease);
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn:active { transform: translateY(0.5px); }
+.btn > svg { flex-shrink: 0; }
+
+.btn--primary {
+  background: var(--accent); color: var(--accent-fg); border-color: transparent;
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,0.1);
+}
+.btn--primary:hover { background: oklch(from var(--accent) calc(l - 0.04) c h); }
+
+.btn--ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.btn--ghost:hover { background: var(--bg-hover); color: var(--text); }
+
+.btn--sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: var(--radius-sm); }
+.btn--icon { width: 32px; padding: 0; justify-content: center; }
+.btn--icon.btn--sm { width: 28px; }
+
+.btn--danger { color: var(--neg); border-color: var(--border); }
+.btn--danger:hover { background: oklch(from var(--neg) 0.95 0.04 h); border-color: var(--neg); }
+[data-theme="dark"] .btn--danger:hover { background: oklch(from var(--neg) 0.32 0.08 h); }
+
+/* === Card === */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.card__header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.card__title { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+.card__sub { font-size: 12px; color: var(--text-muted); }
+.card__body { padding: 16px; }
+
+/* === Segmented control === */
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.seg button {
+  height: 26px; padding: 0 10px;
+  border: 0; background: transparent;
+  color: var(--text-muted); font-size: 12px; font-weight: 500; line-height: 1;
+  border-radius: var(--radius-sm);
+  cursor: pointer; transition: 120ms var(--ease);
+  white-space: nowrap;
+}
+.seg button:hover { color: var(--text); }
+.seg button.active {
+  background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
 /* Buttons (subset, ghost/icon used by topbar) */
 .btn-ghost {
   display: inline-flex; align-items: center; justify-content: center;
