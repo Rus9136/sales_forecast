@@ -1,35 +1,44 @@
 """Root pytest fixtures for the Sales Forecast API.
 
-Stage 1 of the test infrastructure provides only the most foundational fixtures:
-- `app` — the FastAPI application instance (no lifespan triggered).
-- `client` — a `TestClient` bound to `app` that does NOT enter the lifespan
-  context, so the APScheduler background jobs and admin bootstrap do not run.
-- `auth_headers` — Bearer header for endpoints guarded by API key auth.
-
-DB / auth integration fixtures will be added in later stages (Stage 2 for
-auth, Stage 3 for routers + transactional DB).
+This file runs *before* any `app.*` module is imported, so it is the only
+safe place to point the Pydantic `settings` singleton at the test database.
+Integration fixtures (`db_session`, `client_with_db`, `seeded_admin`, …)
+live in `tests/integration/conftest.py` and depend on the env override here.
 """
 
 from __future__ import annotations
 
 import os
 
-import pytest
+# CRITICAL: force the test DB before any `app.*` import. `app.config.settings`
+# is built at module load time, so a late override has no effect. Tests run
+# inside the `sales-forecast-app` container where POSTGRES_DB defaults to
+# `sales_forecast`; this line redirects the engine to `sales_forecast_test`,
+# which is provisioned with `pg_dump --schema-only` from prod (see Stage 3
+# notes in CLAUDE.md). Unit tests don't hit the DB, but the engine still gets
+# built when `app.main` is imported, so the override must apply universally.
+os.environ["POSTGRES_DB"] = "sales_forecast_test"
 
-# Make sure tests never accidentally pick up a real production token from the
-# host environment. Individual tests can still override via fixtures.
-os.environ.setdefault("DEBUG", "True")
-os.environ.setdefault("API_TOKEN", "test-api-token")
+# Direct assignment (NOT setdefault): the container ships with DEBUG=False
+# and a production API_TOKEN. We must override before `app.config.settings`
+# is built. With DEBUG=True the API token bypass kicks in, so `auth_headers`
+# (Bearer test-api-token) clears `get_api_key_or_bypass` without provisioning
+# a DB-backed key. The DB auth path is covered separately in
+# tests/integration/test_api_key_db.py.
+os.environ["DEBUG"] = "True"
+os.environ["API_TOKEN"] = "test-api-token"
+
+import pytest
 
 
 @pytest.fixture(scope="session")
 def app():
     """Return the FastAPI application without entering its lifespan.
 
-    Importing `app.main` triggers `Base.metadata.create_all(bind=engine)`, so
-    a Postgres instance must be reachable. For tests that mock the DB layer
-    this is fine — only the engine handle is created, no queries run until a
-    request hits a route.
+    Importing `app.main` triggers `Base.metadata.create_all(bind=engine)` —
+    that's fine: the test DB already has the schema, so it's a no-op. The
+    `lifespan` (which would seed roles + bootstrap admin) does NOT run unless
+    a test enters `TestClient(app)` as a context manager.
     """
     from app.main import app as fastapi_app
 
@@ -40,9 +49,9 @@ def app():
 def client(app):
     """Plain `TestClient` — no lifespan, no scheduler, no admin bootstrap.
 
-    Endpoints that depend on the DB will still hit the real engine unless the
-    test overrides `app.db.get_db` via `app.dependency_overrides`. Stage 3
-    will add a transactional DB fixture for proper integration tests.
+    Endpoints that depend on the DB will hit the (test) engine unless the
+    test overrides `app.db.get_db`. Use `client_with_db` from the integration
+    conftest to get a transactional, rolled-back-per-test client.
     """
     from fastapi.testclient import TestClient
 
