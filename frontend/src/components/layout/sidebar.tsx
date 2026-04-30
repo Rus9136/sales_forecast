@@ -2,34 +2,34 @@ import { NavLink } from 'react-router-dom'
 import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
   UserRound, Users, Calculator, FileText, ClipboardList, Target, Sparkles,
-  Shield, UserCog, LogOut,
+  Shield, UserCog, LogOut, Settings,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import type { SectionKey } from '@/types/auth'
 
-interface NavItem {
+export interface NavItem {
   path: string
   label: string
   icon: React.ComponentType<{ className?: string }>
   section: SectionKey
+  count?: number
 }
 
-interface NavSection {
+export interface NavSection {
   label: string
   items: NavItem[]
 }
 
-const navSections: NavSection[] = [
+export const navSections: NavSection[] = [
   {
-    label: 'СПРАВОЧНИКИ',
+    label: 'Аналитика',
     items: [
-      { path: '/departments', label: 'Подразделения', icon: Building2, section: 'departments' },
-      { path: '/employees', label: 'Сотрудники', icon: Users, section: 'employees' },
+      { path: '/ai-recommendations', label: 'Рекомендации ИИ', icon: Sparkles, section: 'ai.recommendations' },
     ],
   },
   {
-    label: 'ПРОДАЖИ',
+    label: 'Продажи',
     items: [
       { path: '/sales/daily', label: 'Продажи по дням', icon: CalendarDays, section: 'sales.daily' },
       { path: '/sales/hourly', label: 'Продажи по часам', icon: Clock, section: 'sales.hourly' },
@@ -37,14 +37,14 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    label: 'ПРОГНОЗ ПРОДАЖ',
+    label: 'Прогноз продаж',
     items: [
       { path: '/forecast/branches', label: 'Прогноз по филиалам', icon: TrendingUp, section: 'forecast.branches' },
       { path: '/forecast/comparison', label: 'Сравнение факт / прогноз', icon: GitCompare, section: 'forecast.comparison' },
     ],
   },
   {
-    label: 'БОНУСЫ',
+    label: 'Бонусы',
     items: [
       { path: '/bonus/calculations', label: 'Расчёты бонусов', icon: Calculator, section: 'bonus.calculations' },
       { path: '/bonus/schemes', label: 'Схемы расчёта', icon: FileText, section: 'bonus.schemes' },
@@ -53,19 +53,20 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    label: 'AI АНАЛИТИКА',
+    label: 'Справочники',
     items: [
-      { path: '/ai-recommendations', label: 'Рекомендации ИИ', icon: Sparkles, section: 'ai.recommendations' },
+      { path: '/departments', label: 'Подразделения', icon: Building2, section: 'departments' },
+      { path: '/employees', label: 'Сотрудники', icon: Users, section: 'employees' },
     ],
   },
   {
-    label: 'СЕРВИС',
+    label: 'Сервис',
     items: [
       { path: '/sync', label: 'Синхронизация данных', icon: RefreshCw, section: 'sync' },
     ],
   },
   {
-    label: 'АДМИНИСТРИРОВАНИЕ',
+    label: 'Администрирование',
     items: [
       { path: '/users', label: 'Пользователи', icon: UserCog, section: 'users' },
       { path: '/roles', label: 'Роли и доступы', icon: Shield, section: 'roles' },
@@ -73,59 +74,78 @@ const navSections: NavSection[] = [
   },
 ]
 
+function initials(name: string | null | undefined, phone: string | undefined): string {
+  if (name) {
+    const parts = name.trim().split(/\s+/).filter(Boolean)
+    if (parts.length === 0) return '—'
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+    return (parts[0][0] + parts[1][0]).toUpperCase()
+  }
+  return phone ? phone.slice(-2) : '—'
+}
+
 export function Sidebar() {
   const { user, hasSection, logout } = useAuth()
 
   return (
-    <aside className="w-64 min-h-screen bg-sidebar text-sidebar-foreground flex flex-col shrink-0">
-      <div className="p-4 border-b border-sidebar-accent">
-        <h1 className="text-lg font-bold">Sales Forecast</h1>
+    <aside className="sidebar">
+      <div className="sidebar__brand">
+        <span className="logo">Sf</span>
+        <div className="brand-text">
+          <b>Sales Forecast</b>
+          <span>Aqniet Holding</span>
+        </div>
       </div>
-      <nav className="flex-1 py-2 overflow-y-auto">
+
+      <nav style={{ flex: 1, overflowY: 'auto', padding: '0 0 8px' }}>
         {navSections.map((section) => {
           const visibleItems = section.items.filter((i) => hasSection(i.section))
           if (visibleItems.length === 0) return null
           return (
-            <div key={section.label} className="mb-2">
-              <div className="px-4 py-2 text-xs font-semibold text-sidebar-foreground/50 uppercase tracking-wider">
-                {section.label}
-              </div>
+            <div key={section.label} className="sidebar__group">
+              <div className="sidebar__group-title">{section.label}</div>
               {visibleItems.map((item) => (
                 <NavLink
                   key={item.path}
                   to={item.path}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-3 px-4 py-2.5 text-sm transition-colors',
-                      isActive
-                        ? 'bg-sidebar-accent text-white font-medium'
-                        : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-                    )
-                  }
+                  title={item.label}
+                  className={({ isActive }) => cn('nav-item', isActive && 'active')}
                 >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.label}
+                  <item.icon className="icon" />
+                  <span className="label">{item.label}</span>
+                  {item.count != null && (
+                    <span className="count">{item.count.toLocaleString('ru-RU')}</span>
+                  )}
                 </NavLink>
               ))}
             </div>
           )
         })}
       </nav>
+
       {user && (
-        <div className="border-t border-sidebar-accent p-4 space-y-2">
-          <div className="text-sm font-medium text-sidebar-foreground/90 truncate">
-            {user.full_name || user.phone}
-          </div>
-          <div className="text-xs text-sidebar-foreground/60">
-            {user.role_name || user.role_code} · {user.phone}
+        <div className="sidebar__footer">
+          <span className="avatar">{initials(user.full_name, user.phone)}</span>
+          <div className="meta">
+            <b>{user.full_name || user.phone}</b>
+            <span>{user.role_name || user.role_code}</span>
           </div>
           <button
             type="button"
             onClick={() => { void logout() }}
-            className="flex items-center gap-2 text-xs text-sidebar-foreground/70 hover:text-sidebar-foreground transition-colors"
+            className="btn-ghost btn-icon btn-icon-sm footer-action"
+            title="Выйти"
           >
-            <LogOut className="h-3 w-3" />
-            Выйти
+            <LogOut size={14} />
+          </button>
+          <button
+            type="button"
+            className="btn-ghost btn-icon btn-icon-sm footer-action"
+            title="Настройки"
+            disabled
+            style={{ opacity: 0.5 }}
+          >
+            <Settings size={14} />
           </button>
         </div>
       )}

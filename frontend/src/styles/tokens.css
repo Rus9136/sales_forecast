@@ -1,0 +1,200 @@
+/* Design tokens — Sales Forecast (ported from design_handoff_sales_forecast/styles/tokens.css) */
+
+:root {
+  /* Geometry */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 40px;
+  --sp-9: 56px;
+
+  /* Type */
+  --font-sans: "Geist", ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Density (overridden by data-density) */
+  --row-h: 40px;
+  --row-pad-y: 8px;
+
+  /* Sidebar width */
+  --sidebar-w: 240px;
+  --sidebar-w-collapsed: 64px;
+
+  /* Easing */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.06);
+  --shadow-pop: 0 12px 28px rgba(15, 23, 42, 0.12);
+
+  /* Accent (default emerald, overridden by data-accent) */
+  --accent: oklch(0.62 0.13 162);
+  --accent-fg: #ffffff;
+  --accent-soft: oklch(0.95 0.04 162);
+  --accent-soft-fg: oklch(0.42 0.10 162);
+  --accent-ring: oklch(0.62 0.13 162 / 0.35);
+
+  /* Semantic */
+  --pos: oklch(0.62 0.13 162);
+  --neg: oklch(0.62 0.18 25);
+  --warn: oklch(0.78 0.14 75);
+  --info: oklch(0.62 0.12 240);
+}
+
+/* LIGHT theme */
+[data-theme="light"] {
+  --bg: oklch(0.985 0.003 240);
+  --bg-elev: #ffffff;
+  --bg-sunken: oklch(0.965 0.004 240);
+  --bg-hover: oklch(0.96 0.005 240);
+  --bg-active: oklch(0.93 0.008 240);
+
+  --surface: #ffffff;
+  --surface-2: oklch(0.985 0.003 240);
+
+  --border: oklch(0.91 0.006 240);
+  --border-strong: oklch(0.84 0.01 240);
+  --border-faint: oklch(0.95 0.004 240);
+
+  --text: oklch(0.22 0.01 240);
+  --text-muted: oklch(0.5 0.012 240);
+  --text-subtle: oklch(0.62 0.012 240);
+  --text-inverse: #ffffff;
+
+  --sidebar-bg: oklch(0.985 0.003 240);
+  --sidebar-border: oklch(0.91 0.006 240);
+  --sidebar-text: oklch(0.34 0.012 240);
+  --sidebar-text-active: oklch(0.22 0.01 240);
+  --sidebar-item-hover: oklch(0.95 0.005 240);
+  --sidebar-item-active: #ffffff;
+
+  --topbar-bg: rgba(255, 255, 255, 0.85);
+
+  --row-stripe: oklch(0.985 0.003 240);
+  --row-hover: oklch(0.965 0.005 240);
+
+  --chart-grid: oklch(0.93 0.005 240);
+  --chart-axis: oklch(0.65 0.012 240);
+
+  --skel: oklch(0.93 0.005 240);
+}
+
+/* DARK theme */
+[data-theme="dark"] {
+  --bg: oklch(0.16 0.012 240);
+  --bg-elev: oklch(0.20 0.014 240);
+  --bg-sunken: oklch(0.13 0.012 240);
+  --bg-hover: oklch(0.22 0.014 240);
+  --bg-active: oklch(0.26 0.016 240);
+
+  --surface: oklch(0.20 0.014 240);
+  --surface-2: oklch(0.18 0.013 240);
+
+  --border: oklch(0.28 0.014 240);
+  --border-strong: oklch(0.36 0.016 240);
+  --border-faint: oklch(0.24 0.012 240);
+
+  --text: oklch(0.96 0.005 240);
+  --text-muted: oklch(0.72 0.012 240);
+  --text-subtle: oklch(0.58 0.012 240);
+  --text-inverse: oklch(0.16 0.012 240);
+
+  --sidebar-bg: oklch(0.13 0.012 240);
+  --sidebar-border: oklch(0.22 0.014 240);
+  --sidebar-text: oklch(0.72 0.012 240);
+  --sidebar-text-active: oklch(0.98 0.005 240);
+  --sidebar-item-hover: oklch(0.20 0.014 240);
+  --sidebar-item-active: oklch(0.24 0.016 240);
+
+  --topbar-bg: oklch(0.16 0.012 240 / 0.85);
+
+  --row-stripe: oklch(0.18 0.013 240);
+  --row-hover: oklch(0.22 0.014 240);
+
+  --chart-grid: oklch(0.26 0.014 240);
+  --chart-axis: oklch(0.58 0.012 240);
+
+  --skel: oklch(0.24 0.012 240);
+
+  --accent-soft: oklch(0.32 0.07 162);
+  --accent-soft-fg: oklch(0.85 0.10 162);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+/* Density variants */
+[data-density="compact"] {
+  --row-h: 32px;
+  --row-pad-y: 4px;
+}
+[data-density="cozy"] {
+  --row-h: 40px;
+  --row-pad-y: 8px;
+}
+[data-density="spacious"] {
+  --row-h: 52px;
+  --row-pad-y: 12px;
+}
+
+/* Accent variants */
+[data-accent="emerald"] {
+  --accent: oklch(0.62 0.13 162);
+  --accent-soft: oklch(0.95 0.04 162);
+  --accent-soft-fg: oklch(0.42 0.10 162);
+  --accent-ring: oklch(0.62 0.13 162 / 0.35);
+}
+[data-theme="dark"][data-accent="emerald"] {
+  --accent-soft: oklch(0.32 0.07 162);
+  --accent-soft-fg: oklch(0.85 0.10 162);
+}
+
+[data-accent="indigo"] {
+  --accent: oklch(0.55 0.16 264);
+  --accent-soft: oklch(0.95 0.04 264);
+  --accent-soft-fg: oklch(0.40 0.13 264);
+  --accent-ring: oklch(0.55 0.16 264 / 0.35);
+}
+[data-theme="dark"][data-accent="indigo"] {
+  --accent-soft: oklch(0.30 0.10 264);
+  --accent-soft-fg: oklch(0.85 0.10 264);
+}
+
+[data-accent="amber"] {
+  --accent: oklch(0.70 0.15 70);
+  --accent-fg: oklch(0.20 0.04 70);
+  --accent-soft: oklch(0.95 0.05 70);
+  --accent-soft-fg: oklch(0.42 0.10 70);
+  --accent-ring: oklch(0.70 0.15 70 / 0.35);
+}
+[data-theme="dark"][data-accent="amber"] {
+  --accent-soft: oklch(0.32 0.08 70);
+  --accent-soft-fg: oklch(0.85 0.12 70);
+}
+
+[data-accent="slate"] {
+  --accent: oklch(0.30 0.014 240);
+  --accent-soft: oklch(0.93 0.005 240);
+  --accent-soft-fg: oklch(0.30 0.014 240);
+  --accent-ring: oklch(0.30 0.014 240 / 0.35);
+}
+[data-theme="dark"][data-accent="slate"] {
+  --accent: oklch(0.86 0.005 240);
+  --accent-fg: oklch(0.16 0.012 240);
+  --accent-soft: oklch(0.26 0.014 240);
+  --accent-soft-fg: oklch(0.92 0.006 240);
+}
