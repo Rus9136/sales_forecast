@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import type { SalesSummary, SalesByHour } from '@/types/sales'
+import type { SalesSummary, SalesByHour, SalesHeatmap } from '@/types/sales'
 
 interface SalesParams {
   from_date?: string
@@ -36,6 +36,19 @@ export function useHourlySales(params: HourlySalesParams) {
         department_id: params.department_id,
         hour: params.hour,
         limit: '1000',
+      }),
+    enabled: !!params.from_date && !!params.to_date,
+  })
+}
+
+export function useSalesHeatmap(params: SalesParams) {
+  return useQuery({
+    queryKey: ['sales', 'heatmap', params],
+    queryFn: () =>
+      api.get<SalesHeatmap>('/api/sales/hourly/heatmap', {
+        from_date: params.from_date,
+        to_date: params.to_date,
+        department_id: params.department_id,
       }),
     enabled: !!params.from_date && !!params.to_date,
   })

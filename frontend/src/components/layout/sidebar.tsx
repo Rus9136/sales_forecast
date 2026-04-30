@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
   UserRound, Users, Calculator, FileText, ClipboardList, Target, Sparkles,
-  Shield, UserCog, LogOut, Settings,
+  Shield, UserCog, LogOut, Settings, LayoutDashboard,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
@@ -22,6 +22,12 @@ export interface NavSection {
 }
 
 export const navSections: NavSection[] = [
+  {
+    label: 'Обзор',
+    items: [
+      { path: '/dashboard', label: 'Дашборд', icon: LayoutDashboard, section: 'dashboard' },
+    ],
+  },
   {
     label: 'Аналитика',
     items: [

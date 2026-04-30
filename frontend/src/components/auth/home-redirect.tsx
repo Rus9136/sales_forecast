@@ -3,6 +3,7 @@ import { useAuth } from '@/contexts/auth-context'
 import type { SectionKey } from '@/types/auth'
 
 const SECTION_TO_PATH: Record<SectionKey, string> = {
+  'dashboard': '/dashboard',
   'departments': '/departments',
   'employees': '/employees',
   'sales.daily': '/sales/daily',
@@ -21,6 +22,7 @@ const SECTION_TO_PATH: Record<SectionKey, string> = {
 }
 
 const PRIORITY: SectionKey[] = [
+  'dashboard',
   'departments', 'sales.daily', 'sales.hourly', 'sales.waiters',
   'forecast.branches', 'forecast.comparison',
   'bonus.calculations', 'bonus.schemes', 'bonus.manual-kpi', 'bonus.monthly-plans',

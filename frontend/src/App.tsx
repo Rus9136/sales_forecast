@@ -7,6 +7,7 @@ import { ProtectedRoute } from '@/components/auth/protected-route'
 import { HomeRedirect } from '@/components/auth/home-redirect'
 import { LoginPage } from '@/pages/login-page'
 import { ForbiddenPage } from '@/pages/forbidden-page'
+import { DashboardPage } from '@/pages/dashboard-page'
 import { DepartmentsPage } from '@/pages/departments-page'
 import { EmployeesPage } from '@/pages/employees-page'
 import { DailySalesPage } from '@/pages/daily-sales-page'
@@ -45,6 +46,9 @@ export default function App() {
                 <Route element={<AppLayout />}>
                   <Route path="/" element={<HomeRedirect />} />
                   <Route path="/forbidden" element={<ForbiddenPage />} />
+                  <Route element={<ProtectedRoute section="dashboard" />}>
+                    <Route path="/dashboard" element={<DashboardPage />} />
+                  </Route>
                   <Route element={<ProtectedRoute section="departments" />}>
                     <Route path="/departments" element={<DepartmentsPage />} />
                   </Route>

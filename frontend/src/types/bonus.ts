@@ -175,3 +175,12 @@ export interface BonusRunResponse {
   errors: Array<{ employee_id: string; error: string }>
   ids: number[]
 }
+
+export interface BonusReportSummaryRow {
+  department_id: string
+  count: number
+  /** Decimal as string. */
+  total: string
+  /** Decimal as string. */
+  average: string
+}

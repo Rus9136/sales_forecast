@@ -10,6 +10,7 @@ import { useRoles, useUpdateRole } from '@/hooks/use-roles'
 import type { AppRole, SectionKey } from '@/types/auth'
 
 const SECTION_LABELS: Record<SectionKey, string> = {
+  'dashboard': 'Дашборд',
   'departments': 'Подразделения',
   'employees': 'Сотрудники',
   'sales.daily': 'Продажи по дням',

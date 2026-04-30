@@ -19,6 +19,14 @@ export interface SalesByHour {
   synced_at: string
 }
 
+export interface SalesHeatmap {
+  from_date: string | null
+  to_date: string | null
+  department_id: string | null
+  /** 7×24 grid: rows are Mon..Sun, cols are 0..23 hours. */
+  grid: number[][]
+}
+
 export interface SyncResult {
   status: 'success' | 'error'
   message: string

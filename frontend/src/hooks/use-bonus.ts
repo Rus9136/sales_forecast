@@ -15,6 +15,7 @@ import type {
   BonusCalculationDetail,
   BonusRunRequest,
   BonusRunResponse,
+  BonusReportSummaryRow,
 } from '@/types/bonus'
 
 // ---------------------------------------------------------------------------
@@ -198,6 +199,21 @@ export function useApproveCalculation() {
     mutationFn: (id: number) =>
       api.post<{ id: number; status: string }>(`/api/bonus/calculations/${id}/approve`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['bonus', 'calculations'] }),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+export function useBonusReportSummary(params: { year?: number; month?: number }) {
+  return useQuery({
+    queryKey: ['bonus', 'reports', 'summary', params],
+    queryFn: () =>
+      api.get<BonusReportSummaryRow[]>('/api/bonus/reports/summary', {
+        year: params.year ? String(params.year) : undefined,
+        month: params.month ? String(params.month) : undefined,
+      }),
+    enabled: params.year != null && params.month != null,
   })
 }
 

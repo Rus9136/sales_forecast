@@ -135,6 +135,7 @@ def serialize_role(role: AppRole) -> dict:
 
 # All available section keys — used by frontend "Roles" editor as a fixed checklist
 AVAILABLE_SECTIONS = [
+    "dashboard",
     "departments",
     "employees",
     "sales.daily",
@@ -152,6 +153,11 @@ AVAILABLE_SECTIONS = [
     "roles",
 ]
 
+# Sections that should be granted to every existing role on app startup.
+# Used by ``ensure_default_sections`` for idempotent upgrades after a new
+# top-level page is added.
+ALWAYS_GRANTED_SECTIONS = ["dashboard"]
+
 
 DEFAULT_ROLES = [
     {
@@ -164,6 +170,7 @@ DEFAULT_ROLES = [
         "code": "manager",
         "name": "Менеджер",
         "allowed_sections": [
+            "dashboard",
             "departments", "employees",
             "sales.daily", "sales.hourly", "sales.waiters",
             "forecast.branches", "forecast.comparison",
@@ -175,6 +182,7 @@ DEFAULT_ROLES = [
         "code": "accountant",
         "name": "Бухгалтер",
         "allowed_sections": [
+            "dashboard",
             "departments", "employees",
             "sales.daily", "sales.waiters",
             "bonus.calculations", "bonus.schemes", "bonus.manual-kpi", "bonus.monthly-plans",
@@ -185,6 +193,7 @@ DEFAULT_ROLES = [
         "code": "viewer",
         "name": "Наблюдатель",
         "allowed_sections": [
+            "dashboard",
             "sales.daily", "sales.hourly",
             "forecast.branches", "forecast.comparison",
         ],
@@ -194,11 +203,12 @@ DEFAULT_ROLES = [
 
 
 def seed_default_roles(db: Session) -> None:
-    """Insert system roles if missing. Existing rows are not touched."""
-    existing = {r.code for r in db.query(AppRole.code).all()}
+    """Insert system roles if missing and grant always-on sections to existing ones."""
+    existing_rows = db.query(AppRole).all()
+    existing_codes = {r.code for r in existing_rows}
     created = False
     for spec in DEFAULT_ROLES:
-        if spec["code"] in existing:
+        if spec["code"] in existing_codes:
             continue
         db.add(AppRole(
             code=spec["code"],
@@ -207,7 +217,18 @@ def seed_default_roles(db: Session) -> None:
             is_system=spec["is_system"],
         ))
         created = True
-    if created:
+
+    # Idempotent upgrade: ensure every existing role has the always-on sections
+    # (e.g. a newly introduced "dashboard" page that all roles should see).
+    upgraded = False
+    for role in existing_rows:
+        current = list(role.allowed_sections or [])
+        missing = [s for s in ALWAYS_GRANTED_SECTIONS if s not in current]
+        if missing:
+            role.allowed_sections = current + missing
+            upgraded = True
+
+    if created or upgraded:
         db.commit()
 
 

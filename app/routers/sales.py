@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, Integer
 from typing import List, Optional
 from datetime import date, datetime, timedelta
 from ..db import get_db
@@ -101,6 +101,53 @@ def get_sales_by_hour(
         result.append(sale_dict)
     
     return result
+
+
+@router.get("/hourly/heatmap")
+def get_sales_hourly_heatmap(
+    department_id: Optional[str] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass),
+):
+    """Aggregate hourly sales into a 7x24 grid (day-of-week x hour).
+
+    Returns a fixed-size matrix (Mon..Sun rows, 0..23 cols) so the frontend can
+    render directly without zero-filling. Values are total sales sums.
+    """
+    # PostgreSQL DOW: Sunday=0..Saturday=6. Convert to Monday=0..Sunday=6
+    # to match the design (rows: Пн..Вс).
+    dow_expr = (func.extract('dow', SalesByHourModel.date).cast(Integer) + 6) % 7
+
+    query = db.query(
+        dow_expr.label('dow'),
+        SalesByHourModel.hour.label('hour'),
+        func.sum(SalesByHourModel.sales_amount).label('total'),
+    )
+
+    if department_id:
+        query = query.filter(SalesByHourModel.department_id == department_id)
+    if from_date:
+        query = query.filter(SalesByHourModel.date >= from_date)
+    if to_date:
+        query = query.filter(SalesByHourModel.date <= to_date)
+
+    rows = query.group_by('dow', SalesByHourModel.hour).all()
+
+    grid = [[0.0 for _ in range(24)] for _ in range(7)]
+    for dow, hour, total in rows:
+        d = int(dow)
+        h = int(hour)
+        if 0 <= d < 7 and 0 <= h < 24:
+            grid[d][h] = float(total or 0)
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "department_id": department_id,
+        "grid": grid,
+    }
 
 
 @router.post("/sync")

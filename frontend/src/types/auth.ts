@@ -1,4 +1,5 @@
 export type SectionKey =
+  | 'dashboard'
   | 'departments'
   | 'employees'
   | 'sales.daily'
