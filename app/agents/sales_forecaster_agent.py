@@ -20,18 +20,58 @@ logger = logging.getLogger(__name__)
 class SalesForecasterAgent:
     """Agent for training and using LightGBM sales forecasting model"""
     
+    SEGMENT_MODELS_DIR = "models/segments"
+    MIN_SEGMENT_SAMPLES = 500  # below this, fall back to the global model
+
     def __init__(self, model_path: str = "models/lgbm_model.pkl"):
         self.model_path = model_path
         self.model = None
         self.feature_columns = None
         self._training_metrics = None
         self._target_transform = "identity"
+        # Segment-specific models (one LGBMRegressor per segment_type).
+        # Populated by train_segmented_models() and loaded by _load_model().
+        self.segment_models: Dict[str, Any] = {}
+        self.segment_metrics: Dict[str, Dict[str, Any]] = {}
+        self.segment_target_transforms: Dict[str, str] = {}
         self._load_model()
+        self._load_segment_models()
 
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Predict, applying inverse target transform if model was trained on log1p."""
-        raw = self.model.predict(X)
-        if getattr(self, "_target_transform", "identity") == "log1p":
+    def _normalize_segment(self, segment_type: Optional[str]) -> Optional[str]:
+        """Map raw segment_type values to canonical bucket keys used as filenames."""
+        if not segment_type:
+            return None
+        s = segment_type.strip().lower()
+        if not s:
+            return None
+        if 'кофейня' in s or 'coffee' in s:
+            return 'coffeehouse'
+        if 'фуд-корт' in s or 'food court' in s or 'food_court' in s:
+            return 'food_court'
+        if 'ресторан' in s or 'restaurant' in s:
+            return 'restaurant'
+        # Use the raw value if it's already canonical
+        if s in ('coffeehouse', 'food_court', 'restaurant'):
+            return s
+        return None
+
+    def predict(self, X: pd.DataFrame, segment_type: Optional[str] = None) -> np.ndarray:
+        """Predict, applying inverse target transform if model was trained on log1p.
+
+        If a per-segment model exists for `segment_type`, it is used; otherwise
+        falls back to the global model. Each model carries its own target
+        transform metadata so the inverse is applied correctly.
+        """
+        seg_key = self._normalize_segment(segment_type)
+        if seg_key and seg_key in self.segment_models:
+            model = self.segment_models[seg_key]
+            transform = self.segment_target_transforms.get(seg_key, "identity")
+        else:
+            model = self.model
+            transform = getattr(self, "_target_transform", "identity")
+
+        raw = model.predict(X)
+        if transform == "log1p":
             raw = np.expm1(raw)
             raw = np.maximum(raw, 0.0)
         return raw
@@ -252,7 +292,7 @@ class SalesForecasterAgent:
                 start_date = end_date - timedelta(days=45)
                 logger.info(f"Long-term forecast ({days_ahead} days ahead): using extended approach")
             
-            # Query historical sales with department info
+            # Query historical sales with department info (incl. operational metadata)
             sales_query = db.query(
                 SalesSummary.date,
                 SalesSummary.total_sales,
@@ -260,7 +300,17 @@ class SalesForecasterAgent:
                 Department.code.label('department_code'),
                 Department.type.label('department_type'),
                 Department.segment_type.label('segment_type'),
-                Department.parent_id.label('parent_id')
+                Department.parent_id.label('parent_id'),
+                Department.brand.label('brand'),
+                Department.location_type.label('location_type'),
+                Department.tourist_traffic_dependent.label('tourist_traffic_dependent'),
+                Department.is_24_7.label('is_24_7_flag'),
+                Department.opening_hour.label('opening_hour'),
+                Department.closing_hour.label('closing_hour'),
+                Department.seasonality_intensity.label('seasonality_intensity'),
+                Department.opened_date.label('opened_date'),
+                Department.season_start_month.label('season_start_month'),
+                Department.season_end_month.label('season_end_month'),
             ).join(
                 Department,
                 SalesSummary.department_id == Department.id
@@ -271,15 +321,15 @@ class SalesForecasterAgent:
                     SalesSummary.date <= end_date
                 )
             ).order_by(SalesSummary.date)
-            
+
             sales_data = sales_query.all()
-            
+
             min_days_required = 14 if days_ahead <= 7 else 7
             if len(sales_data) < min_days_required:
                 logger.warning(f"Insufficient historical data for branch {branch_id}. Found {len(sales_data)} days, need at least {min_days_required}.")
                 return None
-            
-            # Create DataFrame
+
+            # Create DataFrame (carries department metadata into feature builder)
             df = pd.DataFrame([{
                 'date': r.date,
                 'total_sales': float(r.total_sales),
@@ -287,7 +337,17 @@ class SalesForecasterAgent:
                 'department_code': r.department_code,
                 'department_type': r.department_type,
                 'segment_type': r.segment_type,
-                'parent_id': str(r.parent_id) if r.parent_id else None
+                'parent_id': str(r.parent_id) if r.parent_id else None,
+                'brand': r.brand,
+                'location_type': r.location_type,
+                'tourist_traffic_dependent': bool(r.tourist_traffic_dependent),
+                'is_24_7_flag': bool(r.is_24_7_flag),
+                'opening_hour': r.opening_hour,
+                'closing_hour': r.closing_hour,
+                'seasonality_intensity': r.seasonality_intensity or 'none',
+                'opened_date': r.opened_date,
+                'season_start_month': r.season_start_month,
+                'season_end_month': r.season_end_month,
             } for r in sales_data])
             
             df['date'] = pd.to_datetime(df['date'])
@@ -307,7 +367,9 @@ class SalesForecasterAgent:
             logger.info(f"Feature vector created with {len(features)} features")
             
             # Make prediction (predict() applies inverse target transform)
-            prediction = float(self.predict(X)[0])
+            # Pass segment_type so the dispatcher picks the per-segment model
+            # if one exists, otherwise falls back to the global model.
+            prediction = float(self.predict(X, segment_type=dept_info.get('segment_type'))[0])
 
             # Применяем временное сглаживание
             prediction = self._apply_temporal_smoothing(branch_id, forecast_date, prediction, db)
@@ -467,7 +529,81 @@ class SalesForecasterAgent:
         features['is_almaty'] = 1 if 'алмат' in dept_name or 'almaty' in dept_name else 0
         features['is_astana'] = 1 if 'астан' in dept_name or 'astana' in dept_name else 0
         features['is_shymkent'] = 1 if 'шымкент' in dept_name or 'shymkent' in dept_name else 0
-        
+
+        # Outlier flag — at inference we forecast a "normal" day, so flag=0.
+        # The flag exists primarily during training so the model isn't forced
+        # to average extreme days (paydays, promos, IQR-outliers) into the
+        # baseline. Known calendar anomalies (holidays) are already covered
+        # by `is_holiday` / `is_pre_holiday` / `is_post_holiday`.
+        features['is_outlier_day'] = 0
+
+        # === Operational metadata features ===
+        # Must mirror TrainingDataService._add_operational_features so training
+        # and inference produce identical feature columns.
+        OPERATIONAL_BRANDS = ['tary', 'sandyq', 'madlen', 'shopan']
+        OPERATIONAL_LOCATIONS = [
+            'city_center', 'mall', 'business_district',
+            'resort_mountain', 'resort_lake', 'visit_center', 'other'
+        ]
+        SEASONALITY_SCORE = {'none': 0, 'low': 1, 'medium': 2, 'high': 3}
+
+        # Brand one-hot
+        brand_raw = dept_info.get('brand') or ''
+        brand_lower = str(brand_raw).strip().lower()
+        for b in OPERATIONAL_BRANDS:
+            features[f'is_brand_{b}'] = 1 if brand_lower == b else 0
+
+        # Location type one-hot
+        loc_raw = dept_info.get('location_type') or ''
+        loc_lower = str(loc_raw).strip().lower()
+        for lt in OPERATIONAL_LOCATIONS:
+            features[f'is_loc_{lt}'] = 1 if loc_lower == lt else 0
+
+        # Operational booleans
+        features['is_tourist_dependent'] = 1 if dept_info.get('tourist_traffic_dependent') else 0
+        is_24_7_flag = bool(dept_info.get('is_24_7_flag'))
+        features['is_24_7'] = 1 if is_24_7_flag else 0
+
+        # Working hours count
+        if is_24_7_flag:
+            features['working_hours_count'] = 24
+        else:
+            o = dept_info.get('opening_hour')
+            c = dept_info.get('closing_hour')
+            if o is None or c is None or pd.isna(o) or pd.isna(c):
+                features['working_hours_count'] = 12
+            else:
+                o, c = int(o), int(c)
+                features['working_hours_count'] = (c - o) if c > o else (24 - o + c)
+
+        # Days since opening
+        opened = dept_info.get('opened_date')
+        if opened is None or pd.isna(opened):
+            features['days_since_opening'] = -1
+            features['is_new_department'] = 0
+        else:
+            opened_ts = pd.to_datetime(opened)
+            days_since = (forecast_datetime - opened_ts).days
+            features['days_since_opening'] = max(-1, min(int(days_since), 1825))
+            features['is_new_department'] = 1 if 0 <= days_since < 90 else 0
+
+        # Seasonality
+        intensity = (dept_info.get('seasonality_intensity') or 'none').strip().lower()
+        features['seasonality_score'] = SEASONALITY_SCORE.get(intensity, 0)
+
+        s_start = dept_info.get('season_start_month')
+        s_end = dept_info.get('season_end_month')
+        if s_start is None or s_end is None or pd.isna(s_start) or pd.isna(s_end):
+            features['is_in_season'] = 1  # no season data → assume always in-season
+        else:
+            s_start, s_end = int(s_start), int(s_end)
+            month = forecast_datetime.month
+            if s_start <= s_end:
+                features['is_in_season'] = 1 if (s_start <= month <= s_end) else 0
+            else:
+                # wrap-around (e.g. Nov-Mar season)
+                features['is_in_season'] = 1 if (month >= s_start or month <= s_end) else 0
+
         return features
     
     def _get_season(self, month: int) -> str:
@@ -547,7 +683,7 @@ class SalesForecasterAgent:
             db.rollback()
     
     def _apply_temporal_smoothing(self, branch_id: str, forecast_date: date, raw_prediction: float, db: Session,
-                                  max_change_threshold: float = 0.3) -> float:
+                                  max_change_threshold: float = 0.5) -> float:
         """
         Применить временное сглаживание для предотвращения аномальных скачков
         
@@ -615,6 +751,162 @@ class SalesForecasterAgent:
             logger.error(f"Error in temporal smoothing: {str(e)}")
             return raw_prediction
     
+    def train_segmented_models(
+        self,
+        df: pd.DataFrame,
+        val_size: float = 0.15,
+        test_size: float = 0.15,
+        save: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Train one LightGBM model per `segment_type` on its slice of the data.
+
+        Why segmenting:
+            A single model on 500..3M ₸/day scales is dominated by large
+            departments under RMSE/MAE loss. Stage-2 retraining proved that
+            adding fresh data alone shrinks the in/out-of-sample gap by
+            <0.2 п.п. — the bottleneck is structural. Per-segment models
+            let each one optimize its own scale and weekly pattern.
+
+        Strategy:
+            - Use the same chronological train/val/test split as the global
+              pipeline, but applied within each segment.
+            - log1p target transform for all (proven win in stage 3.1).
+            - Segments with fewer than MIN_SEGMENT_SAMPLES samples are
+              skipped — the global model handles them at inference time.
+
+        Returns:
+            Dict[segment_key, metrics_dict] for each trained segment.
+        """
+        if self.feature_columns is None:
+            from ..db import get_db
+            from ..services.training_service import TrainingDataService
+            temp_db = next(get_db())
+            self.feature_columns = TrainingDataService(temp_db).get_feature_columns()
+
+        target_column = 'total_sales'
+        df = df.sort_values(['date']).reset_index(drop=True)
+
+        # Bucket departments into canonical segment keys
+        df['_segment_key'] = df['segment_type'].apply(self._normalize_segment)
+
+        per_segment_metrics: Dict[str, Dict[str, Any]] = {}
+        self.segment_models = {}
+        self.segment_target_transforms = {}
+
+        for seg_key in sorted(df['_segment_key'].dropna().unique()):
+            seg_df = df[df['_segment_key'] == seg_key].copy()
+            if len(seg_df) < self.MIN_SEGMENT_SAMPLES:
+                logger.info(
+                    f"Skipping segment '{seg_key}': only {len(seg_df)} samples "
+                    f"(< {self.MIN_SEGMENT_SAMPLES})"
+                )
+                continue
+
+            seg_df = seg_df.sort_values('date').reset_index(drop=True)
+            train_size_frac = 1 - val_size - test_size
+            train_split = int(len(seg_df) * train_size_frac)
+            val_split = int(len(seg_df) * (train_size_frac + val_size))
+
+            train_df = seg_df.iloc[:train_split]
+            val_df = seg_df.iloc[train_split:val_split]
+            test_df = seg_df.iloc[val_split:]
+
+            X_train = train_df[self.feature_columns]
+            y_train = train_df[target_column]
+            X_val = val_df[self.feature_columns]
+            y_val = val_df[target_column]
+            X_test = test_df[self.feature_columns]
+            y_test = test_df[target_column]
+
+            y_train_t = np.log1p(y_train)
+            y_val_t = np.log1p(y_val)
+
+            model = lgb.LGBMRegressor(
+                n_estimators=500,
+                learning_rate=0.05,
+                max_depth=6,
+                num_leaves=31,
+                random_state=42,
+                n_jobs=-1,
+                verbosity=-1,
+            )
+            model.fit(
+                X_train, y_train_t,
+                eval_set=[(X_val, y_val_t)],
+                eval_metric='mae',
+                callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)],
+            )
+
+            y_val_pred = np.maximum(np.expm1(model.predict(X_val)), 0.0)
+            y_test_pred = np.maximum(np.expm1(model.predict(X_test)), 0.0)
+
+            metrics = {
+                'segment': seg_key,
+                'train_samples': len(X_train),
+                'val_samples': len(X_val),
+                'test_samples': len(X_test),
+                'val_mae': mean_absolute_error(y_val, y_val_pred),
+                'val_mape': self._calculate_mape(y_val, y_val_pred),
+                'val_r2': r2_score(y_val, y_val_pred),
+                'test_mae': mean_absolute_error(y_test, y_test_pred),
+                'test_mape': self._calculate_mape(y_test, y_test_pred),
+                'test_r2': r2_score(y_test, y_test_pred),
+            }
+            per_segment_metrics[seg_key] = metrics
+            self.segment_models[seg_key] = model
+            self.segment_target_transforms[seg_key] = 'log1p'
+
+            logger.info(
+                f"[{seg_key}] train={len(X_train)}, val={len(X_val)}, test={len(X_test)}"
+                f" → val MAPE {metrics['val_mape']:.2f}%, "
+                f"test MAPE {metrics['test_mape']:.2f}%, R² {metrics['test_r2']:.3f}"
+            )
+
+            if save:
+                self._save_segment_model(seg_key, model, metrics)
+
+        self.segment_metrics = per_segment_metrics
+        return per_segment_metrics
+
+    def _save_segment_model(self, seg_key: str, model, metrics: Dict[str, Any]) -> None:
+        os.makedirs(self.SEGMENT_MODELS_DIR, exist_ok=True)
+        path = os.path.join(self.SEGMENT_MODELS_DIR, f"{seg_key}.pkl")
+        joblib.dump({
+            'model': model,
+            'feature_columns': self.feature_columns,
+            'segment': seg_key,
+            'trained_at': datetime.now().isoformat(),
+            'training_metrics': metrics,
+            'target_transform': 'log1p',
+            'version': 'segment-1.0',
+        }, path)
+        logger.info(f"Segment model saved: {path}")
+
+    def _load_segment_models(self) -> None:
+        """Load all per-segment models from SEGMENT_MODELS_DIR."""
+        self.segment_models = {}
+        self.segment_target_transforms = {}
+        self.segment_metrics = {}
+        if not os.path.isdir(self.SEGMENT_MODELS_DIR):
+            logger.info(f"No segment models directory at {self.SEGMENT_MODELS_DIR}")
+            return
+        for fname in os.listdir(self.SEGMENT_MODELS_DIR):
+            if not fname.endswith('.pkl'):
+                continue
+            seg_key = fname[:-4]
+            try:
+                data = joblib.load(os.path.join(self.SEGMENT_MODELS_DIR, fname))
+                self.segment_models[seg_key] = data['model']
+                self.segment_target_transforms[seg_key] = data.get('target_transform', 'identity')
+                self.segment_metrics[seg_key] = data.get('training_metrics', {})
+                logger.info(
+                    f"Loaded segment model '{seg_key}' "
+                    f"(trained {data.get('trained_at', 'unknown')})"
+                )
+            except Exception as e:
+                logger.error(f"Failed to load segment model {fname}: {e}")
+
     def _save_model(self, metrics=None):
         """Save trained model to disk"""
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
@@ -670,21 +962,23 @@ class SalesForecasterAgent:
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the loaded model"""
-        if self.model is None:
+        if self.model is None and not self.segment_models:
             return {'status': 'not_loaded', 'model_path': self.model_path}
-        
+
         info = {
             'status': 'loaded',
             'model_path': self.model_path,
-            'model_type': type(self.model).__name__,
+            'model_type': type(self.model).__name__ if self.model else None,
             'n_features': len(self.feature_columns) if self.feature_columns else 0,
-            'feature_names': self.feature_columns
+            'feature_names': self.feature_columns,
+            'segment_models': sorted(self.segment_models.keys()),
+            'segment_metrics': self.segment_metrics,
         }
-        
+
         # Добавляем метрики обучения, если они есть
         if hasattr(self, '_training_metrics') and self._training_metrics:
             info['training_metrics'] = self._training_metrics
-            
+
         return info
     
     def get_feature_importance(self) -> Dict[str, float]:

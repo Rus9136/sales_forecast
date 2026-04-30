@@ -61,6 +61,16 @@ def main() -> None:
             Department.type.label("department_type"),
             Department.segment_type.label("segment_type"),
             Department.parent_id.label("parent_id"),
+            Department.brand.label("brand"),
+            Department.location_type.label("location_type"),
+            Department.tourist_traffic_dependent.label("tourist_traffic_dependent"),
+            Department.is_24_7.label("is_24_7_flag"),
+            Department.opening_hour.label("opening_hour"),
+            Department.closing_hour.label("closing_hour"),
+            Department.seasonality_intensity.label("seasonality_intensity"),
+            Department.opened_date.label("opened_date"),
+            Department.season_start_month.label("season_start_month"),
+            Department.season_end_month.label("season_end_month"),
         )
         .join(Department, SalesSummary.department_id == Department.id)
         .filter(SalesSummary.date >= history_start)
@@ -83,6 +93,16 @@ def main() -> None:
                 "department_type": r.department_type,
                 "segment_type": r.segment_type,
                 "parent_id": str(r.parent_id) if r.parent_id else None,
+                "brand": r.brand,
+                "location_type": r.location_type,
+                "tourist_traffic_dependent": bool(r.tourist_traffic_dependent),
+                "is_24_7_flag": bool(r.is_24_7_flag),
+                "opening_hour": r.opening_hour,
+                "closing_hour": r.closing_hour,
+                "seasonality_intensity": r.seasonality_intensity or 'none',
+                "opened_date": r.opened_date,
+                "season_start_month": r.season_start_month,
+                "season_end_month": r.season_end_month,
             }
             for r in rows
         ]
@@ -120,7 +140,7 @@ def main() -> None:
 
             features = agent._create_prediction_features(d, hist.copy())
             X = pd.DataFrame([features])[agent.feature_columns]
-            raw = max(0.0, float(agent.predict(X)[0]))
+            raw = max(0.0, float(agent.predict(X, segment_type=actual_row["segment_type"])[0]))
 
             python_dow = pd.Timestamp(d).dayofweek
             postgres_dow = (python_dow + 1) % 7

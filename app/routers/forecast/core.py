@@ -83,6 +83,61 @@ async def retrain_model(
         )
 
 
+@router.post("/retrain-segmented")
+async def retrain_segmented_models(
+    request: Optional[RetrainRequest] = None,
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
+):
+    """Retrain per-segment models (one LGBM per segment_type).
+
+    Trains alongside the global model — global stays as a fallback for
+    departments whose segment has too few samples or an unknown segment_type.
+    """
+    try:
+        from ...services.training_service import TrainingDataService
+
+        training_service = TrainingDataService(db)
+        logger.info("Starting per-segment model retraining...")
+
+        kwargs = {}
+        if request:
+            if request.handle_outliers is not None:
+                kwargs['handle_outliers'] = request.handle_outliers
+            if request.outlier_method:
+                kwargs['outlier_method'] = request.outlier_method
+            if request.days:
+                kwargs['days'] = request.days
+
+        training_data = training_service.prepare_training_data(**kwargs)
+        if training_data.empty:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No training data available"
+            )
+
+        forecaster = get_forecaster_agent()
+        forecaster.feature_columns = training_service.get_feature_columns()
+        per_segment_metrics = forecaster.train_segmented_models(training_data)
+
+        return {
+            "status": "success",
+            "message": f"Trained {len(per_segment_metrics)} per-segment models",
+            "per_segment_metrics": per_segment_metrics,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retraining segmented models: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retraining segmented models: {str(e)}"
+        )
+
+
 @router.get("/model/info")
 async def get_model_info(
     api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)

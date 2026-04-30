@@ -52,8 +52,12 @@ async def optimize_hyperparameters(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No training data available")
 
         feature_columns = training_service.get_feature_columns()
+        # Sort by date so the chronological train/val/test split matches
+        # the production training pipeline exactly.
+        df = df.sort_values('date').reset_index(drop=True)
         X = df[feature_columns]
         y = df['total_sales']
+        groups = df['department_id']
 
         train_size = int(0.7 * len(df))
         val_size = int(0.15 * len(df))
@@ -62,10 +66,13 @@ async def optimize_hyperparameters(
         y_train = y.iloc[:train_size]
         X_val = X.iloc[train_size:train_size + val_size]
         y_val = y.iloc[train_size:train_size + val_size]
+        groups_train = groups.iloc[:train_size]
+        groups_val = groups.iloc[train_size:train_size + val_size]
 
         results = tuning_service.optimize_lightgbm(
             X_train, y_train, X_val, y_val,
-            n_trials=n_trials, timeout=timeout, cv_folds=cv_folds
+            n_trials=n_trials, timeout=timeout, cv_folds=cv_folds,
+            groups_train=groups_train, groups_val=groups_val,
         )
 
         logger.info(f"Optimization completed. Best MAPE: {results['best_cv_score']:.3f}%")

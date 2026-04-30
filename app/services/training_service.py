@@ -24,8 +24,8 @@ class TrainingDataService:
         end_date: Optional[datetime] = None,
         min_sales_threshold: float = 0.0,
         days: Optional[int] = None,
-        handle_outliers: bool = True,
-        outlier_method: str = 'winsorize'
+        handle_outliers: bool = False,
+        outlier_method: str = 'flag'
     ) -> pd.DataFrame:
         """
         Prepare training data with feature engineering
@@ -73,15 +73,31 @@ class TrainingDataService:
         
         # Add department features
         sales_df = self._add_department_features(sales_df)
-        
-        # Handle outliers if requested
-        if handle_outliers:
+
+        # Add operational metadata features (brand, location_type, hours,
+        # seasonality, days since opening). Sparse for unenriched depts —
+        # these features stay constant=0/default until UI is filled.
+        sales_df = self._add_operational_features(sales_df)
+
+        # Outlier handling — default is now `flag` (non-destructive). Adds an
+        # `is_outlier_day` column instead of clipping the target so the model
+        # can learn to predict spikes (holidays, promos, payday) rather than
+        # forgetting them. Legacy `winsorize`/`cap`/`remove` modes are still
+        # available via `outlier_method` for ablation studies.
+        sales_df = self._add_outlier_flag(sales_df)
+        if handle_outliers and outlier_method in {'winsorize', 'cap', 'remove'}:
             sales_df = self._handle_outliers(sales_df, method=outlier_method)
-        
-        # Remove rows with NaN values (from rolling features)
+
+        # Remove rows with NaN values — but ONLY in feature columns and target.
+        # Raw metadata columns (brand, opened_date, opening_hour, ...) are kept
+        # in the df for traceability but most are NULL until user enriches them
+        # in the UI. Dropping by all columns would discard 100% of data when
+        # any single dept has unfilled metadata.
         initial_rows = len(sales_df)
-        sales_df = sales_df.dropna()
-        logger.info(f"Dropped {initial_rows - len(sales_df)} rows with NaN values")
+        feature_cols = self.get_feature_columns()
+        check_cols = [c for c in feature_cols if c in sales_df.columns] + ['total_sales']
+        sales_df = sales_df.dropna(subset=check_cols)
+        logger.info(f"Dropped {initial_rows - len(sales_df)} rows with NaN values (subset of {len(check_cols)} cols)")
         
         # Sort by department and date for consistency
         sales_df = sales_df.sort_values(['department_id', 'date'])
@@ -90,6 +106,40 @@ class TrainingDataService:
         
         return sales_df
     
+    def _add_outlier_flag(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add `is_outlier_day` boolean feature per department using IQR method.
+
+        Why a flag instead of clipping target values (winsorize):
+            Holidays, payday spikes, promo days are real signal — clipping
+            erases that signal and forces the model to predict average days
+            on extreme dates. A flag lets the model condition its output on
+            the day's anomaly status while keeping the true sales target.
+        """
+        df = df.copy()
+        df['is_outlier_day'] = 0
+
+        for dept_id in df['department_id'].unique():
+            dept_mask = df['department_id'] == dept_id
+            dept_sales = df.loc[dept_mask, 'total_sales']
+
+            if len(dept_sales) < 8:
+                continue
+
+            q1 = dept_sales.quantile(0.25)
+            q3 = dept_sales.quantile(0.75)
+            iqr = q3 - q1
+            lower = q1 - 1.5 * iqr
+            upper = q3 + 1.5 * iqr
+
+            outlier_mask = (dept_sales < lower) | (dept_sales > upper)
+            if outlier_mask.any():
+                df.loc[dept_mask & outlier_mask, 'is_outlier_day'] = 1
+
+        n_flagged = int(df['is_outlier_day'].sum())
+        logger.info(f"Flagged {n_flagged} outlier days ({n_flagged / len(df) * 100:.1f}%)")
+        return df
+
     def _handle_outliers(self, df: pd.DataFrame, method: str = 'winsorize') -> pd.DataFrame:
         """
         Handle outliers in sales data
@@ -150,7 +200,21 @@ class TrainingDataService:
             Department.code.label('department_code'),
             Department.type.label('department_type'),
             Department.segment_type.label('segment_type'),
-            Department.parent_id.label('parent_id')
+            Department.parent_id.label('parent_id'),
+            # Operational metadata (manual-only, populated via UI).
+            # NULL/default values = department not yet enriched — features
+            # degrade gracefully (treated as 0/baseline).
+            Department.brand.label('brand'),
+            Department.location_type.label('location_type'),
+            Department.tourist_traffic_dependent.label('tourist_traffic_dependent'),
+            Department.is_24_7.label('is_24_7'),
+            Department.opening_hour.label('opening_hour'),
+            Department.closing_hour.label('closing_hour'),
+            Department.seasonality_intensity.label('seasonality_intensity'),
+            Department.city.label('city'),
+            Department.opened_date.label('opened_date'),
+            Department.season_start_month.label('season_start_month'),
+            Department.season_end_month.label('season_end_month'),
         ).join(
             Department,
             SalesSummary.department_id == Department.id
@@ -182,7 +246,18 @@ class TrainingDataService:
                 'department_code': r.department_code,
                 'department_type': r.department_type,
                 'segment_type': r.segment_type,
-                'parent_id': str(r.parent_id) if r.parent_id else None
+                'parent_id': str(r.parent_id) if r.parent_id else None,
+                'brand': r.brand,
+                'location_type': r.location_type,
+                'tourist_traffic_dependent': bool(r.tourist_traffic_dependent),
+                'is_24_7_flag': bool(r.is_24_7),
+                'opening_hour': r.opening_hour,
+                'closing_hour': r.closing_hour,
+                'seasonality_intensity': r.seasonality_intensity or 'none',
+                'city': r.city,
+                'opened_date': r.opened_date,
+                'season_start_month': r.season_start_month,
+                'season_end_month': r.season_end_month,
             }
             for r in results
         ])
@@ -270,89 +345,165 @@ class TrainingDataService:
         df['is_almaty'] = df['department_name'].str.contains('Алматы|Almaty', na=False).astype(int)
         df['is_astana'] = df['department_name'].str.contains('Астана|Astana|Нур-Султан', na=False).astype(int)
         df['is_shymkent'] = df['department_name'].str.contains('Шымкент|Shymkent', na=False).astype(int)
-        
+
         return df
-    
-    def _add_rolling_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add rolling window features per department"""
+
+    # Canonical brand/location_type vocabularies — must match agent.py
+    # so training and inference produce identical feature columns.
+    OPERATIONAL_BRANDS = ['tary', 'sandyq', 'madlen', 'shopan']
+    OPERATIONAL_LOCATIONS = [
+        'city_center', 'mall', 'business_district',
+        'resort_mountain', 'resort_lake', 'visit_center', 'other'
+    ]
+    SEASONALITY_SCORE = {'none': 0, 'low': 1, 'medium': 2, 'high': 3}
+
+    def _add_operational_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Convert operational metadata (brand, location_type, hours, seasonality)
+        into ML features.
+
+        Defaults for unenriched departments:
+            - brand/location_type one-hots: all 0
+            - tourist_dependent / is_24_7: 0 (DB defaults to false)
+            - working_hours_count: 24 if is_24_7, else (close - open) handling
+              wrap (e.g. open=22, close=3 → 5h), else 12 (sensible median)
+            - days_since_opening: -1 if opened_date is NULL
+            - seasonality_score: 0 for 'none'
+            - is_in_season: 1 (in-season-by-default for non-seasonal depts)
+        """
         df = df.copy()
-        
+
+        # --- Brand one-hot (case-insensitive match) ---
+        brand_lower = df['brand'].fillna('').str.lower()
+        for b in self.OPERATIONAL_BRANDS:
+            df[f'is_brand_{b}'] = (brand_lower == b).astype(int)
+
+        # --- Location type one-hot ---
+        loc = df['location_type'].fillna('').str.lower()
+        for lt in self.OPERATIONAL_LOCATIONS:
+            df[f'is_loc_{lt}'] = (loc == lt).astype(int)
+
+        # --- Boolean operational flags ---
+        df['is_tourist_dependent'] = df['tourist_traffic_dependent'].fillna(False).astype(int)
+        df['is_24_7'] = df['is_24_7_flag'].fillna(False).astype(int)
+
+        # --- Working hours count ---
+        def _working_hours(row):
+            if row['is_24_7']:
+                return 24
+            o, c = row['opening_hour'], row['closing_hour']
+            if pd.isna(o) or pd.isna(c) or o is None or c is None:
+                return 12  # sensible default for unenriched
+            o, c = int(o), int(c)
+            if c > o:
+                return c - o
+            # wrap-around (e.g. open 22, close 3 → 5 hours)
+            return (24 - o) + c
+        df['working_hours_count'] = df.apply(_working_hours, axis=1)
+
+        # --- Days since opening (capped at 5 years to avoid skew) ---
+        opened = pd.to_datetime(df['opened_date'], errors='coerce')
+        date_dt = pd.to_datetime(df['date'])
+        days_since = (date_dt - opened).dt.days
+        df['days_since_opening'] = days_since.fillna(-1).clip(lower=-1, upper=1825).astype(int)
+        df['is_new_department'] = ((days_since >= 0) & (days_since < 90)).astype(int)
+
+        # --- Seasonality intensity score ---
+        df['seasonality_score'] = (
+            df['seasonality_intensity'].fillna('none').map(self.SEASONALITY_SCORE).fillna(0).astype(int)
+        )
+
+        # --- Is in season (handles wrap-around like Nov-Mar) ---
+        month = date_dt.dt.month
+        s_start = pd.to_numeric(df['season_start_month'], errors='coerce')
+        s_end = pd.to_numeric(df['season_end_month'], errors='coerce')
+
+        # No season data → assume always in season (default 1, doesn't hurt non-seasonal depts)
+        no_season = s_start.isna() | s_end.isna()
+        # Normal range: start <= end (e.g. Mar=3, Oct=10 → Mar..Oct in season)
+        normal = ~no_season & (s_start <= s_end) & (month >= s_start) & (month <= s_end)
+        # Wrap range: start > end (e.g. Nov=11, Mar=3 → Nov,Dec,Jan,Feb,Mar in season)
+        wrap = ~no_season & (s_start > s_end) & ((month >= s_start) | (month <= s_end))
+        df['is_in_season'] = (no_season | normal | wrap).astype(int)
+
+        return df
+
+    def _add_rolling_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add rolling window features per department.
+
+        IMPORTANT — no target leakage:
+            Pandas `Series.rolling(N)` at row d includes day d in the window,
+            which leaks the training target into the feature. Inference
+            (`_create_prediction_features` in agent.py) only ever sees days
+            before the forecast date, so any rolling/pct_change/momentum
+            feature must use ONLY past values during training as well.
+
+            Concretely we apply `.shift(1)` to every rolling output and use
+            past-only formulas for momentum / pct_change. Without this the
+            model achieves ~6% in-sample MAPE while collapsing to ~50%
+            out-of-sample (the "5x gap" observed in stage 2).
+        """
+        df = df.copy()
+
         # Sort by department and date
         df = df.sort_values(['department_id', 'date'])
-        
+
         # Group by department for rolling calculations
         for dept_id in df['department_id'].unique():
             dept_mask = df['department_id'] == dept_id
             dept_sales = df.loc[dept_mask, 'total_sales']
-            
-            # Rolling averages (expanded)
-            df.loc[dept_mask, 'rolling_3d_avg_sales'] = dept_sales.rolling(
-                window=3, min_periods=1
-            ).mean()
-            
-            df.loc[dept_mask, 'rolling_7d_avg_sales'] = dept_sales.rolling(
-                window=7, min_periods=1
-            ).mean()
-            
-            df.loc[dept_mask, 'rolling_14d_avg_sales'] = dept_sales.rolling(
-                window=14, min_periods=1
-            ).mean()
-            
-            df.loc[dept_mask, 'rolling_30d_avg_sales'] = dept_sales.rolling(
-                window=30, min_periods=1
-            ).mean()
-            
-            # Rolling standard deviations (expanded)
-            df.loc[dept_mask, 'rolling_3d_std_sales'] = dept_sales.rolling(
-                window=3, min_periods=1
-            ).std()
-            
-            df.loc[dept_mask, 'rolling_7d_std_sales'] = dept_sales.rolling(
-                window=7, min_periods=1
-            ).std()
-            
-            df.loc[dept_mask, 'rolling_14d_std_sales'] = dept_sales.rolling(
-                window=14, min_periods=1
-            ).std()
-            
-            # Rolling sums (new feature type)
-            df.loc[dept_mask, 'rolling_7d_sum_sales'] = dept_sales.rolling(
-                window=7, min_periods=1
-            ).sum()
-            
-            df.loc[dept_mask, 'rolling_14d_sum_sales'] = dept_sales.rolling(
-                window=14, min_periods=1
-            ).sum()
-            
-            # Lag features (expanded)
+            past_sales = dept_sales.shift(1)  # values strictly before day d
+
+            # Rolling averages — past-only via .shift(1)
+            df.loc[dept_mask, 'rolling_3d_avg_sales'] = past_sales.rolling(window=3, min_periods=1).mean()
+            df.loc[dept_mask, 'rolling_7d_avg_sales'] = past_sales.rolling(window=7, min_periods=1).mean()
+            df.loc[dept_mask, 'rolling_14d_avg_sales'] = past_sales.rolling(window=14, min_periods=1).mean()
+            df.loc[dept_mask, 'rolling_30d_avg_sales'] = past_sales.rolling(window=30, min_periods=1).mean()
+
+            # Rolling standard deviations — past-only
+            df.loc[dept_mask, 'rolling_3d_std_sales'] = past_sales.rolling(window=3, min_periods=1).std()
+            df.loc[dept_mask, 'rolling_7d_std_sales'] = past_sales.rolling(window=7, min_periods=1).std()
+            df.loc[dept_mask, 'rolling_14d_std_sales'] = past_sales.rolling(window=14, min_periods=1).std()
+
+            # Rolling sums — past-only
+            df.loc[dept_mask, 'rolling_7d_sum_sales'] = past_sales.rolling(window=7, min_periods=1).sum()
+            df.loc[dept_mask, 'rolling_14d_sum_sales'] = past_sales.rolling(window=14, min_periods=1).sum()
+
+            # Lag features (already past-only via shift)
             df.loc[dept_mask, 'lag_1d_sales'] = dept_sales.shift(1)
             df.loc[dept_mask, 'lag_2d_sales'] = dept_sales.shift(2)
             df.loc[dept_mask, 'lag_7d_sales'] = dept_sales.shift(7)
             df.loc[dept_mask, 'lag_14d_sales'] = dept_sales.shift(14)
-            
-            # Percentage changes (expanded)
-            df.loc[dept_mask, 'pct_change_1d'] = dept_sales.pct_change()
-            df.loc[dept_mask, 'pct_change_7d'] = dept_sales.pct_change(periods=7)
-            df.loc[dept_mask, 'pct_change_14d'] = dept_sales.pct_change(periods=14)
-            
-            # Rolling min/max for volatility
-            df.loc[dept_mask, 'rolling_7d_min_sales'] = dept_sales.rolling(
-                window=7, min_periods=1
-            ).min()
-            
-            df.loc[dept_mask, 'rolling_7d_max_sales'] = dept_sales.rolling(
-                window=7, min_periods=1
-            ).max()
-            
-            # Sales momentum (current vs rolling average)
-            df.loc[dept_mask, 'sales_momentum_7d'] = dept_sales / df.loc[dept_mask, 'rolling_7d_avg_sales']
-            df.loc[dept_mask, 'sales_momentum_14d'] = dept_sales / df.loc[dept_mask, 'rolling_14d_avg_sales']
-            
+
+            # Percentage changes — match inference: (d-1 - d-k) / d-k.
+            # Pandas `pct_change()` uses (d - d-1) / d-1 which leaks d.
+            lag_1 = dept_sales.shift(1)
+            lag_2 = dept_sales.shift(2)
+            lag_8 = dept_sales.shift(8)
+            lag_15 = dept_sales.shift(15)
+            df.loc[dept_mask, 'pct_change_1d'] = (lag_1 - lag_2) / lag_2.replace(0, np.nan)
+            df.loc[dept_mask, 'pct_change_7d'] = (lag_1 - lag_8) / lag_8.replace(0, np.nan)
+            df.loc[dept_mask, 'pct_change_14d'] = (lag_1 - lag_15) / lag_15.replace(0, np.nan)
+
+            # Rolling min/max — past-only
+            df.loc[dept_mask, 'rolling_7d_min_sales'] = past_sales.rolling(window=7, min_periods=1).min()
+            df.loc[dept_mask, 'rolling_7d_max_sales'] = past_sales.rolling(window=7, min_periods=1).max()
+
+            # Sales momentum — match inference: (mean of last K days) - (mean of prior K days),
+            # both windows strictly in the past.
+            df.loc[dept_mask, 'sales_momentum_7d'] = (
+                past_sales.rolling(window=7, min_periods=1).mean()
+                - past_sales.shift(7).rolling(window=7, min_periods=1).mean()
+            )
+            df.loc[dept_mask, 'sales_momentum_14d'] = (
+                past_sales.rolling(window=14, min_periods=1).mean()
+                - past_sales.shift(14).rolling(window=14, min_periods=1).mean()
+            )
+
         # Fill NaN values in rolling features with 0
         rolling_cols = [col for col in df.columns if 'rolling_' in col or 'sales_momentum' in col]
         for col in rolling_cols:
             df[col] = df[col].fillna(0)
-        
+
         return df
     
     def get_feature_columns(self) -> list:
@@ -458,7 +609,35 @@ class TrainingDataService:
             # Location features
             'is_almaty',
             'is_astana',
-            'is_shymkent'
+            'is_shymkent',
+
+            # Outlier flag (replaces destructive winsorize)
+            'is_outlier_day',
+
+            # Operational metadata (manual UI-entered) — sparse for unenriched depts.
+            # Brand one-hot
+            'is_brand_tary',
+            'is_brand_sandyq',
+            'is_brand_madlen',
+            'is_brand_shopan',
+            # Location type one-hot
+            'is_loc_city_center',
+            'is_loc_mall',
+            'is_loc_business_district',
+            'is_loc_resort_mountain',
+            'is_loc_resort_lake',
+            'is_loc_visit_center',
+            'is_loc_other',
+            # Operational flags
+            'is_tourist_dependent',
+            'is_24_7',
+            'working_hours_count',
+            # Lifecycle
+            'days_since_opening',
+            'is_new_department',
+            # Seasonality
+            'seasonality_score',
+            'is_in_season',
         ]
     
     def get_target_column(self) -> str:
@@ -561,7 +740,35 @@ class TrainingDataService:
             # Location features
             'is_almaty',
             'is_astana',
-            'is_shymkent'
+            'is_shymkent',
+
+            # Outlier flag (replaces destructive winsorize)
+            'is_outlier_day',
+
+            # Operational metadata (manual UI-entered) — sparse for unenriched depts.
+            # Brand one-hot
+            'is_brand_tary',
+            'is_brand_sandyq',
+            'is_brand_madlen',
+            'is_brand_shopan',
+            # Location type one-hot
+            'is_loc_city_center',
+            'is_loc_mall',
+            'is_loc_business_district',
+            'is_loc_resort_mountain',
+            'is_loc_resort_lake',
+            'is_loc_visit_center',
+            'is_loc_other',
+            # Operational flags
+            'is_tourist_dependent',
+            'is_24_7',
+            'working_hours_count',
+            # Lifecycle
+            'days_since_opening',
+            'is_new_department',
+            # Seasonality
+            'seasonality_score',
+            'is_in_season',
         ]
     
     def split_train_validation_test(

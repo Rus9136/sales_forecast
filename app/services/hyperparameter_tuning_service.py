@@ -2,7 +2,7 @@ import optuna
 import lightgbm as lgb
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import GroupKFold, TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 from typing import Dict, Any, Tuple, Optional
 import logging
@@ -13,12 +13,12 @@ logger = logging.getLogger(__name__)
 
 class HyperparameterTuningService:
     """Service for hyperparameter optimization using Optuna"""
-    
+
     def __init__(self):
         self.best_params = None
         self.best_score = float('inf')
         self.study = None
-    
+
     def optimize_lightgbm(
         self,
         X_train: pd.DataFrame,
@@ -27,7 +27,9 @@ class HyperparameterTuningService:
         y_val: pd.Series,
         n_trials: int = 100,
         timeout: Optional[int] = 1800,  # 30 minutes
-        cv_folds: int = 3
+        cv_folds: int = 3,
+        groups_train: Optional[pd.Series] = None,
+        groups_val: Optional[pd.Series] = None,
     ) -> Dict[str, Any]:
         """
         Optimize LightGBM hyperparameters using Optuna
@@ -72,15 +74,38 @@ class HyperparameterTuningService:
                 'min_child_weight': trial.suggest_float('min_child_weight', 0.001, 10.0, log=True),
             }
             
-            # Time series cross-validation
-            tscv = TimeSeriesSplit(n_splits=cv_folds)
-            cv_scores = []
-            
-            # Combine train and validation for CV
+            # Cross-validation strategy:
+            #   - GroupKFold(department_id) when groups are provided. Forces every
+            #     fold to validate on departments unseen during training, which is
+            #     the only way to honestly measure generalization across the
+            #     hetero-scale fleet (Q1=176K..Q4=2.6M ₸/day). Plain TimeSeriesSplit
+            #     leaks department identity through 60+ dept-encoding features and
+            #     yields the structural 5x in/out-of-sample gap observed in stage 2.
+            #   - Fallback to TimeSeriesSplit only if caller did not supply groups
+            #     (legacy code paths / one-off Optuna calls).
             X_combined = pd.concat([X_train, X_val])
             y_combined = pd.concat([y_train, y_val])
-            
-            for train_idx, val_idx in tscv.split(X_combined):
+
+            if groups_train is not None and groups_val is not None:
+                groups_combined = pd.concat([groups_train, groups_val]).reset_index(drop=True)
+                X_combined = X_combined.reset_index(drop=True)
+                y_combined = y_combined.reset_index(drop=True)
+                n_groups = groups_combined.nunique()
+                effective_folds = max(2, min(cv_folds, n_groups))
+                splitter = GroupKFold(n_splits=effective_folds)
+                fold_iter = splitter.split(X_combined, y_combined, groups=groups_combined)
+                logger.info(
+                    f"CV: GroupKFold(n_splits={effective_folds}) over "
+                    f"{n_groups} departments"
+                )
+            else:
+                splitter = TimeSeriesSplit(n_splits=cv_folds)
+                fold_iter = splitter.split(X_combined)
+                logger.info(f"CV: TimeSeriesSplit(n_splits={cv_folds}) — no groups provided")
+
+            cv_scores = []
+
+            for train_idx, val_idx in fold_iter:
                 X_cv_train, X_cv_val = X_combined.iloc[train_idx], X_combined.iloc[val_idx]
                 y_cv_train, y_cv_val = y_combined.iloc[train_idx], y_combined.iloc[val_idx]
                 
