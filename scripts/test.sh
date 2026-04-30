@@ -26,7 +26,7 @@ if ! docker exec "${CONTAINER}" python -c "import pytest" 2>/dev/null; then
   echo "Installing dev dependencies in ${CONTAINER}..."
   docker exec -u root "${CONTAINER}" pip install --no-cache-dir \
     pytest==8.3.4 pytest-cov==6.0.0 pytest-asyncio==0.25.2 \
-    pytest-mock==3.14.0 freezegun==1.5.1
+    pytest-mock==3.14.0 freezegun==1.5.1 respx==0.23.1
 fi
 
 # Sync tests/ and pyproject.toml into the container (Dockerfile does not copy
