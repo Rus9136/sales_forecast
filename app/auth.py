@@ -77,23 +77,30 @@ def verify_api_key(provided_key: str, stored_hash: str) -> bool:
     return hashlib.sha256(provided_key.encode()).hexdigest() == stored_hash
 
 
+_KEY_ID_LEN = 32  # secrets.token_urlsafe(24) always produces 32 base64url chars
+
+
 def extract_key_id_from_api_key(api_key: str) -> Optional[str]:
-    """Extract key_id from full API key"""
-    if not api_key.startswith("sf_"):
+    """Extract key_id from full API key.
+
+    Format: ``sf_<key_id (32 chars)>_<secret (43 chars)>``. The legacy
+    implementation split on ``_`` and required at least 6 parts, but
+    ``secrets.token_urlsafe`` produces a *random* number of underscores, so
+    that approach rejected ~98.5% of freshly generated keys. We slice by the
+    fixed key_id length instead, which is deterministic.
+    """
+    if not api_key or not api_key.startswith("sf_"):
         return None
-    
-    # Remove 'sf_' prefix
+
     remaining = api_key[3:]
-    
-    # Split by underscore and take first 3 parts for key_id
-    # Format: key_id (3 parts) + secret (3 parts)
-    parts = remaining.split("_")
-    if len(parts) < 6:  # Need at least 6 parts total
+
+    # Need at least key_id + separator + 1 char of secret.
+    if len(remaining) < _KEY_ID_LEN + 2:
         return None
-    
-    # key_id is first 3 parts joined
-    key_id = "_".join(parts[:3])
-    return key_id if key_id else None
+    if remaining[_KEY_ID_LEN] != "_":
+        return None
+
+    return remaining[:_KEY_ID_LEN]
 
 
 def get_current_api_key(

@@ -156,6 +156,7 @@ test_production_api_key.py
 PRODUCTION_API_KEY_SUMMARY.md
 *api_key*
 *API_KEY*
+!tests/unit/test_api_key_utils.py
 
 # Frontend (React SPA)
 frontend/node_modules/
