@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = "https://aqniet.site"
     LOG_LEVEL: str = "INFO"
 
+    # AI Recommendations subsystem
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_API_KEY_PAYROLL: str = ""
+    ANTHROPIC_API_KEY_STAFFING: str = ""
+    ANTHROPIC_API_KEY_NARRATIVE: str = ""
+    ANTHROPIC_API_KEY_REPUTATION: str = ""
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o"
+    CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

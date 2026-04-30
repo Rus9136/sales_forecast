@@ -10,6 +10,7 @@ from .config import settings
 from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
+from .routers import ai_recommendations
 from .bonus.routers import bonus_api as bonus_router
 from .bonus.data_sources.bootstrap import register_all_sources as register_bonus_sources
 from .bonus.services.scheduled_calc import run_monthly_auto_calc as run_bonus_monthly_calc
@@ -191,6 +192,7 @@ app.include_router(forecast.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(employee.router, prefix="/api")
+app.include_router(ai_recommendations.router, prefix="/api")
 app.include_router(bonus_router, prefix="/api")
 
 # Register bonus data sources at import time so all endpoints can resolve them

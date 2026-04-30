@@ -13,6 +13,7 @@ import { BonusCalculationsPage } from '@/pages/bonus-calculations-page'
 import { BonusSchemesPage } from '@/pages/bonus-schemes-page'
 import { BonusManualKpiPage } from '@/pages/bonus-manual-kpi-page'
 import { BonusMonthlyPlansPage } from '@/pages/bonus-monthly-plans-page'
+import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="/bonus/schemes" element={<BonusSchemesPage />} />
             <Route path="/bonus/manual-kpi" element={<BonusManualKpiPage />} />
             <Route path="/bonus/monthly-plans" element={<BonusMonthlyPlansPage />} />
+            <Route path="/ai-recommendations" element={<AIRecommendationsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
