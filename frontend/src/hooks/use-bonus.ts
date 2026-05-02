@@ -16,6 +16,8 @@ import type {
   BonusRunRequest,
   BonusRunResponse,
   BonusReportSummaryRow,
+  CalculationModelInfo,
+  DataSourceInfo,
 } from '@/types/bonus'
 
 // ---------------------------------------------------------------------------
@@ -45,14 +47,14 @@ export function useBonusKpiDefinitions() {
 export function useCalculationModels() {
   return useQuery({
     queryKey: ['bonus', 'calculation-models'],
-    queryFn: () => api.get<string[]>('/api/bonus/config/calculation-models'),
+    queryFn: () => api.get<CalculationModelInfo[]>('/api/bonus/config/calculation-models'),
   })
 }
 
 export function useDataSources() {
   return useQuery({
     queryKey: ['bonus', 'data-sources'],
-    queryFn: () => api.get<string[]>('/api/bonus/config/data-sources'),
+    queryFn: () => api.get<DataSourceInfo[]>('/api/bonus/config/data-sources'),
   })
 }
 

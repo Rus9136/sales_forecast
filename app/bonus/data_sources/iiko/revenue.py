@@ -34,6 +34,14 @@ def _period_dates(params: DataSourceParams):
 class IikoLocationRevenueDishSum(BonusDataSource):
     """SUM(sales_summary.total_sales) — DishSumInt for the location/period."""
     code = "iiko_revenue_dish_sum"
+    name = "Выручка локации (без скидок)"
+    description = (
+        "SUM(sales_summary.total_sales) за период — продажи локации до применения скидок "
+        "(DishSumInt из iiko OLAP). Используется как revenue_source для расчётов кассира/менеджера."
+    )
+    value_type = "revenue"
+    unit = "KZT"
+    category = "iiko_location"
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         from ....models.sales import SalesSummary
@@ -59,6 +67,15 @@ class IikoLocationRevenueWithDiscount(BonusDataSource):
     sales_summary is extended with DishDiscountSumInt, swap the column here.
     """
     code = "iiko_revenue_with_discount"
+    name = "Выручка локации (со скидками)"
+    description = (
+        "Должна быть суммой DishDiscountSumInt по локации. Сейчас алиас к 'без скидок' "
+        "(sales_summary хранит только DishSumInt) — расширить таблицу для точности по менеджеру."
+    )
+    value_type = "revenue"
+    unit = "KZT"
+    category = "iiko_location"
+    is_stub = True  # Точность ограничена: пока без учёта скидок
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         from ....models.sales import SalesSummary
@@ -83,6 +100,14 @@ class IikoLocationRevenueWithDiscount(BonusDataSource):
 class IikoPersonalRevenueWithDiscount(BonusDataSource):
     """SUM(sales_by_waiter.total_sales_with_discount) — DishDiscountSumInt per employee."""
     code = "iiko_personal_revenue_with_discount"
+    name = "Личная выручка официанта (со скидкой)"
+    description = (
+        "SUM(sales_by_waiter.total_sales_with_discount) — продажи конкретного сотрудника "
+        "с учётом скидок (DishDiscountSumInt). Используется как revenue_source для официанта."
+    )
+    value_type = "revenue"
+    unit = "KZT"
+    category = "iiko_personal"
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         from ....models.employee import SalesByWaiter
@@ -105,6 +130,14 @@ class IikoPersonalRevenueWithDiscount(BonusDataSource):
 class IikoPersonalRevenueDishSum(BonusDataSource):
     """SUM(sales_by_waiter.total_sales) — DishSumInt per employee (without discounts)."""
     code = "iiko_personal_revenue_dish_sum"
+    name = "Личная выручка официанта (без скидок)"
+    description = (
+        "SUM(sales_by_waiter.total_sales) — продажи сотрудника до применения скидок "
+        "(DishSumInt). Используется когда нужна 'грязная' личная выручка."
+    )
+    value_type = "revenue"
+    unit = "KZT"
+    category = "iiko_personal"
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         from ....models.employee import SalesByWaiter
@@ -130,6 +163,14 @@ class IikoPersonalRevenueDishSum(BonusDataSource):
 class IikoSalesPlanLocation(BonusDataSource):
     """% выполнения плана продаж локации = SUM(sales_summary) / monthly_plan(sales) × 100."""
     code = "iiko_sales_plan_location"
+    name = "% выполнения плана продаж (локация)"
+    description = (
+        "actual / target × 100, где actual = SUM(sales_summary), target = bonus_monthly_plan(metric='sales'). "
+        "ВАЖНО: требует заведённого плана через /bonus/monthly-plans, иначе вернёт 0."
+    )
+    value_type = "kpi_percent"
+    unit = "%"
+    category = "iiko_plan"
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         from ....models.sales import SalesSummary
@@ -171,6 +212,14 @@ class IikoSalesPlanPersonal(BonusDataSource):
     what target to score against.
     """
     code = "iiko_sales_plan_personal"
+    name = "Личные продажи официанта (для KPI плана)"
+    description = (
+        "Возвращает SUM(sales_by_waiter) сотрудника как Decimal. KPI-движок сравнивает "
+        "это значение с target из конфига KPI (например, monthly_plan_sales) и выдаёт %."
+    )
+    value_type = "kpi_value"
+    unit = "KZT"
+    category = "iiko_plan"
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         from ....models.employee import SalesByWaiter

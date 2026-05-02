@@ -49,9 +49,19 @@ def list_kpi_definitions(
 
 @router.get("/config/calculation-models")
 def list_calculation_models(_: Optional[ApiKey] = Depends(get_api_key_or_bypass)):
-    return sorted(CALCULATION_MODELS.keys())
+    """Return calculation models with metadata describing required config blocks.
+
+    The UI uses this to render the appropriate scheme editor sections.
+    """
+    from ..calculator.metadata import CALCULATION_MODEL_METADATA
+    return [
+        CALCULATION_MODEL_METADATA[code]
+        for code in sorted(CALCULATION_MODELS.keys())
+        if code in CALCULATION_MODEL_METADATA
+    ]
 
 
 @router.get("/config/data-sources")
 def list_data_sources(_: Optional[ApiKey] = Depends(get_api_key_or_bypass)):
-    return DataSourceRegistry.list_codes()
+    """Return all registered data sources with human-readable metadata."""
+    return DataSourceRegistry.list_metadata()

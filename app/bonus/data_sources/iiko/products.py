@@ -23,6 +23,16 @@ from ..base import BonusDataSource, DataSourceParams
 
 class IikoPersonalReadyProducts(BonusDataSource):
     code = "iiko_personal_ready_products_with_discount"
+    name = "Личная выручка по готовой продукции"
+    description = (
+        "Категория 'Готовая' (DishCategory.Name) по конкретному сотруднику. "
+        "ЗАГЛУШКА: возвращает 0 — нужно расширить iiko OLAP loader для группировки "
+        "sales_by_waiter по категориям блюд."
+    )
+    value_type = "revenue"
+    unit = "KZT"
+    category = "iiko_products"
+    is_stub = True
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         # TODO: read from sales_by_waiter_category once the loader is extended
@@ -31,6 +41,15 @@ class IikoPersonalReadyProducts(BonusDataSource):
 
 class IikoPersonalPreparedProducts(BonusDataSource):
     code = "iiko_personal_prepared_products_with_discount"
+    name = "Личная выручка по приготовленной продукции"
+    description = (
+        "Категория 'Приготовленная' по конкретному сотруднику. "
+        "ЗАГЛУШКА: возвращает 0 (см. iiko_personal_ready_products_with_discount)."
+    )
+    value_type = "revenue"
+    unit = "KZT"
+    category = "iiko_products"
+    is_stub = True
 
     def fetch(self, db: Session, params: DataSourceParams) -> Decimal:
         # TODO: read from sales_by_waiter_category once the loader is extended

@@ -44,5 +44,10 @@ class DataSourceRegistry:
         return sorted(cls._sources.keys())
 
     @classmethod
+    def list_metadata(cls) -> list[dict]:
+        """Return metadata for every registered source, sorted by code."""
+        return [cls._sources[code].metadata() for code in sorted(cls._sources.keys())]
+
+    @classmethod
     def clear(cls) -> None:
         cls._sources.clear()

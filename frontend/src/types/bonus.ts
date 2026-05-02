@@ -5,6 +5,55 @@ export type CalculationModel =
   | 'combined_products'
   | 'team_revenue_by_kpi'
 
+export type DataSourceValueType = 'revenue' | 'kpi_percent' | 'kpi_value' | 'shifts'
+
+export type DataSourceCategory =
+  | 'iiko_location'
+  | 'iiko_personal'
+  | 'iiko_plan'
+  | 'iiko_products'
+  | 'manual'
+  | 'crm'
+  | 'hr'
+  | 'tco'
+
+export interface DataSourceInfo {
+  code: string
+  name: string
+  description: string
+  value_type: DataSourceValueType | ''
+  unit: string
+  category: DataSourceCategory | ''
+  is_stub: boolean
+}
+
+export type GradeType = 'flat' | 'rate' | 'none'
+
+export interface CalculationModelOption {
+  key: string
+  type: 'bool' | 'enum' | 'money'
+  default: unknown
+  label: string
+  hint?: string
+  options?: Array<{ value: string; label: string }>
+}
+
+export interface CalculationModelInfo {
+  code: CalculationModel
+  name: string
+  description: string
+  typical_positions: string[]
+  requires_kpis: boolean
+  requires_revenue_source: boolean
+  requires_grades: boolean
+  requires_rate?: boolean
+  grade_type: GradeType
+  supports_components: boolean
+  supports_shifts_proration: boolean
+  is_team_model?: boolean
+  options: CalculationModelOption[]
+}
+
 export interface BonusCompany {
   id: number
   code: string

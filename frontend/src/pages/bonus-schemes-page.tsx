@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useBonusSchemes, useBonusPositions } from '@/hooks/use-bonus'
+import { useBonusSchemes, useBonusPositions, useCalculationModels } from '@/hooks/use-bonus'
 import { useDepartments } from '@/hooks/use-departments'
 import {
   Card, CardContent, CardHeader, CardTitle,
@@ -8,19 +8,14 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DepartmentSelect } from '@/components/shared/department-select'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-
-const MODEL_LABELS: Record<string, string> = {
-  flat_by_kpi: 'Фикс. сумма по KPI',
-  revenue_percent_by_kpi: '% от выручки × KPI',
-  revenue_direct: 'Прямой % от выручки',
-  combined_products: 'Комбинированный (продукты)',
-  team_revenue_by_kpi: 'Командный (KITCHEN)',
-}
+import { SchemeConfigView } from '@/components/bonus/scheme-config-view'
+import type { CalculationModel } from '@/types/bonus'
 
 export function BonusSchemesPage() {
   const [departmentId, setDepartmentId] = useState<string>('__all__')
@@ -30,9 +25,15 @@ export function BonusSchemesPage() {
   const { data: schemes = [], isLoading, error } = useBonusSchemes({ department_id: filterDept })
   const { data: positions = [] } = useBonusPositions()
   const { data: departments = [] } = useDepartments(true)
+  const { data: models = [] } = useCalculationModels()
 
   const positionMap = Object.fromEntries(positions.map((p) => [p.id, p]))
   const departmentMap = Object.fromEntries(departments.map((d) => [d.id, d]))
+  const modelMap = Object.fromEntries(models.map((m) => [m.code, m]))
+
+  const openScheme = openSchemeId != null
+    ? schemes.find((s) => s.id === openSchemeId)
+    : undefined
 
   return (
     <div className="space-y-4">
@@ -83,7 +84,11 @@ export function BonusSchemesPage() {
                         ? positionMap[s.position_id]?.name ?? `position #${s.position_id}`
                         : <Badge variant="secondary">team #{s.team_id}</Badge>}
                     </TableCell>
-                    <TableCell><Badge variant="outline">{MODEL_LABELS[s.calculation_model] ?? s.calculation_model}</Badge></TableCell>
+                    <TableCell>
+                      <Badge variant="outline" title={modelMap[s.calculation_model]?.description ?? s.calculation_model}>
+                        {modelMap[s.calculation_model]?.name ?? s.calculation_model}
+                      </Badge>
+                    </TableCell>
                     <TableCell>v{s.version}</TableCell>
                     <TableCell>{s.effective_from ?? '—'}</TableCell>
                     <TableCell>{s.effective_to ?? <Badge>активна</Badge>}</TableCell>
@@ -104,14 +109,41 @@ export function BonusSchemesPage() {
       )}
 
       <Dialog open={openSchemeId != null} onOpenChange={(o) => !o && setOpenSchemeId(null)}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Конфиг схемы #{openSchemeId}</DialogTitle>
+            <DialogTitle>
+              Схема #{openSchemeId}
+              {openScheme && (
+                <span className="text-sm font-normal text-muted-foreground ml-2">
+                  · {departmentMap[openScheme.department_id]?.name ?? '—'}
+                  {openScheme.position_id != null && positionMap[openScheme.position_id]
+                    ? ` · ${positionMap[openScheme.position_id].name}`
+                    : openScheme.team_id != null
+                    ? ` · команда #${openScheme.team_id}`
+                    : ''}
+                  {' · v' + openScheme.version}
+                </span>
+              )}
+            </DialogTitle>
           </DialogHeader>
-          {openSchemeId && (
-            <pre className="text-xs bg-muted p-4 rounded overflow-x-auto">
-              {JSON.stringify(schemes.find((s) => s.id === openSchemeId)?.config ?? {}, null, 2)}
-            </pre>
+          {openScheme && (
+            <Tabs defaultValue="readable">
+              <TabsList>
+                <TabsTrigger value="readable">Параметры</TabsTrigger>
+                <TabsTrigger value="json">JSON</TabsTrigger>
+              </TabsList>
+              <TabsContent value="readable" className="mt-4">
+                <SchemeConfigView
+                  model={openScheme.calculation_model as CalculationModel}
+                  config={openScheme.config as Parameters<typeof SchemeConfigView>[0]['config']}
+                />
+              </TabsContent>
+              <TabsContent value="json" className="mt-4">
+                <pre className="text-xs bg-muted p-4 rounded overflow-x-auto">
+                  {JSON.stringify(openScheme.config ?? {}, null, 2)}
+                </pre>
+              </TabsContent>
+            </Tabs>
           )}
         </DialogContent>
       </Dialog>

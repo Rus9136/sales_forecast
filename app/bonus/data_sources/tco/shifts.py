@@ -22,6 +22,16 @@ class TcoShifts(BonusDataSource):
     """
 
     code = "tco_shifts"
+    name = "Смены сотрудника (worked / norm)"
+    description = (
+        "АППРОКСИМАЦИЯ: worked = COUNT(DISTINCT date) из sales_by_waiter, "
+        "norm — bonus_monthly_plan(metric='shifts_norm') или 22. "
+        "НЕ работает для KITCHEN/кассиров (нет чеков → worked=0). Нужна интеграция с TCO."
+    )
+    value_type = "shifts"
+    unit = "shifts"
+    category = "tco"
+    is_stub = True
 
     def fetch(self, db: Session, params: DataSourceParams) -> ShiftStats:
         from ....models.employee import SalesByWaiter

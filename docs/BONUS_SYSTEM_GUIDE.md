@@ -840,16 +840,29 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 **Проблема**: сейчас изменение схемы возможно только через `POST /schemes` с JSON-конфигом. Это требует знания формата JSONB.
 
-**Что нужно**:
-1. На странице `/bonus/schemes` — кнопка «Создать новую версию»
-2. Форма с разделами:
-   - Грейды: таблица «от-до-ставка», с возможностью добавить/удалить строки
-   - KPI: список KPI с выбором источника, цели, направления
-   - Опции: `apply_shifts_proration`, `revenue_source` (dropdown из `/config/data-sources`)
-3. Live-preview формулы
-4. Кнопка «Валидация» (`POST /schemes/validate`)
+**Phase 1 — DONE (2026-05-02)** — фундамент для редактора:
+- ✅ `BonusDataSource` расширен метаданными (`name`, `description`, `value_type`, `unit`, `category`, `is_stub`); заполнено для всех 19 источников
+- ✅ `app/bonus/calculator/metadata.py` — `CALCULATION_MODEL_METADATA` для 5 моделей (флаги `requires_*`, `grade_type`, `options[]` с label/hint)
+- ✅ `GET /api/bonus/config/data-sources` и `/calculation-models` отдают объекты вместо массивов кодов
+- ✅ Frontend: новый компонент `SchemeConfigView` рендерит config читабельными таблицами (KPI, грейды с локализацией, источники с категориями, опции с подсказками); диалог схемы — Tabs «Параметры / JSON»
+- 📄 Подробности: `docs/SESSION_LOG_Bonus_Scheme_UI_Editor_Phase1_2026-05-02_10-27.md`
 
-**Оценка**: 5-7 дней
+**Phase 2 — ОСТАЛОСЬ (5-7 дней)** — визуальный редактор:
+1. Кнопка «Создать новую версию» на `/bonus/schemes`
+2. Wizard-форма с динамическими разделами (управляется метаданными модели):
+   - Шаг 1 — Контекст: локация, должность/команда, модель, `effective_from`
+   - Шаг 2 — Блоки: KPI inline-таблица, Грейды inline-таблица (flat/rate колонки), Revenue source (Select из `/data-sources` с группировкой по category, фильтрацией `value_type='revenue'`), Components (для combined_products), Опции (Switch/RadioGroup/NumberInput по `options[]`)
+   - Шаг 3 — Превью + diff против активной версии + кнопка «Сохранить»
+3. Live-валидация через `POST /schemes/validate`
+4. Нужен новый shadcn-компонент `Switch` (сейчас в `components/ui/` нет)
+
+**Phase 3 — ДОПОЛНИТЕЛЬНО (2-3 дня)**:
+- Тестовый расчёт (sandbox) — эндпоинт `POST /schemes/preview-calculation` + UI-форма «При KPI=__%, выручке=__₸ → бонус будет ХХХ»
+- Diff против активной версии (особенно важно для грейдов)
+- Inline-редактор слотов KITCHEN (`bonus_team_position.distribution_weight`) на странице `/bonus/teams/{id}`
+- История версий схемы с timeline и диффами
+
+**Оценка остатка**: 7-10 дней
 
 #### 12.7 CRM интеграция (отзывы, рейтинг)
 
