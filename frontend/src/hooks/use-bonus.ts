@@ -80,6 +80,36 @@ export function useBonusScheme(id: number | null) {
   })
 }
 
+export interface SchemeCreatePayload {
+  department_id: string
+  position_id?: number | null
+  team_id?: number | null
+  calculation_model: string
+  config: Record<string, unknown>
+  effective_from: string
+  effective_to?: string | null
+  notes?: string | null
+}
+
+export function useValidateScheme() {
+  return useMutation({
+    mutationFn: (data: { calculation_model: string; config: Record<string, unknown> }) =>
+      api.post<{ ok: boolean; normalized_config: Record<string, unknown> }>(
+        '/api/bonus/schemes/validate',
+        data,
+      ),
+  })
+}
+
+export function useCreateScheme() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: SchemeCreatePayload) =>
+      api.post<BonusScheme>('/api/bonus/schemes', data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['bonus', 'schemes'] }),
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------

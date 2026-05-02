@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Plus, Copy } from 'lucide-react'
 import { useBonusSchemes, useBonusPositions, useCalculationModels } from '@/hooks/use-bonus'
 import { useDepartments } from '@/hooks/use-departments'
 import {
@@ -8,6 +9,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DepartmentSelect } from '@/components/shared/department-select'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
@@ -15,11 +17,14 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { SchemeConfigView } from '@/components/bonus/scheme-config-view'
-import type { CalculationModel } from '@/types/bonus'
+import { SchemeEditorDialog } from '@/components/bonus/scheme-editor-dialog'
+import type { BonusScheme, CalculationModel } from '@/types/bonus'
 
 export function BonusSchemesPage() {
   const [departmentId, setDepartmentId] = useState<string>('__all__')
   const [openSchemeId, setOpenSchemeId] = useState<number | null>(null)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editorBase, setEditorBase] = useState<BonusScheme | null>(null)
 
   const filterDept = departmentId === '__all__' ? undefined : departmentId
   const { data: schemes = [], isLoading, error } = useBonusSchemes({ department_id: filterDept })
@@ -35,10 +40,18 @@ export function BonusSchemesPage() {
     ? schemes.find((s) => s.id === openSchemeId)
     : undefined
 
+  const openEditor = (base: BonusScheme | null) => {
+    setEditorBase(base)
+    setEditorOpen(true)
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Схемы расчёта бонусов</h1>
+        <Button onClick={() => openEditor(null)}>
+          <Plus className="h-4 w-4 mr-1" /> Создать схему
+        </Button>
       </div>
 
       <Card>
@@ -73,6 +86,7 @@ export function BonusSchemesPage() {
                   <TableHead>Действует с</TableHead>
                   <TableHead>Действует по</TableHead>
                   <TableHead>Конфиг</TableHead>
+                  <TableHead>Действия</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -99,6 +113,16 @@ export function BonusSchemesPage() {
                       >
                         Показать
                       </button>
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEditor(s)}
+                        title="Создать новую версию на основе этой"
+                      >
+                        <Copy className="h-3 w-3 mr-1" /> Новая версия
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -147,6 +171,12 @@ export function BonusSchemesPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <SchemeEditorDialog
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        baseScheme={editorBase}
+      />
     </div>
   )
 }

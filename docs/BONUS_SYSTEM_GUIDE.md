@@ -847,14 +847,22 @@ from apscheduler.schedulers.background import BackgroundScheduler
 - ✅ Frontend: новый компонент `SchemeConfigView` рендерит config читабельными таблицами (KPI, грейды с локализацией, источники с категориями, опции с подсказками); диалог схемы — Tabs «Параметры / JSON»
 - 📄 Подробности: `docs/SESSION_LOG_Bonus_Scheme_UI_Editor_Phase1_2026-05-02_10-27.md`
 
-**Phase 2 — ОСТАЛОСЬ (5-7 дней)** — визуальный редактор:
-1. Кнопка «Создать новую версию» на `/bonus/schemes`
-2. Wizard-форма с динамическими разделами (управляется метаданными модели):
-   - Шаг 1 — Контекст: локация, должность/команда, модель, `effective_from`
-   - Шаг 2 — Блоки: KPI inline-таблица, Грейды inline-таблица (flat/rate колонки), Revenue source (Select из `/data-sources` с группировкой по category, фильтрацией `value_type='revenue'`), Components (для combined_products), Опции (Switch/RadioGroup/NumberInput по `options[]`)
-   - Шаг 3 — Превью + diff против активной версии + кнопка «Сохранить»
-3. Live-валидация через `POST /schemes/validate`
-4. Нужен новый shadcn-компонент `Switch` (сейчас в `components/ui/` нет)
+**Phase 2 — DONE (2026-05-02)** — визуальный редактор:
+- ✅ Кнопка «Создать схему» в шапке `/bonus/schemes`
+- ✅ Кнопка «Новая версия» в каждой строке таблицы (предзаполняет диалог из существующей схемы)
+- ✅ `SchemeEditorDialog` (`frontend/src/components/bonus/scheme-editor-dialog.tsx`) — Dialog с двумя секциями:
+  - Контекст: `DepartmentSelect`, дата начала, Select модели, Select должности/команды (auto-switch при `is_team_model`), Textarea заметок
+  - Параметры модели — динамические блоки (KPI / Revenue source / Rate / Grades / Components / Options) рендерятся по флагам метаданных модели
+- ✅ Подкомпоненты в `frontend/src/components/bonus/editors/`:
+  - `KpiEditor` — inline-таблица; при выборе KPI auto-fill source/direction/target из `bonus_kpi_definition`
+  - `GradesEditor` — flat (₸) или rate (%, автоконвертация 4.5% → 0.045); валидация непрерывности и пересечения диапазонов
+  - `RevenueSourceSelect` — Select с группировкой по category, фильтром по value_type, описание выбранного источника, badge заглушек
+  - `ComponentsEditor` — для `combined_products`
+  - `OptionsEditor` — диспетчер по type (`bool` → Switch, `enum` → RadioGroup, `money` → NumberInput) с label + hint
+- ✅ Live-валидация через `POST /schemes/validate` (кнопка «Проверить») с нормализацией ответа
+- ✅ Сохранение через `POST /schemes` (кнопка «Создать схему» / «Сохранить как новую версию»)
+- ✅ Новые shadcn-компоненты: `Switch`, `RadioGroup`, `RadioGroupItem`, `SelectLabel`, `SelectSeparator`
+- 📄 Подробности: `docs/SESSION_LOG_Bonus_Scheme_UI_Editor_Phase2_*.md`
 
 **Phase 3 — ДОПОЛНИТЕЛЬНО (2-3 дня)**:
 - Тестовый расчёт (sandbox) — эндпоинт `POST /schemes/preview-calculation` + UI-форма «При KPI=__%, выручке=__₸ → бонус будет ХХХ»
