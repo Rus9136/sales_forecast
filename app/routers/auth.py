@@ -303,10 +303,13 @@ async def get_api_key_usage(
 
 @router.post("/test")
 async def test_api_key(
-    api_key: ApiKey = Depends(lambda: None)  # This will be replaced with auth dependency
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """
-    Test endpoint to verify API key authentication
+    Test endpoint to verify API key authentication.
+
+    - DEBUG=True: bypassed, returns "development mode" message (invalid tokens still rejected with 401).
+    - DEBUG=False: requires valid DB-backed API key; returns key name/id on success.
     """
     if api_key:
         return {
