@@ -201,24 +201,45 @@ DEFAULT_ROLES = [
 
 
 def seed_default_roles(db: Session) -> None:
-    """Insert system roles if missing and grant always-on sections to existing ones."""
+    """Insert system roles if missing and merge new default sections into existing ones.
+
+    For **system** roles (`is_system=True`) we additively merge the sections from
+    `DEFAULT_ROLES` into the existing `allowed_sections` — so when a new section
+    is added to a role's defaults (e.g. `menu.products` added to `admin`/`manager`
+    in Phase 2), the change reaches running databases on next deploy without a
+    manual SQL UPDATE. Non-system roles are never touched (UI-managed only).
+
+    Existing manual additions are preserved — we only add, never remove.
+    """
     existing_rows = db.query(AppRole).all()
     existing_codes = {r.code for r in existing_rows}
+    by_code = {r.code: r for r in existing_rows}
     created = False
-    for spec in DEFAULT_ROLES:
-        if spec["code"] in existing_codes:
-            continue
-        db.add(AppRole(
-            code=spec["code"],
-            name=spec["name"],
-            allowed_sections=spec["allowed_sections"],
-            is_system=spec["is_system"],
-        ))
-        created = True
-
-    # Idempotent upgrade: ensure every existing role has the always-on sections
-    # (e.g. a newly introduced "dashboard" page that all roles should see).
     upgraded = False
+
+    for spec in DEFAULT_ROLES:
+        if spec["code"] not in existing_codes:
+            db.add(AppRole(
+                code=spec["code"],
+                name=spec["name"],
+                allowed_sections=spec["allowed_sections"],
+                is_system=spec["is_system"],
+            ))
+            created = True
+            continue
+
+        # Existing role: merge new default sections into system roles.
+        role = by_code[spec["code"]]
+        if not role.is_system:
+            continue
+        current = list(role.allowed_sections or [])
+        missing = [s for s in spec["allowed_sections"] if s not in current]
+        if missing:
+            role.allowed_sections = current + missing
+            upgraded = True
+
+    # Always-on sections (e.g. dashboard) — granted to **all** roles regardless
+    # of is_system, for the use case of a new top-level page everyone must see.
     for role in existing_rows:
         current = list(role.allowed_sections or [])
         missing = [s for s in ALWAYS_GRANTED_SECTIONS if s not in current]
