@@ -18,6 +18,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   'sales.waiters': 'Продажи по официантам',
   'forecast.branches': 'Прогноз по филиалам',
   'forecast.comparison': 'Сравнение факт / прогноз',
+  'forecast.sku': 'Прогноз по блюдам',
   'menu.products': 'Меню — товары',
   'menu.groups': 'Меню — группы',
   'receipts.list': 'Чеки — журнал',

@@ -11,6 +11,7 @@ const SECTION_TO_PATH: Record<SectionKey, string> = {
   'sales.waiters': '/sales/waiters',
   'forecast.branches': '/forecast/branches',
   'forecast.comparison': '/forecast/comparison',
+  'forecast.sku': '/forecast/sku',
   'menu.products': '/menu/products',
   'menu.groups': '/menu/groups',
   'receipts.list': '/receipts',

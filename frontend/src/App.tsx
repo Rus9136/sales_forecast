@@ -15,6 +15,7 @@ import { HourlySalesPage } from '@/pages/hourly-sales-page'
 import { WaiterSalesPage } from '@/pages/waiter-sales-page'
 import { ForecastBranchPage } from '@/pages/forecast-branch-page'
 import { ForecastComparisonPage } from '@/pages/forecast-comparison-page'
+import { SkuForecastPage } from '@/pages/sku-forecast-page'
 import { SyncPage } from '@/pages/sync-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
 import { MenuProductsPage } from '@/pages/menu/products-page'
@@ -69,6 +70,9 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="forecast.comparison" />}>
                     <Route path="/forecast/comparison" element={<ForecastComparisonPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="forecast.sku" />}>
+                    <Route path="/forecast/sku" element={<SkuForecastPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="sync" />}>
                     <Route path="/sync" element={<SyncPage />} />

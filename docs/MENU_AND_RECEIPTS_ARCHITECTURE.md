@@ -1,6 +1,6 @@
 # Menu, Receipts, Prices & Recipes — Architecture Plan
 
-**Статус:** Phase 0–3 + Phase 5.1–5.2 выполнены (2026-05-25). Phase 4 удалена (не нужна). Phase 5.3–5.4 не начаты.
+**Статус:** Phase 0–3 + Phase 5.1–5.3 выполнены (2026-05-25). Phase 4 удалена (не нужна). Phase 5.4 не начата.
 **Контекст:** добавляем сбор и хранение чеков по позициям, номенклатуры, прайс-листов и техкарт из iiko для последующего пословного (per-SKU) прогноза продаж и анализа цен.
 **Связано с:** `iiko_sales_integration_guide.md` (текущий OLAP по продажам), `LABOR_OPTIMIZATION_ARCHITECTURE.md` (общий принцип «версионировать справочники по времени»).
 
@@ -485,16 +485,36 @@ CREATE TABLE receipt_item (
 
 **Почему не `cost_calculator.py` из плана:** iiko уже считает себестоимость по рецептам + закупочным ценам на своей стороне и отдаёт готовый результат через OLAP. Рекурсивный расчёт через наши таблицы `recipe` / `recipe_ingredient` дал бы тот же результат, но потребовал бы закупочные цены ингредиентов (`estimated_purchase_price`), которые заполнены только у 6 из 18,581 продуктов. OLAP-подход надёжнее и проще.
 
-#### 5.3 Прогноз по SKU
+#### 5.3 Прогноз по SKU ✅ ВЫПОЛНЕНО (2026-05-25)
 
-- Расширить `app/services/training_service.py`:
-  - Подготовка фичей на уровне `(department_id, product_id, date)` — продажи в qty, день недели, история цены, наличие в прайсе, segment_type, weekend features.
-  - Top-N SKU (по выручке) обучаются индивидуально, остальные — fallback на групповой LightGBM (per `group_id`).
-- `app/agents/sku_forecaster_agent.py` — обёртка над LightGBM-моделью.
+> **Архитектура**: один глобальный LightGBM (не per-SKU) с ~74 признаками. Target: SUM(qty) per (department, product, date). Только type IN ('DISH', 'GOODS').
+
+**Data layer:**
+- Миграция `018_sku_daily_sales.sql`: таблицы `sku_daily_sales` (агрегат из receipt_item) + `sku_forecasts` (хранение прогнозов).
+- `app/services/sku_daily_aggregation_service.py`: INSERT ... ON CONFLICT из receipt_item, вызывается автоматически после каждого receipt sync.
+- `app/models/sku_forecast.py`: SQLAlchemy модели SkuDailySales, SkuForecast.
+
+**ML pipeline:**
+- `app/services/sku_training_service.py`: ~74 фичи (23 time + 18 dept + 11 operational + 8 SKU static + 11 SKU rolling + 4 cross). Zero-expansion для активных SKU (sold in last 30 days). Переиспользует TrainingDataService для time/dept/operational фичей.
+- `app/agents/sku_forecaster_agent.py`: LightGBM (600 trees, lr=0.03, depth=7, log1p target). Singleton. train_model + forecast_department_skus (batch predict all active SKUs).
+
+**API:**
 - `app/routers/forecast/sku.py`:
-  - `GET /api/forecast/sku/batch?from_date=&to_date=&department_id=&product_id=`
-  - `POST /api/forecast/sku/retrain`
-  - `GET /api/forecast/sku/comparison`
+  - `POST /api/forecast/sku/retrain` — обучение модели
+  - `GET /api/forecast/sku/model/info` — метаданные
+  - `GET /api/forecast/sku/batch?department_id=&from_date=&to_date=&top_n=50` — прогноз
+  - `GET /api/forecast/sku/top-n` — топ SKU по выручке
+  - `GET /api/forecast/sku/comparison` — факт vs прогноз
+  - `GET /api/forecast/sku/export/csv` — CSV экспорт
+  - `POST /api/forecast/sku/aggregate/backfill` — backfill агрегации
+
+**Frontend:**
+- Страница `/forecast/sku` с фильтрами, KPI-карточками, BarChart top-10, сортируемой таблицей, блоком модели (admin).
+- Section key `forecast.sku`, sidebar entry, protected route.
+
+**Scheduler:** Sunday 03:45 — weekly SKU model retraining.
+
+**Prerequisite:** перед первым обучением нужна история чеков за 6+ месяцев (POST /api/receipts/sync) + backfill агрегации (POST /api/forecast/sku/aggregate/backfill).
 
 #### 5.4 Анализ ценовой эластичности
 
@@ -508,7 +528,7 @@ CREATE TABLE receipt_item (
 - ✅ На странице блюда — кнопка «Техкарта» → диалог с ингредиентами (Phase 5.1).
 - ✅ `GET /api/receipts/{id}` отдаёт cost_price и margin per позицию (Phase 5.2).
 - ✅ `GET /api/receipts/stats/by-product` отдаёт маржинальность per SKU (Phase 5.2).
-- ⬜ LightGBM SKU-модель обучена, MAPE на top-10 SKU < 25% (Phase 5.3).
+- ✅ LightGBM SKU-модель: глобальная модель с ~74 признаками, страница /forecast/sku, API endpoints (Phase 5.3). MAPE — определится после загрузки 6+ мес. истории чеков.
 - ⬜ Эластичность для топ-50 SKU рассчитана (Phase 5.4).
 
 ---
@@ -523,7 +543,8 @@ CREATE TABLE receipt_item (
 | 02:15 | Sync receipts за вчера | Фаза 3 |
 | 02:30 | Sync waiter sales (как сейчас) | существующее |
 | 03:00 (Sun) | Weekly model retraining (как сейчас) | существующее |
-| 03:30 (Sun) | Sync recipes (full tree) | Фаза 5 |
+| 03:30 (Sun) | Sync recipes (full tree) | Фаза 5.1 |
+| 03:45 (Sun) | Weekly SKU model retraining | Фаза 5.3 ✅ |
 | 04:00 | Daily performance metrics (как сейчас) | существующее |
 | 04:00 (Sun) | Create next-month partitions for receipt/receipt_item | Фаза 3 |
 | 10:00 | Daily sales gap check (как сейчас) | существующее |

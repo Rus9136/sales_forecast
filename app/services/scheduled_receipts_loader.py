@@ -38,6 +38,8 @@ def run_receipts_sync():
             yesterday = date.today() - timedelta(days=1)
             result = _run_async(svc.sync(yesterday, yesterday))
             logger.info(f"Receipts sync done: {result.get('total_receipts')} receipts, {result.get('total_items')} items")
+            from .sku_daily_aggregation_service import SkuDailyAggregationService
+            SkuDailyAggregationService(db).aggregate_date_range(yesterday, yesterday)
             return result
         finally:
             db.close()
@@ -66,6 +68,8 @@ def run_receipts_gap_check():
                     svc = IikoReceiptsLoaderService(db)
                     result = _run_async(svc.sync(check_date, check_date))
                     resynced.append({"date": str(check_date), "receipts": result.get("total_receipts", 0)})
+                    from .sku_daily_aggregation_service import SkuDailyAggregationService
+                    SkuDailyAggregationService(db).aggregate_date_range(check_date, check_date)
             logger.info(f"Receipts gap check done: resynced {len(resynced)} dates")
             return {"status": "success", "resynced": resynced}
         finally:

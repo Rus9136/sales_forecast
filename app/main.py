@@ -24,6 +24,7 @@ from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
+from .services.sku_model_retraining_service import run_sku_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
@@ -86,6 +87,17 @@ async def lifespan(app: FastAPI):
             minute=30,
             id='weekly_recipe_sync',
             name='Weekly Recipe Sync',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_sku_auto_retrain,
+            trigger="cron",
+            day_of_week=6,  # Sunday
+            hour=3,
+            minute=45,
+            id='weekly_sku_model_retrain',
+            name='Weekly SKU Model Retraining',
             replace_existing=True
         )
 

@@ -32,7 +32,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (6 задач: employees, sales, waiter sales, retrain, metrics, gap checks)
+- **Scheduler**: APScheduler (12 задач: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, metrics, gap checks ×3)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -120,13 +120,16 @@ sales_forecast/
 │   │   ├── employee.py            # Employee, SalesByWaiter
 │   │   ├── ai.py                  # AIRecommendation, AIPromptLog, AIPrompt
 │   │   ├── receipts.py            # Receipt, ReceiptItem (partitioned by open_date)
+│   │   ├── sku_forecast.py        # SkuDailySales, SkuForecast (SKU-level forecasting)
 │   │   └── branch.py              # Branch, Sale (legacy) + backward-compat re-exports
 │   ├── schemas/
 │   │   ├── branch.py              # Pydantic schemas (18 схем)
 │   │   ├── ai.py                  # AnalyzeRequest/Response, HistoryItem, PromptInfo, RerunAgentRequest
-│   │   └── receipts.py            # Receipt/Item/Detail/SyncResponse, ProductSalesStats
+│   │   ├── receipts.py            # Receipt/Item/Detail/SyncResponse, ProductSalesStats
+│   │   └── sku_forecast.py        # SKU forecast request/response schemas
 │   ├── agents/
-│   │   └── sales_forecaster_agent.py  # LightGBM agent
+│   │   ├── sales_forecaster_agent.py  # LightGBM agent (department-level revenue)
+│   │   └── sku_forecaster_agent.py    # LightGBM agent (SKU-level quantity)
 │   └── services/
 │       ├── iiko_auth.py                  # iiko API auth (credentials из settings)
 │       ├── iiko_department_loader.py     # Department sync (N+1 optimized)
@@ -138,9 +141,12 @@ sales_forecast/
 │       ├── iiko_receipts_loader.py       # Receipts OLAP sync (DishId→product, batch upsert)
 │       ├── scheduled_receipts_loader.py  # Scheduler wrappers for receipts sync + gap check
 │       ├── branch_loader.py              # Branch loading
-│       ├── training_service.py           # ML data preparation + feature engineering
+│       ├── training_service.py           # ML data preparation + feature engineering (dept-level)
+│       ├── sku_training_service.py      # SKU-level feature engineering (~74 features)
+│       ├── sku_daily_aggregation_service.py  # receipt_item → sku_daily_sales aggregation
+│       ├── sku_model_retraining_service.py  # SKU model auto-retrain (weekly)
 │       ├── hyperparameter_tuning_service.py  # Optuna integration
-│       ├── model_retraining_service.py       # Auto-retraining logic
+│       ├── model_retraining_service.py       # Auto-retraining logic (dept-level)
 │       ├── model_monitoring_service.py       # Performance monitoring
 │       ├── forecast_postprocessing_service.py # Post-processing rules
 │       ├── error_analysis_service.py         # Error analysis
@@ -180,7 +186,7 @@ sales_forecast/
 - **Recharts 3** — графики (BarChart, LineChart)
 - **pnpm** — пакетный менеджер
 
-### Роутинг (12 страниц)
+### Роутинг (13 страниц)
 | Путь | Страница | API |
 |------|----------|-----|
 | `/departments` | Подразделения (CRUD + фильтры) | GET/POST/PUT/DELETE `/api/departments/` |
@@ -189,6 +195,7 @@ sales_forecast/
 | `/sales/waiters` | Продажи по официантам + ручной sync | GET `/api/sales/by-waiter`, POST `/api/sales/sync-waiters`, POST `/api/employees/sync` |
 | `/forecast/branches` | Прогноз по филиалам | GET `/api/forecast/batch` |
 | `/forecast/comparison` | Сравнение факт/прогноз + LineChart | GET `/api/forecast/comparison` |
+| `/forecast/sku` | Прогноз по блюдам (SKU qty) | GET `/api/forecast/sku/batch`, POST `/api/forecast/sku/retrain` |
 | `/menu/products` | Номенклатура (фильтры + поиск) | GET `/api/menu/products`, POST `/api/menu/sync` |
 | `/menu/groups` | Группы номенклатуры (дерево) | GET `/api/menu/groups/tree` |
 | `/receipts` | Журнал чеков + диалог деталей | GET `/api/receipts`, GET `/api/receipts/{id}` |
@@ -299,8 +306,8 @@ CLAUDE_MODEL=claude-sonnet-4-20250514
 
 Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
 
-### Section keys (16 шт)
-`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`. Системные роли автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`).
+### Section keys (17 шт)
+`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`. Системные роли автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`).
 
 ### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
 - `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
@@ -336,7 +343,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 
 ## Key Components
 
-### Database Models (21 модель в `app/models/`)
+### Database Models (23 модели в `app/models/`)
 | Файл | Модели | Описание |
 |------|--------|----------|
 | `department.py` | Department | Подразделения, организации, сегменты, iiko_source_domain |
@@ -347,6 +354,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 | `ai.py` | AIRecommendation, AIPromptLog, AIPrompt | Запуски AI-анализа, аудит промптов, шаблоны |
 | `menu.py` | NomenclatureCategory, NomenclatureGroup, Product | Каталог номенклатуры iiko (категории, группы, товары) |
 | `receipts.py` | Receipt, ReceiptItem | Чеки + позиции (партиционировано по open_date) |
+| `sku_forecast.py` | SkuDailySales, SkuForecast | Агрегированные продажи по SKU + хранение прогнозов |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -398,6 +406,13 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/receipts/{id}?open_date=` — Детали чека с позициями (open_date для partition pruning)
 - `/api/receipts/stats/by-product` — Топ блюд по выручке (from_date, to_date, department_id, limit)
 - `/api/receipts/sync` — Синхронизация чеков из iiko OLAP (POST, from_date, to_date)
+- `/api/forecast/sku/retrain` — Обучение SKU-модели (POST, days, active_window_days)
+- `/api/forecast/sku/model/info` — Метаданные SKU-модели (GET)
+- `/api/forecast/sku/batch` — Прогноз по SKU для подразделения (GET, department_id required, from_date, to_date, top_n)
+- `/api/forecast/sku/top-n` — Топ-N SKU по выручке (GET, department_id optional, period_days, n)
+- `/api/forecast/sku/comparison` — Факт vs прогноз SKU (GET, department_id, from_date, to_date)
+- `/api/forecast/sku/export/csv` — CSV экспорт прогнозов SKU (GET)
+- `/api/forecast/sku/aggregate/backfill` — Backfill sku_daily_sales агрегации (POST)
 - `/` — React SPA (fallback: Jinja2 admin.html)
 - `/health` — Health check
 
@@ -407,7 +422,9 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **02:00** — Daily sales auto-sync
 - **02:15** — Daily receipts sync (per-dish OLAP)
 - **02:30** — Daily waiter sales sync (per-waiter OLAP)
-- **03:00 Sun** — Weekly model retraining
+- **03:00 Sun** — Weekly model retraining (department-level)
+- **03:30 Sun** — Weekly recipe sync
+- **03:45 Sun** — Weekly SKU model retraining
 - **04:00** — Daily performance metrics calculation
 - **10:00** — Daily sales gap check
 - **11:00** — Daily waiter sales gap check
@@ -538,7 +555,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
   http://localhost:8002/api/ai-recommendations/prompts
 ```
 
-## ML System v2.3
+## ML System v2.3 (Department-level)
 
 - **Test MAPE**: 6.18%
 - **R2**: 0.9962+
@@ -546,6 +563,20 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 - **Weekend Logic**: PostgreSQL DOW конвертация `postgres_dow = (python_dow + 1) % 7`
 - **Temporal Smoothing**: +-50% ограничение от среднего по дню недели за 4 недели
 - **Hybrid Forecasting**: Short-term (1-7 days, MAPE 5-15%) / Long-term (8+ days, MAPE 15-25%)
+
+## ML System — SKU-level (Phase 5.3)
+
+Прогноз количества продаж (qty) по каждому блюду/товару на каждое подразделение на каждый день.
+
+- **Target**: SUM(qty) per (department_id, product_id, date), type IN ('DISH', 'GOODS')
+- **Model**: LightGBM (600 trees, lr=0.03, depth=7, log1p target transform)
+- **Features**: ~74 признака: time(23) + dept(18) + operational(11) + SKU static(8) + SKU rolling(11) + cross(4)
+- **Data flow**: receipt_item → sku_daily_sales (aggregation) → SkuTrainingDataService (features) → SkuForecasterAgent (train/predict)
+- **Model path**: `models/sku_lgbm_model.pkl`
+- **Singleton**: `get_sku_forecaster_agent()`
+- **Auto-retrain**: Sunday 03:45 via `run_sku_auto_retrain()`
+- **Key tables**: `sku_daily_sales` (pre-aggregated), `sku_forecasts` (predictions for monitoring)
+- **Prerequisite**: История чеков 6+ месяцев, backfill sku_daily_sales через POST `/api/forecast/sku/aggregate/backfill`
 
 ## AI Recommendations Subsystem
 
