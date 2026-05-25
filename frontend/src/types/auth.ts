@@ -7,6 +7,8 @@ export type SectionKey =
   | 'sales.waiters'
   | 'forecast.branches'
   | 'forecast.comparison'
+  | 'menu.products'
+  | 'menu.groups'
   | 'ai.recommendations'
   | 'sync'
   | 'users'

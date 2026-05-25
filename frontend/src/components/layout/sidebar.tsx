@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
-  UserRound, Users, Sparkles,
+  UserRound, Users, Sparkles, BookOpen, FolderTree,
   Shield, UserCog, LogOut, Settings, LayoutDashboard,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -47,6 +47,13 @@ export const navSections: NavSection[] = [
     items: [
       { path: '/forecast/branches', label: 'Прогноз по филиалам', icon: TrendingUp, section: 'forecast.branches' },
       { path: '/forecast/comparison', label: 'Сравнение факт / прогноз', icon: GitCompare, section: 'forecast.comparison' },
+    ],
+  },
+  {
+    label: 'Меню',
+    items: [
+      { path: '/menu/products', label: 'Номенклатура', icon: BookOpen, section: 'menu.products' },
+      { path: '/menu/groups', label: 'Группы', icon: FolderTree, section: 'menu.groups' },
     ],
   },
   {

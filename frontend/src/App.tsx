@@ -17,6 +17,8 @@ import { ForecastBranchPage } from '@/pages/forecast-branch-page'
 import { ForecastComparisonPage } from '@/pages/forecast-comparison-page'
 import { SyncPage } from '@/pages/sync-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
+import { MenuProductsPage } from '@/pages/menu/products-page'
+import { MenuGroupsPage } from '@/pages/menu/groups-page'
 import { UsersPage } from '@/pages/users-page'
 import { RolesPage } from '@/pages/roles-page'
 
@@ -71,6 +73,12 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="ai.recommendations" />}>
                     <Route path="/ai-recommendations" element={<AIRecommendationsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="menu.products" />}>
+                    <Route path="/menu/products" element={<MenuProductsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="menu.groups" />}>
+                    <Route path="/menu/groups" element={<MenuGroupsPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="users" />}>
                     <Route path="/users" element={<UsersPage />} />

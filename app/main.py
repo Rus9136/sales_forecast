@@ -10,7 +10,7 @@ from .config import settings
 from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
-from .routers import ai_recommendations
+from .routers import ai_recommendations, menu
 from .routers.users_ui import ui_auth_router, ui_users_router
 from .auth_ui import bootstrap_admin, seed_default_roles
 from .db import SessionLocal
@@ -20,6 +20,7 @@ from .services.scheduled_waiter_loader import (
     run_waiter_gap_check,
     run_waiter_sales_sync,
 )
+from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -96,6 +97,16 @@ async def lifespan(app: FastAPI):
         )
 
         scheduler.add_job(
+            func=run_nomenclature_sync,
+            trigger="cron",
+            hour=1,
+            minute=0,
+            id='daily_nomenclature_sync',
+            name='Daily Nomenclature Catalog Sync',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
             func=run_employees_sync,
             trigger="cron",
             hour=1,
@@ -127,8 +138,9 @@ async def lifespan(app: FastAPI):
 
         scheduler.start()
         logger.info(
-            "Background scheduler started - Employees 1:30, Sales 2:00, Waiter sales 2:30, "
-            "Retrain Sun 3:00, Metrics 4:00, Gap check 10:00, Waiter gap check 11:00"
+            "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
+            "Waiter sales 2:30, Retrain Sun 3:00, Metrics 4:00, Gap check 10:00, "
+            "Waiter gap check 11:00"
         )
 
     except Exception as e:
@@ -195,6 +207,7 @@ app.include_router(monitoring.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(employee.router, prefix="/api")
 app.include_router(ai_recommendations.router, prefix="/api")
+app.include_router(menu.router, prefix="/api")
 app.include_router(ui_auth_router, prefix="/api")
 app.include_router(ui_users_router, prefix="/api")
 
