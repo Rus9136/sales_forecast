@@ -10,7 +10,7 @@ from .config import settings
 from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
-from .routers import ai_recommendations, menu
+from .routers import ai_recommendations, menu, receipts
 from .routers.users_ui import ui_auth_router, ui_users_router
 from .auth_ui import bootstrap_admin, seed_default_roles
 from .db import SessionLocal
@@ -21,6 +21,7 @@ from .services.scheduled_waiter_loader import (
     run_waiter_sales_sync,
 )
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
+from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.model_retraining_service import run_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -117,6 +118,16 @@ async def lifespan(app: FastAPI):
         )
 
         scheduler.add_job(
+            func=run_receipts_sync,
+            trigger="cron",
+            hour=2,
+            minute=15,
+            id='daily_receipts_sync',
+            name='Daily Receipts Sync',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
             func=run_waiter_sales_sync,
             trigger="cron",
             hour=2,
@@ -136,11 +147,21 @@ async def lifespan(app: FastAPI):
             replace_existing=True
         )
 
+        scheduler.add_job(
+            func=run_receipts_gap_check,
+            trigger="cron",
+            hour=11,
+            minute=30,
+            id='daily_receipts_gap_check',
+            name='Daily Receipts Gap Check',
+            replace_existing=True
+        )
+
         scheduler.start()
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
-            "Waiter sales 2:30, Retrain Sun 3:00, Metrics 4:00, Gap check 10:00, "
-            "Waiter gap check 11:00"
+            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Metrics 4:00, "
+            "Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 
     except Exception as e:
@@ -208,6 +229,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(employee.router, prefix="/api")
 app.include_router(ai_recommendations.router, prefix="/api")
 app.include_router(menu.router, prefix="/api")
+app.include_router(receipts.router, prefix="/api")
 app.include_router(ui_auth_router, prefix="/api")
 app.include_router(ui_users_router, prefix="/api")
 

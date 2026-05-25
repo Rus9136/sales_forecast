@@ -9,6 +9,8 @@ export type SectionKey =
   | 'forecast.comparison'
   | 'menu.products'
   | 'menu.groups'
+  | 'receipts.list'
+  | 'receipts.stats'
   | 'ai.recommendations'
   | 'sync'
   | 'users'

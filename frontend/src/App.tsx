@@ -19,6 +19,8 @@ import { SyncPage } from '@/pages/sync-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
 import { MenuProductsPage } from '@/pages/menu/products-page'
 import { MenuGroupsPage } from '@/pages/menu/groups-page'
+import { ReceiptsPage } from '@/pages/receipts/receipts-page'
+import { StatsByProductPage } from '@/pages/receipts/stats-by-product-page'
 import { UsersPage } from '@/pages/users-page'
 import { RolesPage } from '@/pages/roles-page'
 
@@ -79,6 +81,12 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="menu.groups" />}>
                     <Route path="/menu/groups" element={<MenuGroupsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="receipts.list" />}>
+                    <Route path="/receipts" element={<ReceiptsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="receipts.stats" />}>
+                    <Route path="/receipts/stats" element={<StatsByProductPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="users" />}>
                     <Route path="/users" element={<UsersPage />} />

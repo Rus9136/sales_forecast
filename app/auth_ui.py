@@ -145,6 +145,8 @@ AVAILABLE_SECTIONS = [
     "forecast.comparison",
     "menu.products",
     "menu.groups",
+    "receipts.list",
+    "receipts.stats",
     "ai.recommendations",
     "sync",
     "users",
@@ -161,7 +163,7 @@ DEFAULT_ROLES = [
     {
         "code": "admin",
         "name": "Администратор",
-        "allowed_sections": list(AVAILABLE_SECTIONS),
+        "allowed_sections": list(AVAILABLE_SECTIONS),  # all sections
         "is_system": True,
     },
     {
@@ -173,6 +175,7 @@ DEFAULT_ROLES = [
             "sales.daily", "sales.hourly", "sales.waiters",
             "forecast.branches", "forecast.comparison",
             "menu.products", "menu.groups",
+            "receipts.list", "receipts.stats",
             "ai.recommendations", "sync",
         ],
         "is_system": True,
