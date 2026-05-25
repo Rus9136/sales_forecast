@@ -1,6 +1,6 @@
 # Menu, Receipts, Prices & Recipes — Architecture Plan
 
-**Статус:** Phase 0–3 + Phase 5.1 выполнены (2026-05-25). Phase 4 пропущена (priceList 404). Phase 5.2–5.4 не начаты.
+**Статус:** Phase 0–3 + Phase 5.1–5.2 выполнены (2026-05-25). Phase 4 удалена (не нужна). Phase 5.3–5.4 не начаты.
 **Контекст:** добавляем сбор и хранение чеков по позициям, номенклатуры, прайс-листов и техкарт из iiko для последующего пословного (per-SKU) прогноза продаж и анализа цен.
 **Связано с:** `iiko_sales_integration_guide.md` (текущий OLAP по продажам), `LABOR_OPTIMIZATION_ARCHITECTURE.md` (общий принцип «версионировать справочники по времени»).
 
@@ -427,63 +427,11 @@ CREATE TABLE receipt_item (
 
 ---
 
-### Фаза 4 — Цены приказами
+### ~~Фаза 4 — Цены приказами~~ УДАЛЕНА
 
-**Цель:** хранить историю цен SKU × подразделение с версионированием.
-
-**База:** миграция `016_price_list.sql`
-```sql
-CREATE TABLE price_list_entry (
-  id BIGSERIAL PRIMARY KEY,
-  iiko_source_domain TEXT NOT NULL,
-  product_id BIGINT NOT NULL REFERENCES product(id),
-  department_id UUID NOT NULL REFERENCES departments(id),
-  price NUMERIC(14,2) NOT NULL,
-  effective_from DATE NOT NULL,
-  effective_to DATE,  -- NULL = открытая запись
-  source_order_id UUID,
-  source_order_num TEXT,
-  is_included BOOLEAN NOT NULL DEFAULT true,
-  synced_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  EXCLUDE USING gist (
-    product_id WITH =,
-    department_id WITH =,
-    daterange(effective_from, COALESCE(effective_to, 'infinity'::date), '[)') WITH &&
-  )
-);
-CREATE INDEX idx_price_list_product_dept ON price_list_entry(product_id, department_id, effective_from DESC);
--- требует CREATE EXTENSION btree_gist;
-```
-
-**Backend:**
-- `app/models/menu.py` (расширить) — `PriceListEntry`.
-- `app/services/iiko_price_list_loader.py`:
-  - `fetch(domain, department_id, date)` → GET `/resto/api/v2/reports/priceList?departmentId=...&date=...`
-  - `sync_for_period(from_date, to_date)` — обходит все активные подразделения × каждую дату.
-  - Логика версионирования: для каждой (product, department) сравнить новую цену с актуальной открытой записью. Если цена изменилась — `UPDATE existing SET effective_to = new.effective_from` + `INSERT new`. Если не изменилась — пропустить.
-- `app/routers/menu.py` (расширить):
-  - `GET /api/menu/products/{id}/price-history?department_id=&from=&to=` — список `price_list_entry`.
-  - `GET /api/menu/products/{id}/current-price?department_id=&date=` — текущая открытая цена на дату.
-  - `POST /api/menu/price-list/sync?from_date=&to_date=&department_id=` — ручной триггер.
-
-**Scheduler:**
-- 01:15 ежедневно — sync прайс-листов за вчера для всех активных подразделений.
-
-**Frontend:**
-- `frontend/src/pages/menu/price-history-page.tsx` — для выбранного SKU + подразделения LineChart с историей цены.
-- На странице SKU detail — блок «Текущая цена» по каждому подразделению (таблица).
-
-**Тесты:**
-- `tests/services/test_iiko_price_list_loader.py` — fixture, проверка корректного закрытия предыдущей записи при изменении цены, идемпотентность при том же значении.
-- `tests/services/test_price_list_overlap.py` — EXCLUDE constraint не даёт вставить пересекающиеся периоды.
-
-**Definition of done:**
-- В БД для топ-100 SKU × 30 подразделений × 30 дней — корректная история без пересечений.
-- UI показывает LineChart истории цены.
-
-**Что критично проверить перед началом:**
-- Что отдаёт `/resto/api/v2/reports/priceList` — JSON или XML? Какие поля? (Если эндпоинт недоступен или возвращает другую структуру — план придётся скорректировать. Curl до старта.)
-- На некоторых iiko-серверах прайс-листы задаются не «приказами», а напрямую через карточку блюда. Узнать у заказчика, как у Сандык/Мадлен (от этого зависит, нужен ли вообще этот эндпоинт или достаточно `product.default_sale_price`).
+> **Причина:** эндпоинт `/resto/api/v2/reports/priceList` возвращает **404** на обоих доменах. `product.default_sale_price` заполнен слабо (Sandy 2%, Madlen 41%). Зато iiko OLAP SALES-отчёт отдаёт себестоимость напрямую через поля `ProductCostBase.ProductCost` и `ProductCostBase.Percent` — это покрывает 86.5% позиций чеков и делает отдельную таблицу `price_list_entry` ненужной.
+>
+> Если в будущем потребуется **история изменения цен продажи** (не себестоимости), можно отслеживать `receipt_item.price_per_unit` по дням — фактические цены из чеков точнее каталожных.
 
 ---
 
@@ -516,12 +464,26 @@ CREATE INDEX idx_price_list_product_dept ON price_list_entry(product_id, departm
 - Ответ `getAll` не зависит от `dateFrom` параметра (отдаёт все карты за всю историю). `dateFrom=2020-01-01` используется формально.
 - 8 из 9,563 Sandy assembledProductId не нашлись в product (удалённые продукты с `includeDeleted=false` при sync номенклатуры? — не критично).
 
-#### 5.2 Cost-аналитика
+#### 5.2 Cost-аналитика ✅ ВЫПОЛНЕНО (2026-05-25)
 
-- Сервис `app/services/cost_calculator.py`:
-  - `calculate_receipt_item_cost(item, date)` — найти recipe для `item.product_id` актуальный на `item.receipt_open_date`, посчитать суммарную себестоимость ингредиентов (рекурсивно для полуфабрикатов).
-- Расширить `GET /api/receipts/{id}` — отдавать вместе с позициями расчётный `cost_price` и `margin`.
-- Дашборд «Маржинальность по SKU» — `GET /api/receipts/stats/margin-by-product?from=&to=&department_id=`.
+> **Commit:** `a08e571 feat(cost): Phase 5.2 — cost price and margin from iiko OLAP ProductCostBase` — 8 файлов, +92 / −13.
+> **Данные за 1 день (2026-05-24):** выручка 37,123,814 ₸ / себестоимость 12,057,184 ₸ / маржа 25,066,631 ₸ (67.5%). Себестоимость доступна для 86.5% позиций (15,164 из 17,527).
+
+**Реализация (отличается от плана):**
+
+Вместо рекурсивного расчёта через рецепты (`cost_calculator.py`) используются готовые агрегаты из iiko OLAP:
+- `ProductCostBase.ProductCost` — себестоимость позиции (iiko считает её на своей стороне по рецептам + закупочным ценам)
+- `ProductCostBase.Percent` — food cost % (себестоимость / выручка)
+
+Эти поля добавлены в OLAP-запрос чеков и сохраняются в `receipt_item.cost_price` / `receipt_item.food_cost_percent` (миграция `017_receipt_item_cost.sql`).
+
+**Definition of done:** ✅
+- ✅ `GET /api/receipts/{id}` отдаёт `cost_price`, `food_cost_percent`, `margin` per позицию.
+- ✅ `GET /api/receipts/stats/by-product` отдаёт `total_cost`, `margin`, `avg_food_cost_pct` per блюдо + `total_cost`, `total_margin` в итогах.
+- ✅ UI: диалог деталей чека — колонки Себест./Маржа/FC%. Страница «Продажи по блюдам» — KPI-карточки Выручка/Себестоимость/Маржа + колонки в таблице.
+- ✅ Покрытие данных: 86.5% позиций имеют себестоимость (13.5% без данных — модификаторы, комплименты, позиции с нулевой суммой).
+
+**Почему не `cost_calculator.py` из плана:** iiko уже считает себестоимость по рецептам + закупочным ценам на своей стороне и отдаёт готовый результат через OLAP. Рекурсивный расчёт через наши таблицы `recipe` / `recipe_ingredient` дал бы тот же результат, но потребовал бы закупочные цены ингредиентов (`estimated_purchase_price`), которые заполнены только у 6 из 18,581 продуктов. OLAP-подход надёжнее и проще.
 
 #### 5.3 Прогноз по SKU
 
@@ -542,11 +504,12 @@ CREATE INDEX idx_price_list_product_dept ON price_list_entry(product_id, departm
 - UI — на странице SKU detail вкладка «Эластичность»: scatter plot + кривая + рекомендация по оптимальной цене.
 
 **Definition of done (вся Фаза 5):**
-- В БД: техкарты для топ-500 SKU.
-- На странице блюда показана техкарта.
-- `GET /api/receipts/{id}` отдаёт margin per позицию.
-- LightGBM SKU-модель обучена, MAPE на top-10 SKU < 25%.
-- Эластичность для топ-50 SKU рассчитана.
+- ✅ В БД: 31,153 техкарты, 171,153 ингредиентов (Phase 5.1).
+- ✅ На странице блюда — кнопка «Техкарта» → диалог с ингредиентами (Phase 5.1).
+- ✅ `GET /api/receipts/{id}` отдаёт cost_price и margin per позицию (Phase 5.2).
+- ✅ `GET /api/receipts/stats/by-product` отдаёт маржинальность per SKU (Phase 5.2).
+- ⬜ LightGBM SKU-модель обучена, MAPE на top-10 SKU < 25% (Phase 5.3).
+- ⬜ Эластичность для топ-50 SKU рассчитана (Phase 5.4).
 
 ---
 
@@ -554,8 +517,7 @@ CREATE INDEX idx_price_list_product_dept ON price_list_entry(product_id, departm
 
 | Время | Задача | Источник |
 |---|---|---|
-| 01:00 | Sync nomenclature (products + groups + categories) | Фаза 2 |
-| 01:15 | Sync price-list за вчера для всех активных подразделений | Фаза 4 |
+| 01:00 | Sync nomenclature (products + groups + categories) | Фаза 2 ✅ |
 | 01:30 | Sync employees (как сейчас) | существующее |
 | 02:00 | Sync `sales_summary` (как сейчас) | существующее |
 | 02:15 | Sync receipts за вчера | Фаза 3 |
@@ -575,9 +537,8 @@ CREATE INDEX idx_price_list_product_dept ON price_list_entry(product_id, departm
 Для 50 подразделений × 200 чеков/день × 5 позиций/чек × 2 домена:
 - `receipt`: ~20 тыс./день, ~7.3 млн/год.
 - `receipt_item`: ~100 тыс./день, ~36 млн/год.
-- `product`: 6-20 тыс. строк (статика).
-- `price_list_entry`: ~10-30 тыс./месяц (только при изменении цен).
-- `recipe`: ~3-10 тыс. строк × ~5 ингредиентов = 15-50 тыс. строк в `recipe_ingredient`.
+- `product`: 18,581 строк (два домена, статика).
+- `recipe`: 31,153 строк × ~5.5 ингредиентов = 171,153 строк в `recipe_ingredient`.
 
 PostgreSQL 15 + партиционирование по месяцам справится. Индексы выше дают partition pruning по `open_date`.
 
@@ -590,9 +551,9 @@ PostgreSQL 15 + партиционирование по месяцам спра�
 | 1 | bonus subsystem не используется и удаление безопасно | ✅ Подтверждено и удалено (Phase 0, 2026-05-25) |
 | 2 | Учётка `IIKO_LOGIN` имеет доступ к `/resto/api/v2/entities/products/*` | ✅ 200 на обоих доменах (Sandy 18398 SKU / 32MB, Madlen 16MB) |
 | 3 | Учётка имеет доступ к `/resto/api/v2/assemblyCharts/*` | ✅ 200 на обоих доменах; **bulk-эндпоинт `getAll?dateFrom=...` доступен** (Sandy 36MB с `dateFrom/dateTo` версионированием) |
-| 4 | `/resto/api/v2/reports/priceList` доступен | ❌ 404 на обоих доменах. В v1 и альтернативных путях тоже нет. **Используем `defaultSalePrice` из карточки `products/list`** (см. ниже). |
-| 5 | Цены в Сандык/Мадлен задаются приказами или из карточки блюда | ⚠ Требует уточнения у заказчика. `defaultSalePrice` в карточке = 0 для некоторых блюд (`Баурсаки комплимент` — возможно действительно 0). Если приказами не задаются — Фаза 4 = просто tracking изменений `defaultSalePrice` между sync'ами; если задаются — нужно искать другой эндпоинт. |
-| 6 | В iiko OLAP `DishAmountInt` — int или float? (Влияет на тип `receipt_item.qty`.) | ⚠ Не проверено — отложено до Фазы 3 (один тестовый OLAP-запрос с реальным `DishId`). |
+| 4 | `/resto/api/v2/reports/priceList` доступен | ❌ 404 на обоих доменах. **Фаза 4 удалена.** Себестоимость берётся из OLAP `ProductCostBase.*` (Phase 5.2). |
+| 5 | Себестоимость доступна через API | ✅ OLAP SALES отдаёт `ProductCostBase.ProductCost` (себестоимость) и `ProductCostBase.Percent` (food cost %). Покрытие 86.5% позиций чеков. Фаза 4 не нужна. |
+| 6 | В iiko OLAP `DishAmountInt` — int или float? | ✅ Float! Madlen: сотни дробных значений (весовые позиции). Sandy: 16 из 12k. Тип `receipt_item.qty` = `NUMERIC(12,3)`. |
 | 7 | Нужен ли split видимости по компаниям на уровне ролей (Сандык-юзер не видит Мадлен) | ⚠ Опционально, не блокирует. |
 
 ### 7.1 Бонусные находки из products/list
