@@ -21,6 +21,9 @@ class ReceiptItemResponse(BaseModel):
     dish_sum: float
     discount_sum: float
     return_sum: float
+    cost_price: Optional[float] = None
+    food_cost_percent: Optional[float] = None
+    margin: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -65,8 +68,12 @@ class ProductSalesStats(BaseModel):
     total_qty: float
     total_sum: float
     total_discount: float
+    total_cost: Optional[float] = None
     receipts_count: int
     avg_price: Optional[float] = None
+    avg_cost: Optional[float] = None
+    avg_food_cost_pct: Optional[float] = None
+    margin: Optional[float] = None
 
 
 class ProductSalesStatsResponse(BaseModel):
@@ -75,4 +82,6 @@ class ProductSalesStatsResponse(BaseModel):
     department_id: Optional[str] = None
     items: List[ProductSalesStats]
     total_revenue: float
+    total_cost: float
+    total_margin: float
     total_items_sold: float

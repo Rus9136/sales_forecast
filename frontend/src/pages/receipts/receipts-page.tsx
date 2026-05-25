@@ -331,7 +331,9 @@ export function ReceiptsPage() {
                     <TableHead className="text-right">Кол-во</TableHead>
                     <TableHead className="text-right">Цена</TableHead>
                     <TableHead className="text-right">Сумма</TableHead>
-                    <TableHead className="text-right">Скидка</TableHead>
+                    <TableHead className="text-right">Себест.</TableHead>
+                    <TableHead className="text-right">Маржа</TableHead>
+                    <TableHead className="text-right">FC%</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -350,7 +352,15 @@ export function ReceiptsPage() {
                       </TableCell>
                       <TableCell className="text-right tabular">{formatCurrency(it.dish_sum)}</TableCell>
                       <TableCell className="text-right tabular">
-                        {it.discount_sum > 0 ? formatCurrency(it.discount_sum) : '—'}
+                        {it.cost_price != null ? formatCurrency(it.cost_price) : '—'}
+                      </TableCell>
+                      <TableCell className="text-right tabular">
+                        {it.margin != null ? formatCurrency(it.margin) : '—'}
+                      </TableCell>
+                      <TableCell className="text-right tabular text-xs">
+                        {it.food_cost_percent != null
+                          ? `${(it.food_cost_percent * 100).toFixed(1)}%`
+                          : '—'}
                       </TableCell>
                     </TableRow>
                   ))}

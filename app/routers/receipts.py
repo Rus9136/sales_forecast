@@ -50,6 +50,9 @@ def _serialize_receipt(r: Receipt, dept_name: Optional[str] = None) -> dict:
 
 
 def _serialize_item(it: ReceiptItem) -> dict:
+    dish_sum = float(it.dish_sum or 0)
+    cost = float(it.cost_price) if it.cost_price else None
+    margin = round(dish_sum - cost, 2) if cost is not None else None
     return {
         "id": it.id,
         "product_id": it.product_id,
@@ -60,9 +63,12 @@ def _serialize_item(it: ReceiptItem) -> dict:
         "dish_category": it.dish_category,
         "qty": float(it.qty or 0),
         "price_per_unit": float(it.price_per_unit) if it.price_per_unit else None,
-        "dish_sum": float(it.dish_sum or 0),
+        "dish_sum": dish_sum,
         "discount_sum": float(it.discount_sum or 0),
         "return_sum": float(it.return_sum or 0),
+        "cost_price": cost,
+        "food_cost_percent": float(it.food_cost_percent) if it.food_cost_percent else None,
+        "margin": margin,
     }
 
 
@@ -151,6 +157,7 @@ def stats_by_product(
             SUM(ri.qty) AS total_qty,
             SUM(ri.dish_sum) AS total_sum,
             SUM(ri.discount_sum) AS total_discount,
+            SUM(ri.cost_price) AS total_cost,
             COUNT(DISTINCT ri.receipt_id) AS receipts_count
         FROM receipt_item ri
         JOIN receipt r ON r.id = ri.receipt_id AND r.open_date = ri.open_date
@@ -165,10 +172,15 @@ def stats_by_product(
 
     items = []
     total_revenue = 0.0
+    total_cost_sum = 0.0
     total_qty = 0.0
     for r in rows:
         s = float(r.total_sum or 0)
         q = float(r.total_qty or 0)
+        c = float(r.total_cost or 0)
+        avg_cost = round(c / q, 2) if q > 0 and c > 0 else None
+        food_pct = round(c / s * 100, 1) if s > 0 and c > 0 else None
+        margin = round(s - c, 2) if c > 0 else None
         items.append(ProductSalesStats(
             product_id=r.product_id,
             iiko_dish_id=r.iiko_dish_id,
@@ -178,10 +190,15 @@ def stats_by_product(
             total_qty=q,
             total_sum=s,
             total_discount=float(r.total_discount or 0),
+            total_cost=c if c > 0 else None,
             receipts_count=r.receipts_count,
             avg_price=round(s / q, 2) if q > 0 else None,
+            avg_cost=avg_cost,
+            avg_food_cost_pct=food_pct,
+            margin=margin,
         ))
         total_revenue += s
+        total_cost_sum += c
         total_qty += q
 
     return ProductSalesStatsResponse(
@@ -190,6 +207,8 @@ def stats_by_product(
         department_id=str(department_id) if department_id else None,
         items=items,
         total_revenue=total_revenue,
+        total_cost=total_cost_sum,
+        total_margin=round(total_revenue - total_cost_sum, 2),
         total_items_sold=total_qty,
     )
 

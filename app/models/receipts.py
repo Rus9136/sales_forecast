@@ -52,5 +52,7 @@ class ReceiptItem(Base):
     dish_sum = Column(Numeric(14, 2), nullable=False, default=0)
     discount_sum = Column(Numeric(14, 2), nullable=False, default=0)
     return_sum = Column(Numeric(14, 2), nullable=False, default=0)
+    cost_price = Column(Numeric(14, 2))
+    food_cost_percent = Column(Numeric(7, 4))
 
     __table_args__ = {"postgresql_partition_by": "RANGE (open_date)"}

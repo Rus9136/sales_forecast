@@ -91,18 +91,29 @@ export function StatsByProductPage() {
       </Card>
 
       {data && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           <div className="kpi">
-            <span className="kpi__label">Общая выручка</span>
+            <span className="kpi__label">Выручка</span>
             <span className="kpi__value">{formatCurrency(data.total_revenue)}</span>
+          </div>
+          <div className="kpi">
+            <span className="kpi__label">Себестоимость</span>
+            <span className="kpi__value">{formatCurrency(data.total_cost)}</span>
+          </div>
+          <div className="kpi">
+            <span className="kpi__label">Маржа</span>
+            <span className="kpi__value">{formatCurrency(data.total_margin)}</span>
+            {data.total_revenue > 0 && (
+              <div className="kpi__foot">
+                <span className="trend trend--pos">
+                  {((data.total_margin / data.total_revenue) * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
           </div>
           <div className="kpi">
             <span className="kpi__label">Продано позиций</span>
             <span className="kpi__value">{Math.round(data.total_items_sold).toLocaleString('ru-RU')}</span>
-          </div>
-          <div className="kpi">
-            <span className="kpi__label">Уникальных блюд</span>
-            <span className="kpi__value">{data.items.length}</span>
           </div>
         </div>
       )}
@@ -122,7 +133,9 @@ export function StatsByProductPage() {
                 <TableHead>Категория</TableHead>
                 <TableHead className="text-right">Продано</TableHead>
                 <TableHead className="text-right">Выручка</TableHead>
-                <TableHead className="text-right">Ср. цена</TableHead>
+                <TableHead className="text-right">Себест.</TableHead>
+                <TableHead className="text-right">Маржа</TableHead>
+                <TableHead className="text-right">FC%</TableHead>
                 <TableHead className="text-right">Чеков</TableHead>
               </TableRow>
             </TableHeader>
@@ -140,7 +153,13 @@ export function StatsByProductPage() {
                   </TableCell>
                   <TableCell className="text-right tabular">{formatCurrency(p.total_sum)}</TableCell>
                   <TableCell className="text-right tabular">
-                    {p.avg_price != null ? formatCurrency(p.avg_price) : '—'}
+                    {p.total_cost != null ? formatCurrency(p.total_cost) : '—'}
+                  </TableCell>
+                  <TableCell className="text-right tabular">
+                    {p.margin != null ? formatCurrency(p.margin) : '—'}
+                  </TableCell>
+                  <TableCell className="text-right tabular text-xs">
+                    {p.avg_food_cost_pct != null ? `${p.avg_food_cost_pct.toFixed(1)}%` : '—'}
                   </TableCell>
                   <TableCell className="text-right tabular">
                     {p.receipts_count.toLocaleString('ru-RU')}

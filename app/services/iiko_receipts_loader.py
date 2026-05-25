@@ -62,6 +62,7 @@ class IikoReceiptsLoaderService:
                 "aggregateFields": [
                     "DishAmountInt", "DishSumInt", "DishDiscountSumInt",
                     "DishReturnSum", "GuestNum",
+                    "ProductCostBase.ProductCost", "ProductCostBase.Percent",
                 ],
                 "filters": {
                     "OpenDate.Typed": {
@@ -160,6 +161,8 @@ class IikoReceiptsLoaderService:
                     "dish_sum": dish_sum,
                     "discount_sum": self._to_float(ln.get("DishDiscountSumInt", 0)),
                     "return_sum": self._to_float(ln.get("DishReturnSum", 0)),
+                    "cost_price": self._to_float(ln.get("ProductCostBase.ProductCost")) or None,
+                    "food_cost_percent": self._to_float(ln.get("ProductCostBase.Percent")) or None,
                     "domain": domain,
                 })
 
@@ -338,6 +341,8 @@ class IikoReceiptsLoaderService:
                             it["dish_sum"],
                             it["discount_sum"],
                             it["return_sum"],
+                            it.get("cost_price"),
+                            it.get("food_cost_percent"),
                         ))
 
                 if item_rows:
@@ -347,11 +352,12 @@ class IikoReceiptsLoaderService:
                         INSERT INTO receipt_item (
                             receipt_id, open_date, product_id, iiko_dish_id,
                             dish_name, dish_code, dish_group, dish_category,
-                            qty, price_per_unit, dish_sum, discount_sum, return_sum
+                            qty, price_per_unit, dish_sum, discount_sum, return_sum,
+                            cost_price, food_cost_percent
                         ) VALUES %s
                         """,
                         item_rows,
-                        template="(%s, %s::date, %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        template="(%s, %s::date, %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     )
                     total_items += len(item_rows)
 

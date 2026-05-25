@@ -11,6 +11,9 @@ export interface ReceiptItem {
   dish_sum: number
   discount_sum: number
   return_sum: number
+  cost_price: number | null
+  food_cost_percent: number | null
+  margin: number | null
 }
 
 export interface Receipt {
@@ -52,8 +55,12 @@ export interface ProductSalesStats {
   total_qty: number
   total_sum: number
   total_discount: number
+  total_cost: number | null
   receipts_count: number
   avg_price: number | null
+  avg_cost: number | null
+  avg_food_cost_pct: number | null
+  margin: number | null
 }
 
 export interface ProductSalesStatsResponse {
@@ -62,5 +69,7 @@ export interface ProductSalesStatsResponse {
   department_id: string | null
   items: ProductSalesStats[]
   total_revenue: number
+  total_cost: number
+  total_margin: number
   total_items_sold: number
 }
