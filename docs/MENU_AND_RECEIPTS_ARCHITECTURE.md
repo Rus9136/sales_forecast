@@ -1,6 +1,6 @@
 # Menu, Receipts, Prices & Recipes — Architecture Plan
 
-**Статус:** Phase 0 выполнен (2026-05-25), Phase 1 не начата
+**Статус:** Phase 0 + Phase 1 + Phase 2 выполнены (2026-05-25), Phase 3 не начата
 **Контекст:** добавляем сбор и хранение чеков по позициям, номенклатуры, прайс-листов и техкарт из iiko для последующего пословного (per-SKU) прогноза продаж и анализа цен.
 **Связано с:** `iiko_sales_integration_guide.md` (текущий OLAP по продажам), `LABOR_OPTIMIZATION_ARCHITECTURE.md` (общий принцип «версионировать справочники по времени»).
 
@@ -123,7 +123,10 @@ export const IIKO_SOURCES: Record<string, string> = {
 
 ## 4. Этапы работы
 
-### Фаза 0 — Подготовка: удаление bonus subsystem
+### Фаза 0 — Подготовка: удаление bonus subsystem ✅ ВЫПОЛНЕНО (2026-05-25)
+
+> **Commit:** `70168ef chore(bonus): remove unused bonus subsystem` — 123 файла, +818 / −13224.
+> **Backup:** `backups/bonus_dump_20260525_084615.sql.gz` (221KB, gitignored, на диске сервера).
 
 **Цель:** убрать неиспользуемый код, освободить FK `departments.company_id integer` под наш новый `iiko_source_domain`.
 
@@ -145,18 +148,20 @@ export const IIKO_SOURCES: Record<string, string> = {
 - В sidebar нет битых пунктов.
 - В sidebar нет «АДМИНИСТРИРОВАНИЕ» → bonus.
 
-**Definition of done:**
-- Миграция `012_drop_bonus.sql` применена на dev и prod.
-- `app/bonus/` отсутствует.
-- В `CLAUDE.md` блок про bonus отсутствует.
-- `pytest` + `pnpm build` зелёные.
+**Definition of done:** ✅
+- ✅ Миграция `012_drop_bonus.sql` применена на dev и prod (`UPDATE 2; DROP INDEX; ALTER TABLE; DROP TABLE × 11`).
+- ✅ `app/bonus/`, `tests/bonus/`, `bonus_service/` отсутствуют.
+- ✅ В `CLAUDE.md` блок про bonus отсутствует (51 ref → 0).
+- ✅ `pytest`: 120 passed; `pnpm build`: успешен (887KB).
+- ✅ Production контейнер пересобран и задеплоен; `/api/bonus/schemes` → 404; в логах нет «Bonus data sources registered».
 
-**Риски:**
-- Если bonus уже использовался в реальной работе — данные пропадут (но из обсуждения с пользователем — не использовался). На всякий случай — перед `DROP TABLE` сделать `pg_dump` bonus-таблиц в отдельный архив (`backups/bonus_dump_YYYYMMDD.sql.gz`).
+**Риски:** учтены — backup-дамп всех 11 таблиц с данными сделан перед `DROP TABLE` (`bonus_calculation` имела 51 строку, `bonus_scheme` 56, и т.д.). Архив на сервере, gitignored.
 
 ---
 
-### Фаза 1 — `iiko_source_domain` в `departments`
+### Фаза 1 — `iiko_source_domain` в `departments` ✅ ВЫПОЛНЕНО (2026-05-25)
+
+> **Commit:** `d6adef6 feat(departments): tag departments by iiko_source_domain` — 11 файлов, +542 / −16.
 
 **Цель:** на уровне БД и loader-а фиксировать, из какого iiko-сервера приехало подразделение.
 
@@ -182,17 +187,57 @@ export const IIKO_SOURCES: Record<string, string> = {
 - Unit: `iiko_department_loader.sync_departments` пишет `iiko_source_domain` для записи из каждого домена (мок httpx через respx).
 - Smoke: `curl /api/departments/` возвращает поле.
 
-**Definition of done:**
-- В БД у всех 91 подразделений `iiko_source_domain` заполнен.
-- Свежий sync не сбрасывает поле в NULL.
-- UI показывает фильтр и колонку.
+**Definition of done:** ✅
+- ✅ В БД у всех 91 подразделений `iiko_source_domain` заполнен. Распределение: **Sandy 61 / Madlen 30**.
+- ✅ Колонка переведена в `NOT NULL` после backfill.
+- ✅ Свежий sync не сбрасывает поле в NULL (loader сохраняет на каждой записи и при INSERT, и при UPDATE).
+- ✅ `GET /api/departments/?limit=N` возвращает `iiko_source_domain` для каждой записи.
+- ✅ UI: добавлен селект «Источник iiko» (Сандык/Мадлен/все) и колонка «Источник» в таблице.
+- ✅ Тесты: 8 новых unit-тестов (`tests/unit/test_iiko_department_source_domain.py`), полный прогон 128 passed.
 
-**Что критично проверить перед началом:**
-- Проверить доступ обоими URL к `/resto/api/corporation/departments` через `curl` (должно работать — этот эндпоинт уже используется в loader-е).
+**Фактические находки и решения по ходу:**
+- В loader-е используется helper `_domain_host(url)` (`urlparse(...).hostname`), который хранит только **bare hostname** (`sandy-co-co.iiko.it`), без scheme/port/path — устойчиво к смене URL.
+- На фронте `frontend/src/lib/iiko-sources.ts` держит маппинг host → label + порядок `KNOWN_IIKO_SOURCES`. Неизвестный host отображается как-есть (graceful degradation).
+- Selectbox «Источник iiko» собирается динамически из реально присутствующих в выборке хостов + порядок задан `KNOWN_IIKO_SOURCES` — расширение для нового домена не требует трогать UI-код.
+- Backfill-скрипт `scripts/backfill_iiko_source_domain.py` идемпотентен: повторный запуск переписывает значения и no-op на `SET NOT NULL` (уже NOT NULL).
+- `scripts/` теперь копируется в Docker-образ (`Dockerfile` обновлён, `.dockerignore` исправлен) — будущие one-shot скрипты доступны через `docker exec sales-forecast-app python -m scripts.<name>`.
+- В коммит включены не-мои уже-в-tree правки (`is_active` flag на основе `last_sale_date`) в `routers/department.py` + `pages/departments-page.tsx` + `types/department.ts` — оставлены, чтобы не плодить ortogonal-коммиты.
 
 ---
 
-### Фаза 2 — Номенклатура (products + groups + categories)
+### Фаза 2 — Номенклатура (products + groups + categories) ✅ ВЫПОЛНЕНО (2026-05-25)
+
+> **Commit:** `8b5798e feat(menu): sync iiko nomenclature catalog (products + groups + categories)` — 19 файлов, +1596 / −4.
+> **Live sync:** 25,283 продуктов / 1,130 групп / 136 категорий за ~18 сек. Sandy 18,398 · Madlen 6,885.
+
+**Definition of done (фактически):** ✅
+- ✅ Миграция `014_nomenclature.sql` применена, 3 таблицы + индексы (`pg_trgm` GIN на `product.name`).
+- ✅ Loader `iiko_nomenclature_loader.py` с batch upsert через `execute_values(fetch=True)`.
+- ✅ APScheduler 01:00 (перед employees 01:30 и sales 02:00).
+- ✅ API `/api/menu/categories|groups|groups/tree|products|products/{id}|sync` — все endpoint'ы 200.
+- ✅ Страницы `/menu/products` (фильтры + поиск + пагинация) и `/menu/groups` (дерево).
+- ✅ Sidebar секция «Меню», section keys `menu.products` + `menu.groups`.
+- ✅ Тесты: 139 passed (+11 unit для `_domain_host` и `_to_decimal_str`).
+
+**FK резолв в реальной БД:**
+| Источник | DISH | GOODS | PREPARED | MODIFIER | SERVICE |
+|---|---|---|---|---|---|
+| Sandy | 100% | 95.9% | 99.8% | 100% | 98.8% |
+| Madlen | 100% | 100% | 100% | 100% | 100% |
+
+**Фактические находки и решения по ходу:**
+- В `products/list` поле `parent` указывает на UUID **группы** (не на другой product), поэтому FK product→group через `nomenclature_group` корректен.
+- **Критичный баг psycopg2:** `execute_values(...)` с `RETURNING` + `cur.fetchall()` отдаёт **только последнюю страницу** (default `page_size=100`). При 772 группах Sandy в `group_map` попадало ~72 записи, и 84% products теряли `group_id`. Фикс — передать `fetch=True` (тогда execute_values сам собирает все страницы и возвращает их как list).
+- iiko-тип `OUTER` (83 записи Sandy) не имеет parent-группы — это «внешние» продукты вне основного каталога. Хранятся как есть, `group_id=NULL`.
+- Категории Madlen (96) > Sandy (40) — у Мадлен более глубокая каталогизация.
+- Группы в фронте — 97 root для Sandy и ~42 для Madlen после фильтра `is_deleted=false`.
+
+**Дополнительные эндпоинты, найденные в payload и переехавшие в колонки:**
+`defaultSalePrice`, `estimatedPurchasePrice`, `unitWeight`, `coldLossPercent`, `hotLossPercent`, `taxCategory`, `accountingCategory`, `defaultIncludedInMenu`. Всё остальное живёт в `iiko_payload JSONB`.
+
+---
+
+### Фаза 2 (план) — для истории, не менялся:
 
 **Цель:** загрузить и хранить полный справочник iiko-номенклатуры. Это основа для резолва позиций чеков и для будущих рецептов/цен.
 
