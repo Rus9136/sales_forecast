@@ -1,6 +1,6 @@
 # Menu, Receipts, Prices & Recipes — Architecture Plan
 
-**Статус:** Phase 0 + Phase 1 + Phase 2 + Phase 3 выполнены (2026-05-25), Phase 4 не начата
+**Статус:** Phase 0–3 + Phase 5.1 выполнены (2026-05-25). Phase 4 пропущена (priceList 404). Phase 5.2–5.4 не начаты.
 **Контекст:** добавляем сбор и хранение чеков по позициям, номенклатуры, прайс-листов и техкарт из iiko для последующего пословного (per-SKU) прогноза продаж и анализа цен.
 **Связано с:** `iiko_sales_integration_guide.md` (текущий OLAP по продажам), `LABOR_OPTIMIZATION_ARCHITECTURE.md` (общий принцип «версионировать справочники по времени»).
 
@@ -491,57 +491,30 @@ CREATE INDEX idx_price_list_product_dept ON price_list_entry(product_id, departm
 
 **Цель:** хранить состав и нормы списания блюд, считать себестоимость позиций чека на дату, начать прогнозировать продажи на уровне SKU.
 
-#### 5.1 Техкарты
+#### 5.1 Техкарты ✅ ВЫПОЛНЕНО (2026-05-25)
 
-**База:** миграция `017_recipes.sql`
-```sql
-CREATE TABLE recipe (
-  id BIGSERIAL PRIMARY KEY,
-  iiko_source_domain TEXT NOT NULL,
-  product_id BIGINT NOT NULL REFERENCES product(id),
-  effective_from DATE NOT NULL,
-  effective_to DATE,
-  output_qty NUMERIC(12,4) NOT NULL,
-  output_unit TEXT,
-  cost_price NUMERIC(14,4),
-  iiko_assembly_chart_id UUID,
-  iiko_payload JSONB,
-  synced_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  UNIQUE (product_id, effective_from),
-  EXCLUDE USING gist (
-    product_id WITH =,
-    daterange(effective_from, COALESCE(effective_to, 'infinity'::date), '[)') WITH &&
-  )
-);
+> **Commit:** `50211cb feat(recipes): Phase 5.1 — assembly charts (tech cards) sync + API + UI` — 11 файлов, +721 / −3.
+> **Live sync:** Sandy 27,431 рецептов / 154,309 ингредиентов + Madlen 3,722 / 16,844 = **31,153 рецепта, 171,153 ингредиентов**.
 
-CREATE TABLE recipe_ingredient (
-  id BIGSERIAL PRIMARY KEY,
-  recipe_id BIGINT NOT NULL REFERENCES recipe(id) ON DELETE CASCADE,
-  ingredient_product_id BIGINT NOT NULL REFERENCES product(id),
-  norm_qty NUMERIC(14,6) NOT NULL,
-  norm_unit TEXT,
-  cold_loss_pct NUMERIC(7,4),
-  hot_loss_pct NUMERIC(7,4)
-);
-CREATE INDEX idx_recipe_ingredient_recipe ON recipe_ingredient(recipe_id);
-CREATE INDEX idx_recipe_ingredient_product ON recipe_ingredient(ingredient_product_id);
-```
+**Definition of done (фактически):** ✅
+- ✅ Миграция `016_recipes.sql` (не 017 — Фаза 4 пропущена): `recipe` + `recipe_ingredient` с FK на `product`, индексы.
+- ✅ Loader `iiko_recipe_loader.py`: bulk fetch через `assemblyCharts/getAll` (Sandy 39 МБ, Madlen 5 МБ), batch upsert `execute_values(fetch=True)`, resolve assembledProductId→product.id (99.9% Sandy, 100% Madlen), delete+insert ингредиентов.
+- ✅ APScheduler: weekly Sun 03:30.
+- ✅ API: `GET /api/menu/products/{id}/recipe` (ингредиенты с резолвом имён), `GET /api/menu/recipes` (список), `POST /api/menu/recipes/sync`.
+- ✅ UI: кнопка «Техкарта» (ChefHat) на каждой строке номенклатуры → диалог с таблицей ингредиентов (брутто / после х/о / нетто).
 
-**Backend:**
-- `app/models/menu.py` — `Recipe`, `RecipeIngredient`.
-- `app/services/iiko_recipe_loader.py`:
-  - `fetch_tree(domain, department_id, from_date, to_date)` → GET `/resto/api/v2/assemblyCharts/getTree`.
-  - `fetch_prepared(domain, product_id, date)` → GET `/resto/api/v2/assemblyCharts/getPrepared` (для точечной донагрузки).
-  - `sync_full()` — раз в неделю проходит по всем активным подразделениям, получает дерево и upsert-ит.
-- `app/routers/menu.py` (расширить):
-  - `GET /api/menu/products/{id}/recipe?date=YYYY-MM-DD` — карта актуальная на дату + список ингредиентов с резолвом названий.
-  - `POST /api/menu/recipes/sync` — ручной триггер.
+**Фактическая схема (отличия от плана):**
+- Natural key = `(iiko_source_domain, iiko_assembly_chart_id)` вместо `(product_id, effective_from)` + EXCLUDE. Причина: iiko отдаёт `id` карты как стабильный UUID, версионирование через `dateFrom`/`dateTo` уже в данных. EXCLUDE constraint не нужен — iiko гарантирует неперекрытие.
+- `amount_in` / `amount_middle` / `amount_out` вместо `norm_qty` + `cold_loss_pct` / `hot_loss_pct`. iiko отдаёт три стадии обработки напрямую (до обработки / после х/о / после т/о), не процент потерь.
+- Модель в `app/models/recipe.py` (отдельный файл), не в `menu.py`.
+- `iiko_payload JSONB` хранит полную карту без массива `items` (ингредиенты в отдельной таблице).
 
-**Scheduler:**
-- Воскресенье 03:30 — `iiko_recipe_loader.sync_full()`.
-
-**Frontend:**
-- На странице SKU detail — вкладка «Техкарта»: список ингредиентов, нормы, потери, расчётная себестоимость.
+**Фактические находки:**
+- `preparedCharts` и `deletedAssemblyChartIds` пусты на обоих доменах (все данные в `assemblyCharts`).
+- 934 из 10,130 Sandy-карт без ингредиентов (пустые заготовки).
+- Sandy: 567 закрытых карт (dateTo != null), 9,563 открытых. Madlen: 373 / 2,308.
+- Ответ `getAll` не зависит от `dateFrom` параметра (отдаёт все карты за всю историю). `dateFrom=2020-01-01` используется формально.
+- 8 из 9,563 Sandy assembledProductId не нашлись в product (удалённые продукты с `includeDeleted=false` при sync номенклатуры? — не критично).
 
 #### 5.2 Cost-аналитика
 
