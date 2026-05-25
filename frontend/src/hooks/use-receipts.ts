@@ -11,6 +11,7 @@ interface ReceiptFilters {
   from_date: string
   to_date: string
   department_id?: string
+  iiko_source_domain?: string
   waiter_name?: string
   min_sum?: number
   limit?: number
@@ -25,6 +26,7 @@ export function useReceipts(filters: ReceiptFilters) {
       params.set('from_date', filters.from_date)
       params.set('to_date', filters.to_date)
       if (filters.department_id) params.set('department_id', filters.department_id)
+      if (filters.iiko_source_domain) params.set('iiko_source_domain', filters.iiko_source_domain)
       if (filters.waiter_name) params.set('waiter_name', filters.waiter_name)
       if (filters.min_sum != null) params.set('min_sum', String(filters.min_sum))
       params.set('limit', String(filters.limit ?? 100))
@@ -48,6 +50,7 @@ export function useProductSalesStats(params: {
   from_date: string
   to_date: string
   department_id?: string
+  iiko_source_domain?: string
   limit?: number
 }) {
   return useQuery<ProductSalesStatsResponse>({
@@ -57,6 +60,7 @@ export function useProductSalesStats(params: {
       qs.set('from_date', params.from_date)
       qs.set('to_date', params.to_date)
       if (params.department_id) qs.set('department_id', params.department_id)
+      if (params.iiko_source_domain) qs.set('iiko_source_domain', params.iiko_source_domain)
       if (params.limit) qs.set('limit', String(params.limit))
       return api.get<ProductSalesStatsResponse>(`/api/receipts/stats/by-product?${qs}`)
     },

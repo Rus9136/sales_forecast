@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -14,21 +22,26 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { useProductSalesStats } from '@/hooks/use-receipts'
+import { KNOWN_IIKO_SOURCES, iikoSourceLabel } from '@/lib/iiko-sources'
 import { daysAgo, toISODate, formatCurrency } from '@/lib/formatters'
+
+const ALL = '__all__'
 
 export function StatsByProductPage() {
   const [fromDate, setFromDate] = useState(daysAgo(7))
   const [toDate, setToDate] = useState(toISODate(new Date()))
-  const [departmentId, setDepartmentId] = useState('__all__')
+  const [departmentId, setDepartmentId] = useState(ALL)
+  const [source, setSource] = useState(ALL)
 
   const params = useMemo(
     () => ({
       from_date: fromDate,
       to_date: toDate,
-      department_id: departmentId === '__all__' ? undefined : departmentId,
+      department_id: departmentId === ALL ? undefined : departmentId,
+      iiko_source_domain: source === ALL ? undefined : source,
       limit: 100,
     }),
-    [fromDate, toDate, departmentId],
+    [fromDate, toDate, departmentId, source],
   )
 
   const { data, isLoading, error } = useProductSalesStats(params)
@@ -57,6 +70,22 @@ export function StatsByProductPage() {
               value={departmentId}
               onChange={setDepartmentId}
             />
+            <div className="space-y-1">
+              <Label className="text-xs">Источник iiko</Label>
+              <Select value={source} onValueChange={setSource}>
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>Все источники</SelectItem>
+                  {KNOWN_IIKO_SOURCES.map((host) => (
+                    <SelectItem key={host} value={host}>
+                      {iikoSourceLabel(host)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>

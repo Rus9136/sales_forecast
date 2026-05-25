@@ -3,7 +3,15 @@ import { RefreshCw, Search, Receipt as ReceiptIcon } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -24,6 +32,7 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { useReceipts, useReceiptDetail, useSyncReceipts } from '@/hooks/use-receipts'
+import { KNOWN_IIKO_SOURCES, iikoSourceLabel } from '@/lib/iiko-sources'
 import {
   daysAgo,
   toISODate,
@@ -32,12 +41,14 @@ import {
   formatDateTime,
 } from '@/lib/formatters'
 
+const ALL = '__all__'
 const PAGE_SIZE = 100
 
 export function ReceiptsPage() {
   const [fromDate, setFromDate] = useState(daysAgo(7))
   const [toDate, setToDate] = useState(toISODate(new Date()))
-  const [departmentId, setDepartmentId] = useState('__all__')
+  const [departmentId, setDepartmentId] = useState(ALL)
+  const [source, setSource] = useState(ALL)
   const [waiterSearch, setWaiterSearch] = useState('')
   const [page, setPage] = useState(0)
 
@@ -48,12 +59,13 @@ export function ReceiptsPage() {
     () => ({
       from_date: fromDate,
       to_date: toDate,
-      department_id: departmentId === '__all__' ? undefined : departmentId,
+      department_id: departmentId === ALL ? undefined : departmentId,
+      iiko_source_domain: source === ALL ? undefined : source,
       waiter_name: waiterSearch.trim() || undefined,
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
     }),
-    [fromDate, toDate, departmentId, waiterSearch, page],
+    [fromDate, toDate, departmentId, source, waiterSearch, page],
   )
 
   const { data: receipts = [], isLoading, error } = useReceipts(filters)
@@ -133,6 +145,22 @@ export function ReceiptsPage() {
               value={departmentId}
               onChange={(v) => { setDepartmentId(v); setPage(0) }}
             />
+            <div className="space-y-1">
+              <Label className="text-xs">Источник iiko</Label>
+              <Select value={source} onValueChange={(v) => { setSource(v); setPage(0) }}>
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>Все источники</SelectItem>
+                  {KNOWN_IIKO_SOURCES.map((host) => (
+                    <SelectItem key={host} value={host}>
+                      {iikoSourceLabel(host)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1">
               <label className="text-xs">Официант</label>
               <div className="relative">

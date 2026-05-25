@@ -71,6 +71,7 @@ def list_receipts(
     from_date: date = Query(..., description="Start date (inclusive)"),
     to_date: date = Query(..., description="End date (inclusive)"),
     department_id: Optional[UUID] = Query(None),
+    iiko_source_domain: Optional[str] = Query(None),
     waiter_name: Optional[str] = Query(None),
     min_sum: Optional[float] = Query(None),
     limit: int = Query(100, le=500),
@@ -84,6 +85,8 @@ def list_receipts(
     )
     if department_id:
         q = q.filter(Receipt.department_id == department_id)
+    if iiko_source_domain:
+        q = q.filter(Department.iiko_source_domain == iiko_source_domain)
     if waiter_name:
         q = q.filter(Receipt.waiter_name.ilike(f"%{waiter_name}%"))
     if min_sum is not None:
@@ -124,15 +127,19 @@ def stats_by_product(
     from_date: date = Query(...),
     to_date: date = Query(...),
     department_id: Optional[UUID] = Query(None),
+    iiko_source_domain: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     db: Session = Depends(get_db),
 ):
     """Top products by revenue for the period."""
     params: dict = {"from_date": from_date, "to_date": to_date, "lim": limit}
-    dept_filter = ""
+    extra_filters = ""
     if department_id:
-        dept_filter = "AND r.department_id = :dept_id"
+        extra_filters += " AND r.department_id = :dept_id"
         params["dept_id"] = str(department_id)
+    if iiko_source_domain:
+        extra_filters += " AND d.iiko_source_domain = :source"
+        params["source"] = iiko_source_domain
 
     sql = text(f"""
         SELECT
@@ -147,8 +154,9 @@ def stats_by_product(
             COUNT(DISTINCT ri.receipt_id) AS receipts_count
         FROM receipt_item ri
         JOIN receipt r ON r.id = ri.receipt_id AND r.open_date = ri.open_date
+        JOIN departments d ON d.id = r.department_id
         WHERE ri.open_date >= :from_date AND ri.open_date <= :to_date
-            {dept_filter}
+            {extra_filters}
         GROUP BY ri.product_id, ri.iiko_dish_id, ri.dish_name, ri.dish_group, ri.dish_category
         ORDER BY total_sum DESC
         LIMIT :lim
