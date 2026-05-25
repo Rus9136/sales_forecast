@@ -32,7 +32,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (7 задач: employees, sales, waiter sales, retrain, metrics, gap check, bonus auto-calc)
+- **Scheduler**: APScheduler (6 задач: employees, sales, waiter sales, retrain, metrics, gap checks)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -100,7 +100,7 @@ sales_forecast/
 │   │   ├── ai_recommendations.py  # AI multi-agent analysis (8 endpoints)
 │   │   ├── forecast/              # ML forecasting package
 │   │   │   ├── __init__.py        # Router aggregation
-│   │   │   ├── core.py            # Retrain, model info, comparison, batch, CSV export
+│   │   │   ├── core.py            # Retrain (global + per-segment), model info, comparison, batch, CSV export
 │   │   │   ├── tuning.py          # Optuna hyperparameter optimization, model comparison
 │   │   │   ├── error_analysis.py  # Error segments, problematic branches, temporal errors
 │   │   │   └── postprocessing.py  # Forecast smoothing, business rules, settings
@@ -278,15 +278,15 @@ CLAUDE_MODEL=claude-sonnet-4-20250514
 ### Системные роли (засеяны при старте)
 | Code | Name | Дефолтные разделы |
 |------|------|-------------------|
-| `admin` | Администратор | все 15 секций (включая `users`, `roles`) |
-| `manager` | Менеджер | departments, employees, sales.*, forecast.*, ai.recommendations, sync |
-| `accountant` | Бухгалтер | departments, employees, sales.daily, sales.waiters, bonus.* |
-| `viewer` | Наблюдатель | sales.daily, sales.hourly, forecast.* |
+| `admin` | Администратор | все 11 секций (включая `users`, `roles`) |
+| `manager` | Менеджер | dashboard, departments, employees, sales.*, forecast.*, ai.recommendations, sync |
+| `accountant` | Бухгалтер | dashboard, departments, employees, sales.daily, sales.waiters |
+| `viewer` | Наблюдатель | dashboard, sales.daily, sales.hourly, forecast.* |
 
 Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
 
-### Section keys (15 шт)
-`departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `bonus.calculations`, `bonus.schemes`, `bonus.manual-kpi`, `bonus.monthly-plans`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`.
+### Section keys (11 шт)
+`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`.
 
 ### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
 - `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
@@ -347,15 +347,20 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/sales/sync-waiters` — Синхронизация продаж по официантам (OLAP)
 - `/api/sales/stats` — Статистика
 - `/api/sales/auto-sync/status` — Статус автозагрузок
-- `/api/forecast/retrain` — Переобучение модели
-- `/api/forecast/batch` — Массовые прогнозы
-- `/api/forecast/comparison` — Сравнение с фактом
-- `/api/forecast/export/csv` — CSV экспорт
+- `/api/forecast/retrain` — Переобучение глобальной модели
+- `/api/forecast/retrain-segmented` — Переобучение per-segment моделей (отдельный LightGBM на каждый segment_type, fallback на global)
+- `/api/forecast/batch` — Массовые прогнозы по дням × подразделениям (без `department_id` скрывает DEPARTMENT без продаж за 30 дней — `INACTIVE_THRESHOLD_DAYS`)
+- `/api/forecast/batch_with_postprocessing` — Прогнозы с применённым post-processing (сглаживание, anomaly detection, confidence intervals)
+- `/api/forecast/comparison` — Сравнение прогноза с фактом (тот же фильтр неактивных точек)
+- `/api/forecast/export/csv` — CSV экспорт прогнозов (с опцией `include_actual=true` для comparison-формата)
 - `/api/forecast/optimize` — Hyperparameter tuning (Optuna)
 - `/api/forecast/compare_models` — Сравнение LightGBM/XGBoost/CatBoost
+- `/api/forecast/model/info` — Метаданные текущей модели (версия, фичи, метрики)
 - `/api/forecast/error-analysis/` — Анализ ошибок по сегментам
-- `/api/forecast/postprocess` — Post-processing прогнозов
+- `/api/forecast/postprocess` — Post-processing одного прогноза (query params, не JSON body)
+- `/api/forecast/postprocess/batch` — Batch post-processing (body — массив, опции — query)
 - `/api/forecast/postprocessing/settings` — Настройки post-processing
+- `/api/forecast/test_smoothing` — Отладка temporal smoothing для одной точки × даты
 - `/api/monitoring/health` — Здоровье модели
 - `/api/monitoring/performance/summary` — Метрики производительности
 - `/api/monitoring/alerts/recent` — Уведомления
@@ -378,7 +383,6 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **04:00** — Daily performance metrics calculation
 - **10:00** — Daily sales gap check
 - **11:00** — Daily waiter sales gap check
-- **5th @ 05:00** — Monthly bonus auto-calculation (draft за прошлый месяц)
 
 ## External Dependencies
 
@@ -443,45 +447,27 @@ curl http://localhost:8002/health
 curl http://localhost:8002/api/monitoring/health
 ```
 
-### Bonus Commands
-```bash
-# Залить справочники (компании, должности, KPI), схемы и KITCHEN-команды
-docker exec sales-forecast-app python -m app.bonus.seeds.run_all
-
-# Список схем
-curl -H "Authorization: Bearer $API_TOKEN" http://localhost:8002/api/bonus/schemes
-
-# Ввести план продаж (для KPI sales_plan)
-curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
-  http://localhost:8002/api/bonus/monthly-plans \
-  -d '{"department_id": "<uuid>", "metric": "sales", "year": 2026, "month": 4, "target_value": "50000000"}'
-
-# Ввести ручной KPI (например, аудит)
-curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
-  http://localhost:8002/api/bonus/manual-kpi \
-  -d '{"department_id": "<uuid>", "kpi_code": "manual_audit", "period_year": 2026, "period_month": 4, "fact_value": "95"}'
-
-# Запустить расчёт за период (всех с активным assignment)
-curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
-  http://localhost:8002/api/bonus/calculations/run \
-  -d '{"department_id": "<uuid>", "year": 2026, "month": 4, "scope": "all"}'
-
-# Список расчётов с итогом
-curl -H "Authorization: Bearer $API_TOKEN" \
-  "http://localhost:8002/api/bonus/calculations?year=2026&month=4&status=draft"
-
-# Утвердить расчёт
-curl -X POST -H "Authorization: Bearer $API_TOKEN" \
-  "http://localhost:8002/api/bonus/calculations/<id>/approve"
-```
-
 ### ML Commands
 ```bash
-# Прогноз для филиала
-curl "http://localhost:8002/api/forecast/2025-07-01/branch-uuid"
+# Прогноз на диапазон (один филиал)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10&department_id=<uuid>"
 
-# Переобучение модели
+# Прогноз на диапазон (все активные филиалы — DEPARTMENT без продаж за 30д исключаются)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
+
+# Прогноз с post-processing (сглаживание, anomaly score, confidence intervals)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8002/api/forecast/batch_with_postprocessing?from_date=2026-05-04&to_date=2026-05-10"
+
+# Переобучение глобальной модели
 curl -X POST http://localhost:8002/api/forecast/retrain
+
+# Переобучение per-segment моделей (по segment_type)
+curl -X POST http://localhost:8002/api/forecast/retrain-segmented \
+  -H "Content-Type: application/json" \
+  -d '{"days": 365}'
 
 # Hyperparameter tuning (Optuna)
 curl -X POST "http://localhost:8002/api/forecast/optimize" \
@@ -531,98 +517,6 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 - **Weekend Logic**: PostgreSQL DOW конвертация `postgres_dow = (python_dow + 1) % 7`
 - **Temporal Smoothing**: +-50% ограничение от среднего по дню недели за 4 недели
 - **Hybrid Forecasting**: Short-term (1-7 days, MAPE 5-15%) / Long-term (8+ days, MAPE 15-25%)
-
-## Bonus Subsystem
-
-Подсистема расчёта KPI-бонусов сотрудников. Находится в `app/bonus/`, переиспользует `departments`/`employees`/`sales_by_waiter` из основного приложения.
-
-### Архитектура
-- **Слои**: API (`routers/`) → Service (`services/`) → Repository (`repositories/`) → Model + Calculator (`calculator/`) → Data sources (`data_sources/`)
-- **Calculator engine** — чистая логика без БД. 5 моделей расчёта зарегистрированы через `@register_model`:
-  - `flat_by_kpi` — KPI → грейд → фикс. сумма (Управляющий)
-  - `revenue_percent_by_kpi` — KPI → ставка × выручка (Менеджер, Официант)
-  - `revenue_direct` — выручка × фикс. % (Кассир, Старший бариста)
-  - `combined_products` — выручка по компонентам с разными ставками (Бариста)
-  - `team_revenue_by_kpi` — коллективный (KITCHEN с распределением по слотам)
-- **Data sources** — 19 источников зарегистрированы в `DataSourceRegistry`. Реальные читают из `sales_by_waiter`/`sales_summary`. Заглушки: ready/prepared products, CRM-отзывы, HR-укомплектованность (через `bonus_manual_kpi`)
-- **Versioning** — схемы (`bonus_scheme`) и слоты команд (`bonus_team_position`) версионируются через `effective_from`/`effective_to`
-- **Snapshots** — каждый `bonus_calculation` сохраняет `scheme_config_snapshot`, `kpi_values`, `breakdown` (JSONB) для аудита
-
-### Database tables (12)
-- `bonus_company` — юрлица
-- `bonus_position` — должности с маппингом `iiko_role_code` → `employees.main_role_code`
-- `bonus_team`, `bonus_team_position` — команды (KITCHEN) и слоты с весами
-- `bonus_kpi_definition` — справочник KPI
-- `bonus_monthly_plan` — планы продаж/рентабельности/норма смен
-- `bonus_employee_assignment` — назначения сотрудника на должность/слот
-- `bonus_scheme` — схемы расчёта (department × position/team)
-- `bonus_manual_kpi` — ручной ввод KPI (аудит, отзывы, укомплектованность)
-- `bonus_calculation`, `bonus_calculation_penalty` — расчёты + удержания
-- `departments.company_id` — добавлено к `departments` для связи с юрлицом
-
-### API endpoints (под `/api/bonus/`)
-- `GET /companies` `/positions` `/kpi-definitions` `/config/calculation-models` `/config/data-sources`
-- `GET /schemes` `/schemes/{id}`, `POST /schemes`, `POST /schemes/validate`
-- `GET /teams` `/teams/{id}`
-- `GET/POST /manual-kpi`, `DELETE /manual-kpi/{id}`
-- `GET/POST /monthly-plans`
-- `POST /calculations/run` (`scope: all|employee:<uuid>|position:<code>`)
-- `GET /calculations` `/calculations/{id}`
-- `POST /calculations/{id}/penalties` `/approve` `/reject`
-- `GET /reports/summary?year=&month=`
-
-### Frontend pages (`/bonus/*`)
-- `/bonus/calculations` — список расчётов, batch-запуск, детали с breakdown, approve/reject
-- `/bonus/schemes` — список схем по department, просмотр config (JSONB)
-- `/bonus/manual-kpi` — таблица + форма ввода KPI
-- `/bonus/monthly-plans` — таблица + форма планов
-
-### Tests
-53 unit-теста в `tests/bonus/`:
-- `test_kpi_engine.py` — score/overall (TC-50..52)
-- `test_grading.py` — find_grade с ceil-rounding (TC-60..61)
-- `test_calculation_models.py` — все 5 моделей с числами из `bonus_service/bonus_docs/10-testing.md`
-
-```bash
-docker exec sales-forecast-app python -m pytest tests/bonus/ -v
-```
-
-### Документация моделей
-Полная спецификация в `bonus_service/bonus_docs/`. Конфиги локаций — `07-config-examples.md`. Числовые тест-кейсы — `10-testing.md`.
-
-### Правила доработки bonus subsystem
-
-**❌ НЕЛЬЗЯ:**
-- Хардкодить ставки/проценты/грейды в Python — всё через БД (`bonus_scheme.config` JSONB) и seeds
-- Делать отдельные таблицы под конкретное подразделение (`KitchenDistribution`, `BarStaff`) — использовать `bonus_team` + `bonus_team_position`
-- Звать iiko/TCO/CRM напрямую из калькулятора или service — только через `DataSourceRegistry`
-- Использовать `float` для денег и процентов — только `Decimal` (см. `app/bonus/utils/decimal_utils.py`)
-- Удалять `bonus_scheme` записи — версионировать через `effective_to` (старая закрывается, новая создаётся с `version+1`)
-- Изменять старые `bonus_calculation` со статусом `approved`/`paid` — перерасчёт даёт новую запись со статусом `recalculated`
-
-**✅ ОБЯЗАТЕЛЬНО:**
-- Сохранять снапшот при расчёте (`scheme_config_snapshot`, `kpi_values`, `breakdown` JSONB) — для аудита через 6 месяцев
-- Валидировать `bonus_scheme.config` через Pydantic-схему модели расчёта при сохранении (`SchemeService.create()`)
-- Возвращать `BonusBreakdown` с детализацией: KPI значения → грейд → ставка → выручка → смены → итог
-- Поддерживать proration по сменам там, где `apply_shifts_proration: true` в config
-- Логировать каждый расчёт с разбивкой через `app.logging_config`
-
-**Точность Decimal в БД:**
-- Деньги — `DECIMAL(14, 2)` (тенге с тиынами)
-- Проценты-доли — `DECIMAL(8, 6)` (`0.000700` хранится точно — это 0.07%)
-- Грейды (5..100) — `DECIMAL(5, 2)`
-- Веса слотов команды — `DECIMAL(8, 6)` (распределение KITCHEN)
-
-**Добавление новой модели расчёта:**
-1. Создать `app/bonus/calculator/models/<name>.py` с классом, унаследованным от `BaseBonusModel`
-2. Декоратор `@register_model('<code>')` — попадает в `CALCULATION_MODELS` registry
-3. Создать Pydantic-схему конфига в `app/bonus/schemas/calc_configs/<name>.py` и зарегистрировать в `CONFIG_VALIDATORS`
-4. Добавить тесты в `tests/bonus/test_calculation_models.py` с конкретными числами
-
-**Добавление нового источника данных:**
-1. Создать класс, унаследованный от `BonusDataSource`, с `code = '<name>'` и методом `fetch(db, params)`
-2. Зарегистрировать в `app/bonus/data_sources/bootstrap.py` через `DataSourceRegistry.register(...)`
-3. Можно ссылаться на новый код в `bonus_scheme.config["revenue_source"]` или `kpis[*].source`
 
 ## AI Recommendations Subsystem
 
@@ -674,6 +568,68 @@ docker exec sales-forecast-app python -m pytest tests/bonus/ -v
 1. **Payroll/Staffing**: заполнить `payroll` секцию в `data_collector.collect_dashboard_data()` (например, через `sales_by_waiter` + смены из новой таблицы или подключение к hr-miniapp DB на 5437)
 2. **Reputation**: подключиться к `reviews-parser` (порт 8004) и заполнить `reviews` секцию
 3. В `multi_agent_system.AGENTS` поменять `enabled=False` на `True` — оркестратор сам подхватит. Промпты уже в `DEFAULT_PROMPTS`.
+
+## Labor Optimization (Schedule Generation)
+
+Подсистема оптимизации ФОТ через AI: на основе прогноза продаж генерируется график работы сотрудников на неделю/месяц. **Статус: дизайн (2026-05-02), реализация не начата.** Полная архитектура — [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md).
+
+### Ключевое архитектурное решение
+
+**Solver (генерация графика) живёт в сервисе «Учет рабочего времени», не здесь.** Принцип data gravity: ~80% входов солвера (сотрудники, ставки, ФОТ, отпуска, фактическое посещение, ТК, календарь, утверждение) — в Time Tracking. Sales Forecast — поставщик сигнала спроса + LLM-надстройка.
+
+### Что остаётся в Sales Forecast
+
+| Компонент | Назначение |
+|---|---|
+| LightGBM прогноз (уже есть) | Источник `forecast_revenue` по часам |
+| Таблица `labor_norms` (TODO) | Нормативы труда: revenue/checks per role per hour, версионируется через `effective_from/to` |
+| `forecast_to_demand()` (TODO) | Конвертация прогноза в потребность по ролям |
+| `GET /api/labor-demand` (TODO) | Отдача сигнала спроса для Time Tracking (hourly demand by role + confidence + версии моделей) |
+| `POST /api/ai/review-schedule` (TODO) | LLM-разбор предложенного графика → warnings + narrative + suggested edits |
+| `POST /api/ai/edit-schedule` (TODO) | LLM-редактирование графика командой на естественном языке → JSON-патчи |
+| Multi-agent расширение (TODO) | `DemandForecastAgent`, `ScheduleReviewerAgent`, `ScheduleNarrativeAgent`, `ScheduleEditorAgent` в `app/services/ai/multi_agent_system.py` |
+| UI `/labor-norms` (TODO) | Управляющий выверяет нормативы для своей локации |
+
+### Что строится в Time Tracking (НЕ здесь)
+
+- **Solver (OR-Tools CP-SAT)** — генерация графика из (demand + employees + constraints) с минимизацией ФОТ
+- Календарь UI с drag-and-drop редактированием
+- Workflow утверждения (Draft → On Review → Approved → Published)
+- Хранение сотрудников / ставок / ФОТ (из 1С)
+- Отпуска / больничные / доступность / фактическое посещение
+- ТК-ограничения РК как constraints солвера
+- Уведомления сотрудникам при публикации
+
+### Поток end-to-end
+
+1. Управляющий в Time Tracking жмёт «Сгенерировать график на неделю»
+2. Time Tracking → `GET /api/labor-demand` → получает hourly demand by role
+3. Time Tracking прогоняет солвер → optimal schedule
+4. Time Tracking → `POST /api/ai/review-schedule` → получает AI-разбор
+5. UI показывает график + AI warnings + кнопки [Утвердить] [Редактировать]
+6. (опционально) Управляющий пишет команду → `POST /api/ai/edit-schedule` → патчи → пере-прогон солвера
+7. [Утвердить] → публикация + уведомления
+
+### Правила доработки
+
+**❌ НЕЛЬЗЯ:**
+- Создавать в Sales Forecast таблицы `shifts`, `payroll_records`, `employee_vacations` — это всё в Time Tracking
+- Реализовывать здесь логику OR-Tools / constraint solving / TК-валидацию
+- Отдавать через `/labor-demand` уже сгенерированный график — только сигнал спроса
+- Хардкодить нормативы в Python — только через таблицу `labor_norms` (со scope: per-department / per-segment / global fallback)
+
+**✅ ОБЯЗАТЕЛЬНО:**
+- Версионировать нормативы через `effective_from/to` (старые не удалять — нужны для воспроизводимости старых анализов)
+- В `/labor-demand` всегда возвращать `norms_version` и `forecast_model_version` — Time Tracking логирует их в audit графика
+- Для LLM-эндпоинтов использовать structured output (Claude `tool_use` / OpenAI `json_schema`) — патчи и warnings должны автоматически применяться солвером
+- Prompt caching для контекста подразделения (15-30k токенов константа per request)
+
+### Что критично уточнить с командой Time Tracking
+
+- Стек (Python → OR-Tools идеально; .NET → OR-Tools binding или Gurobi; 1С → отдельный микросервис рядом)
+- Service-to-service auth (API key / JWT / mTLS)
+- Кто инициирует генерацию: UI / cron / push от Sales Forecast
+- За сколько дней до недели нужен утверждённый график — от этого зависит cron cadence
 
 ## Deployment (Production)
 

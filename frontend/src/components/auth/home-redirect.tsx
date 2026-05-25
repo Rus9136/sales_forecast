@@ -11,10 +11,6 @@ const SECTION_TO_PATH: Record<SectionKey, string> = {
   'sales.waiters': '/sales/waiters',
   'forecast.branches': '/forecast/branches',
   'forecast.comparison': '/forecast/comparison',
-  'bonus.calculations': '/bonus/calculations',
-  'bonus.schemes': '/bonus/schemes',
-  'bonus.manual-kpi': '/bonus/manual-kpi',
-  'bonus.monthly-plans': '/bonus/monthly-plans',
   'ai.recommendations': '/ai-recommendations',
   'sync': '/sync',
   'users': '/users',
@@ -25,7 +21,6 @@ const PRIORITY: SectionKey[] = [
   'dashboard',
   'departments', 'sales.daily', 'sales.hourly', 'sales.waiters',
   'forecast.branches', 'forecast.comparison',
-  'bonus.calculations', 'bonus.schemes', 'bonus.manual-kpi', 'bonus.monthly-plans',
   'ai.recommendations', 'employees', 'sync', 'users', 'roles',
 ]
 

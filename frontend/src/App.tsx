@@ -16,10 +16,6 @@ import { WaiterSalesPage } from '@/pages/waiter-sales-page'
 import { ForecastBranchPage } from '@/pages/forecast-branch-page'
 import { ForecastComparisonPage } from '@/pages/forecast-comparison-page'
 import { SyncPage } from '@/pages/sync-page'
-import { BonusCalculationsPage } from '@/pages/bonus-calculations-page'
-import { BonusSchemesPage } from '@/pages/bonus-schemes-page'
-import { BonusManualKpiPage } from '@/pages/bonus-manual-kpi-page'
-import { BonusMonthlyPlansPage } from '@/pages/bonus-monthly-plans-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
 import { UsersPage } from '@/pages/users-page'
 import { RolesPage } from '@/pages/roles-page'
@@ -72,18 +68,6 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="sync" />}>
                     <Route path="/sync" element={<SyncPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="bonus.calculations" />}>
-                    <Route path="/bonus/calculations" element={<BonusCalculationsPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="bonus.schemes" />}>
-                    <Route path="/bonus/schemes" element={<BonusSchemesPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="bonus.manual-kpi" />}>
-                    <Route path="/bonus/manual-kpi" element={<BonusManualKpiPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="bonus.monthly-plans" />}>
-                    <Route path="/bonus/monthly-plans" element={<BonusMonthlyPlansPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="ai.recommendations" />}>
                     <Route path="/ai-recommendations" element={<AIRecommendationsPage />} />

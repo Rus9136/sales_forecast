@@ -18,7 +18,6 @@ import { useDailySales, useSalesHeatmap } from '@/hooks/use-sales'
 import { useForecastComparison } from '@/hooks/use-forecast'
 import { useWaiterSales } from '@/hooks/use-waiter-sales'
 import { useDepartments } from '@/hooks/use-departments'
-import { useBonusReportSummary } from '@/hooks/use-bonus'
 import { Sparkline } from '@/components/shared/sparkline'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
@@ -124,13 +123,6 @@ export function DashboardPage() {
   prevFromD.setDate(prevFromD.getDate() - (config.days - 1))
   const prevFrom = toISODate(prevFromD)
 
-  // Bonus fund — current month
-  const bonusYear = today.getFullYear()
-  const bonusMonth = today.getMonth() + 1
-  const prevMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1)
-  const prevBonusYear = prevMonthDate.getFullYear()
-  const prevBonusMonth = prevMonthDate.getMonth() + 1
-
   // Queries
   const dailyCur = useDailySales({ from_date: fromDate, to_date: toDate })
   const dailyPrev = useDailySales({ from_date: prevFrom, to_date: prevTo })
@@ -138,8 +130,6 @@ export function DashboardPage() {
   const heatmap = useSalesHeatmap({ from_date: fromDate, to_date: toDate })
   const waiterSales = useWaiterSales({ from_date: fromDate, to_date: toDate })
   const departments = useDepartments(true)
-  const bonusCur = useBonusReportSummary({ year: bonusYear, month: bonusMonth })
-  const bonusPrev = useBonusReportSummary({ year: prevBonusYear, month: prevBonusMonth })
 
   const isLoading =
     dailyCur.isLoading ||
@@ -189,15 +179,6 @@ export function DashboardPage() {
     return set.size
   }, [dailyPrev.data])
 
-  const bonusFundCur = useMemo(
-    () => (bonusCur.data ?? []).reduce((s, r) => s + Number(r.total || 0), 0),
-    [bonusCur.data],
-  )
-  const bonusFundPrev = useMemo(
-    () => (bonusPrev.data ?? []).reduce((s, r) => s + Number(r.total || 0), 0),
-    [bonusPrev.data],
-  )
-
   const delta = (cur: number, prev: number): number | null => {
     if (!prev) return null
     return ((cur - prev) / prev) * 100
@@ -226,13 +207,6 @@ export function DashboardPage() {
       delta: delta(activeBranchesCur, activeBranchesPrev),
       spark: sparkSlice,
       hint: 'vs пред. период',
-    },
-    {
-      label: 'Бонусный фонд (тек. месяц)',
-      value: fmtKZT(bonusFundCur),
-      delta: delta(bonusFundCur, bonusFundPrev),
-      spark: sparkSlice,
-      hint: 'vs пред. месяц',
     },
   ]
 
@@ -320,7 +294,6 @@ export function DashboardPage() {
   const handleRefresh = () => {
     void qc.invalidateQueries({ queryKey: ['sales'] })
     void qc.invalidateQueries({ queryKey: ['forecast'] })
-    void qc.invalidateQueries({ queryKey: ['bonus'] })
     void qc.invalidateQueries({ queryKey: ['departments'] })
   }
 

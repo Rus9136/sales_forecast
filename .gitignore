@@ -149,6 +149,7 @@ Thumbs.db
 .env.exchange
 screenshots/
 backup/
+backups/
 
 # API Keys and sensitive data (do not commit)
 create_api_key.py
