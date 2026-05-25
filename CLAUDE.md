@@ -56,14 +56,16 @@ sales_forecast/
 │   │   │   ├── forecast.ts        # BatchForecast, ForecastComparison
 │   │   │   ├── sync.ts            # AutoSyncLog, SyncStatusResponse
 │   │   │   ├── waiter.ts          # Employee, SalesByWaiter, WaiterSyncResult
-│   │   │   └── ai.ts              # AIProvider, AIAnalyzeRequest, AIPromptInfo, AIAnalysisDetail
+│   │   │   ├── ai.ts              # AIProvider, AIAnalyzeRequest, AIPromptInfo, AIAnalysisDetail
+│   │   │   └── receipts.ts        # Receipt, ReceiptItem, ReceiptDetail, ProductSalesStats
 │   │   ├── hooks/
 │   │   │   ├── use-departments.ts    # CRUD + sync mutations
 │   │   │   ├── use-sales.ts          # Daily + hourly queries
 │   │   │   ├── use-forecast.ts       # Batch, comparison, retrain
 │   │   │   ├── use-sync.ts           # Auto-sync status, manual sync
 │   │   │   ├── use-waiter-sales.ts   # Employees + waiter sales queries / mutations
-│   │   │   └── use-ai-recommendations.ts # 7 хуков: providers/prompts/history/analyze/rerun
+│   │   │   ├── use-ai-recommendations.ts # 7 хуков: providers/prompts/history/analyze/rerun
+│   │   │   └── use-receipts.ts       # Receipts list/detail, product sales stats, sync
 │   │   ├── components/
 │   │   │   ├── ui/                # shadcn/ui primitives (Tabs, Textarea, и др.)
 │   │   │   ├── layout/            # AppLayout, Sidebar (5 секций навигации)
@@ -76,7 +78,10 @@ sales_forecast/
 │   │       ├── forecast-branch-page.tsx   # Прогнозы по филиалам
 │   │       ├── forecast-comparison-page.tsx # LineChart + сортируемая таблица + ошибка
 │   │       ├── sync-page.tsx              # Статус-карточки + ручная синхронизация
-│   │       └── ai-recommendations-page.tsx # Мультиагентный анализ + редактор промптов + история
+│   │       ├── ai-recommendations-page.tsx # Мультиагентный анализ + редактор промптов + история
+│   │       └── receipts/
+│   │           ├── receipts-page.tsx      # Журнал чеков + диалог деталей
+│   │           └── stats-by-product-page.tsx # Топ блюд по выручке
 │   ├── vite.config.ts             # Proxy /api→:8002, build→dist
 │   ├── tsconfig.json              # TypeScript 6, paths: @/→src/
 │   ├── package.json               # pnpm, React 19, Vite 8
@@ -104,6 +109,7 @@ sales_forecast/
 │   │   │   ├── tuning.py          # Optuna hyperparameter optimization, model comparison
 │   │   │   ├── error_analysis.py  # Error segments, problematic branches, temporal errors
 │   │   │   └── postprocessing.py  # Forecast smoothing, business rules, settings
+│   │   ├── receipts.py            # Receipts list/detail, stats by product, sync
 │   │   └── monitoring.py          # Model health, performance, alerts
 │   ├── models/                    # SQLAlchemy models (16 моделей, разделены по файлам)
 │   │   ├── __init__.py            # Re-exports all models for mapper registration
@@ -113,10 +119,12 @@ sales_forecast/
 │   │   ├── ml.py                  # ModelVersion, ModelRetrainingLog
 │   │   ├── employee.py            # Employee, SalesByWaiter
 │   │   ├── ai.py                  # AIRecommendation, AIPromptLog, AIPrompt
+│   │   ├── receipts.py            # Receipt, ReceiptItem (partitioned by open_date)
 │   │   └── branch.py              # Branch, Sale (legacy) + backward-compat re-exports
 │   ├── schemas/
 │   │   ├── branch.py              # Pydantic schemas (18 схем)
-│   │   └── ai.py                  # AnalyzeRequest/Response, HistoryItem, PromptInfo, RerunAgentRequest
+│   │   ├── ai.py                  # AnalyzeRequest/Response, HistoryItem, PromptInfo, RerunAgentRequest
+│   │   └── receipts.py            # Receipt/Item/Detail/SyncResponse, ProductSalesStats
 │   ├── agents/
 │   │   └── sales_forecaster_agent.py  # LightGBM agent
 │   └── services/
@@ -127,6 +135,8 @@ sales_forecast/
 │       ├── iiko_waiter_sales_loader.py   # Per-waiter sales OLAP + name→employee_id resolve
 │       ├── scheduled_sales_loader.py     # Auto-sync scheduler wrapper (sales + gap check)
 │       ├── scheduled_waiter_loader.py    # Scheduler wrappers for employees + waiter sales
+│       ├── iiko_receipts_loader.py       # Receipts OLAP sync (DishId→product, batch upsert)
+│       ├── scheduled_receipts_loader.py  # Scheduler wrappers for receipts sync + gap check
 │       ├── branch_loader.py              # Branch loading
 │       ├── training_service.py           # ML data preparation + feature engineering
 │       ├── hyperparameter_tuning_service.py  # Optuna integration
@@ -170,7 +180,7 @@ sales_forecast/
 - **Recharts 3** — графики (BarChart, LineChart)
 - **pnpm** — пакетный менеджер
 
-### Роутинг (8 страниц)
+### Роутинг (12 страниц)
 | Путь | Страница | API |
 |------|----------|-----|
 | `/departments` | Подразделения (CRUD + фильтры) | GET/POST/PUT/DELETE `/api/departments/` |
@@ -179,6 +189,10 @@ sales_forecast/
 | `/sales/waiters` | Продажи по официантам + ручной sync | GET `/api/sales/by-waiter`, POST `/api/sales/sync-waiters`, POST `/api/employees/sync` |
 | `/forecast/branches` | Прогноз по филиалам | GET `/api/forecast/batch` |
 | `/forecast/comparison` | Сравнение факт/прогноз + LineChart | GET `/api/forecast/comparison` |
+| `/menu/products` | Номенклатура (фильтры + поиск) | GET `/api/menu/products`, POST `/api/menu/sync` |
+| `/menu/groups` | Группы номенклатуры (дерево) | GET `/api/menu/groups/tree` |
+| `/receipts` | Журнал чеков + диалог деталей | GET `/api/receipts`, GET `/api/receipts/{id}` |
+| `/receipts/stats` | Продажи по блюдам (топ) | GET `/api/receipts/stats/by-product` |
 | `/sync` | Синхронизация данных | POST `/api/sales/sync`, GET `/api/sales/auto-sync/status` |
 | `/ai-recommendations` | Мультиагентный анализ (Sales/Optimization/Narrative) + редактор промптов + история | `/api/ai-recommendations/*` (8 endpoints) |
 
@@ -285,8 +299,8 @@ CLAUDE_MODEL=claude-sonnet-4-20250514
 
 Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
 
-### Section keys (11 шт)
-`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`.
+### Section keys (16 шт)
+`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`. Системные роли автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`).
 
 ### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
 - `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
@@ -322,15 +336,17 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 
 ## Key Components
 
-### Database Models (16 моделей в `app/models/`)
+### Database Models (21 модель в `app/models/`)
 | Файл | Модели | Описание |
 |------|--------|----------|
-| `department.py` | Department | Подразделения, организации, сегменты |
+| `department.py` | Department | Подразделения, организации, сегменты, iiko_source_domain |
 | `sales.py` | SalesSummary, SalesByHour, AutoSyncLog | Продажи и логи синхронизации |
 | `forecast.py` | Forecast, ForecastAccuracyLog, PostprocessingSettings | Прогнозы и настройки |
 | `ml.py` | ModelVersion, ModelRetrainingLog | Версии моделей и логи переобучения |
 | `employee.py` | Employee, SalesByWaiter | Каталог сотрудников iiko + продажи по официантам |
 | `ai.py` | AIRecommendation, AIPromptLog, AIPrompt | Запуски AI-анализа, аудит промптов, шаблоны |
+| `menu.py` | NomenclatureCategory, NomenclatureGroup, Product | Каталог номенклатуры iiko (категории, группы, товары) |
+| `receipts.py` | Receipt, ReceiptItem | Чеки + позиции (партиционировано по open_date) |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -372,17 +388,30 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/ai-recommendations/prompts` — GET/PUT шаблонов промптов (DB > default)
 - `/api/ai-recommendations/rerun-agent` — Перезапуск одного агента в существующем анализе (POST)
 - `/api/ai-recommendations/providers` — Информация о настроенных AI-провайдерах
+- `/api/menu/categories` — Категории номенклатуры
+- `/api/menu/groups` — Группы номенклатуры (flat)
+- `/api/menu/groups/tree` — Группы (дерево)
+- `/api/menu/products` — Продукты (фильтры: search, source, group, category, type + пагинация)
+- `/api/menu/products/{id}` — Детали продукта
+- `/api/menu/sync` — Синхронизация каталога номенклатуры (POST)
+- `/api/receipts` — Чеки (фильтры: from_date, to_date, department_id, waiter_name, min_sum + пагинация)
+- `/api/receipts/{id}?open_date=` — Детали чека с позициями (open_date для partition pruning)
+- `/api/receipts/stats/by-product` — Топ блюд по выручке (from_date, to_date, department_id, limit)
+- `/api/receipts/sync` — Синхронизация чеков из iiko OLAP (POST, from_date, to_date)
 - `/` — React SPA (fallback: Jinja2 admin.html)
 - `/health` — Health check
 
 ### Scheduled Tasks (APScheduler via lifespan)
+- **01:00** — Daily nomenclature catalog sync (products + groups + categories)
 - **01:30** — Daily employees catalog sync (iiko XML)
 - **02:00** — Daily sales auto-sync
+- **02:15** — Daily receipts sync (per-dish OLAP)
 - **02:30** — Daily waiter sales sync (per-waiter OLAP)
 - **03:00 Sun** — Weekly model retraining
 - **04:00** — Daily performance metrics calculation
 - **10:00** — Daily sales gap check
 - **11:00** — Daily waiter sales gap check
+- **11:30** — Daily receipts gap check
 
 ## External Dependencies
 

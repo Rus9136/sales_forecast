@@ -1,6 +1,6 @@
 # Menu, Receipts, Prices & Recipes — Architecture Plan
 
-**Статус:** Phase 0 + Phase 1 + Phase 2 выполнены (2026-05-25), Phase 3 не начата
+**Статус:** Phase 0 + Phase 1 + Phase 2 + Phase 3 выполнены (2026-05-25), Phase 4 не начата
 **Контекст:** добавляем сбор и хранение чеков по позициям, номенклатуры, прайс-листов и техкарт из iiko для последующего пословного (per-SKU) прогноза продаж и анализа цен.
 **Связано с:** `iiko_sales_integration_guide.md` (текущий OLAP по продажам), `LABOR_OPTIMIZATION_ARCHITECTURE.md` (общий принцип «версионировать справочники по времени»).
 
@@ -336,120 +336,94 @@ CREATE INDEX idx_product_name_trgm ON product USING gin (name gin_trgm_ops);
 
 ---
 
-### Фаза 3 — Чеки + позиции
+### Фаза 3 — Чеки + позиции ✅ ВЫПОЛНЕНО (2026-05-25)
 
-**Цель:** хранить полные чеки с позициями (блюдо/qty/price/discount), идемпотентно синхронизировать.
+> **Commit:** `8cd869f feat(receipts): Phase 3 — partitioned receipt/receipt_item tables with iiko OLAP sync` — 21 файл, +1848 / −6.
+> **Live sync (1 день, 2026-05-24):** Sandy 2,503 чеков / 12,425 позиций + Madlen 1,789 / 5,102 = **4,292 чека, 17,527 позиций**, 100% product resolution.
 
-**База:** миграция `015_receipts.sql`
+**Definition of done (фактически):** ✅
+- ✅ Миграция `015_receipts.sql` применена: партиционированные `receipt` + `receipt_item` (36 месячных партиций 2025-01..2027-12), 5 индексов.
+- ✅ Loader `iiko_receipts_loader.py`: расширенный OLAP с `DishId`/`DishName`/`DishCode`/`DishGroup`/`DishCategory`, batch upsert через `execute_values(fetch=True)`, resolve DishId→product.id и WaiterName→employee.id.
+- ✅ APScheduler: daily sync 02:15, gap check 11:30.
+- ✅ API: `GET /api/receipts` (фильтры + пагинация), `GET /api/receipts/{id}?open_date=` (позиции), `GET /api/receipts/stats/by-product` (топ блюд), `POST /api/receipts/sync`.
+- ✅ Frontend: журнал чеков `/receipts` (фильтры + диалог деталей) и продажи по блюдам `/receipts/stats` (KPI + таблица).
+- ✅ Sidebar секция «Чеки», section keys `receipts.list` + `receipts.stats`.
+- ✅ Nginx: `proxy_read_timeout 300s` для `/api/receipts/sync`.
+- ✅ Тесты: 10 unit-тестов (парсинг OLAP, группировка, дробные qty, _to_float, _domain_host).
+- ✅ Partition pruning подтверждён через `EXPLAIN`: запрос по 1 дню сканирует только `receipt_2026_05`.
+- ✅ Идемпотентность: повторный sync не дублирует записи (upsert ON CONFLICT работает).
+
+**Фактические находки и решения по ходу:**
+
+- **`DishAmountInt` — НЕ int!** Madlen: сотни дробных значений (0.24, 1.168, 1.674 — весовые позиции). Sandy: 16 из 12k. Тип `qty` → `NUMERIC(12,3)`, не INTEGER.
+- **`DishSumInt` — в тенге** (целых), итого за позицию (price × qty). `price_per_unit` вычисляется как `dish_sum / qty` при вставке.
+- **Поле оплаты — `PayTypes`** (не `PaymentTypes`). НЕ включено в groupBy основного запроса — иначе позиции дублируются при split-платежах. Оставлено на Phase 5+.
+- **`PriceCategory`** из плана — не включено, избыточно для MVP.
+- **Employees без `iiko_source_domain`**: таблица `employees` не имеет колонки домена (мерж по UUID между доменами). Lookup по имени делается без фильтра по домену.
+- **FK receipt_item → receipt** опущен в пользу application-level consistency. Причина: composite FK `(receipt_id, open_date) REFERENCES receipt(id, open_date)` через партиционированные таблицы создаёт overhead при bulk DELETE+INSERT items.
+- **FK receipt.department_id, receipt.waiter_employee_id, receipt_item.product_id** — указаны в DDL миграции, но не в SQLAlchemy model (partitioned tables + SQLAlchemy ORM = лишние проблемы с mapper). Constraint enforcement — на уровне PostgreSQL.
+- **`menu_reconciliation.py`** из плана — не реализован. При 100% product resolution (все DishId совпали с product.iiko_product_id) — reconciliation job не нужен. Если в будущем появятся NULL product_id — добавить.
+- **`scripts/create_receipt_partitions.py`** — создаёт партиции на 6 месяцев вперёд, идемпотентен. Пока НЕ подключён к APScheduler (достаточно 36 партиций до 2027-12). Подключить при необходимости.
+- **Объём OLAP-ответа**: Sandy 6.4 МБ + Madlen 2.8 МБ за 1 день — httpx timeout 180s достаточен. Чанкинг по подразделениям не нужен.
+
+**Фактическая схема (отличия от плана):**
+
 ```sql
+-- receipt: убраны open_time, payment_types, total_sum_with_discount, is_deleted
+-- (OLAP не отдаёт эти поля; is_deleted фильтруется на уровне запроса)
+-- Добавлены: items_count (кол-во позиций в чеке)
 CREATE TABLE receipt (
   id BIGSERIAL,
   department_id UUID NOT NULL REFERENCES departments(id),
-  order_num INTEGER NOT NULL,
   open_date DATE NOT NULL,
-  open_time TIMESTAMP,
+  order_num INTEGER NOT NULL,
   close_time TIMESTAMP NOT NULL,
   order_type TEXT,
   table_num TEXT,
   waiter_name TEXT,
   waiter_employee_id UUID REFERENCES employees(id),
   guest_num INTEGER,
-  payment_types TEXT[],
-  total_sum NUMERIC(14,2) NOT NULL,
-  total_sum_with_discount NUMERIC(14,2),
-  discount_sum NUMERIC(14,2),
-  return_sum NUMERIC(14,2),
-  is_deleted BOOLEAN NOT NULL DEFAULT false,
+  total_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  discount_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  return_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  items_count INTEGER NOT NULL DEFAULT 0,
   synced_at TIMESTAMP NOT NULL DEFAULT NOW(),
   PRIMARY KEY (id, open_date),
   UNIQUE (department_id, open_date, order_num)
 ) PARTITION BY RANGE (open_date);
 
--- Партиции по месяцам — создаются скриптом, см. ниже
-CREATE TABLE receipt_2026_05 PARTITION OF receipt FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
--- ... 2026_06, 2026_07, ... на 12 месяцев вперёд
-
-CREATE INDEX idx_receipt_dept_close ON receipt(department_id, close_time);
-CREATE INDEX idx_receipt_open_date ON receipt(open_date);
-
+-- receipt_item: snapshot-поля переименованы в dish_name/dish_code/dish_group/dish_category
+-- (напрямую из OLAP, без prefix product_*_snapshot)
+-- Добавлен iiko_dish_id UUID для re-resolve при необходимости
 CREATE TABLE receipt_item (
   id BIGSERIAL,
   receipt_id BIGINT NOT NULL,
-  receipt_open_date DATE NOT NULL,  -- для партиционирования
+  open_date DATE NOT NULL,
   product_id BIGINT REFERENCES product(id),
-  product_name_snapshot TEXT NOT NULL,
-  product_code_snapshot TEXT,
-  group_name_snapshot TEXT,
-  category_name_snapshot TEXT,
+  iiko_dish_id UUID,
+  dish_name TEXT NOT NULL,
+  dish_code TEXT,
+  dish_group TEXT,
+  dish_category TEXT,
   qty NUMERIC(12,3) NOT NULL,
-  price_per_unit NUMERIC(14,2) NOT NULL,
-  sum_no_discount NUMERIC(14,2) NOT NULL,
-  sum_with_discount NUMERIC(14,2) NOT NULL,
-  discount_sum NUMERIC(14,2),
-  return_sum NUMERIC(14,2),
-  PRIMARY KEY (id, receipt_open_date),
-  FOREIGN KEY (receipt_id, receipt_open_date) REFERENCES receipt(id, open_date) ON DELETE CASCADE
-) PARTITION BY RANGE (receipt_open_date);
-
-CREATE TABLE receipt_item_2026_05 PARTITION OF receipt_item FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
--- ... аналогично
-
-CREATE INDEX idx_receipt_item_product ON receipt_item(product_id, receipt_open_date);
-CREATE INDEX idx_receipt_item_receipt ON receipt_item(receipt_id, receipt_open_date);
+  price_per_unit NUMERIC(14,2),
+  dish_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  discount_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  return_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  PRIMARY KEY (id, open_date)
+) PARTITION BY RANGE (open_date);
 ```
 
-**Backend:**
-- `app/models/receipts.py` — `Receipt`, `ReceiptItem`.
-- `app/services/iiko_receipts_loader.py`:
-  - `fetch_from_single_domain(domain, from_date, to_date)` → POST OLAP с расширенным groupBy.
-  - `aggregate(raw_rows)` — pandas group по `(Department.Id, OpenDate, OrderNum)` → шапка чека + список позиций.
-  - `resolve_products(items, domain)` — batch lookup `product` по `(iiko_source_domain, iiko_product_id)`, проставляем `product_id` или NULL.
-  - `resolve_waiters(receipts, domain)` — то же, что в `iiko_waiter_sales_loader._build_name_to_employee_map`.
-  - `upsert(receipts, items)` — batch upsert через `execute_values`:
-    - `INSERT INTO receipt ... ON CONFLICT (department_id, open_date, order_num) DO UPDATE`.
-    - Для items: `DELETE WHERE receipt_id IN (...) AND receipt_open_date IN (...)` + `INSERT` (проще, чем upsert по неестественному ключу).
-  - Таймаут httpx: 180с (большой OLAP).
-- `app/services/scheduled_receipts_loader.py` — обёртка для APScheduler + gap check (по аналогии с `scheduled_sales_loader`).
-- `app/services/menu_reconciliation.py` — отдельный job, который раз в сутки проходит по `receipt_item WHERE product_id IS NULL` и пытается резолвнуть по snapshot имени + `iiko_source_domain` через `department`.
-- `scripts/create_receipt_partitions.py` — раз в неделю проверяет, есть ли партиции на следующий месяц, создаёт недостающие.
-- `app/routers/receipts.py`:
-  - `GET /api/receipts` — фильтры: `department_id`, `from_date`, `to_date`, `waiter_employee_id`, `min_sum`, пагинация.
-  - `GET /api/receipts/{id}?open_date=YYYY-MM-DD` — шапка + позиции (open_date обязателен для partition pruning).
-  - `GET /api/receipts/stats/by-product` — топ-N блюд по выручке/qty за период.
-  - `GET /api/receipts/stats/by-hour-product` — heatmap blue×hour для прогноза.
-  - `POST /api/receipts/sync?from_date=&to_date=&department_id=` — ручной триггер.
-  - `GET /api/receipts/auto-sync/status`.
+**Реальные метрики:**
+| Домен | Чеков/день | Позиций/день | Уник. блюд | OLAP размер | Sync время |
+|---|---|---|---|---|---|
+| Sandy | 2,503 | 12,425 | 579 | 6.4 МБ | ~12с |
+| Madlen | 1,789 | 5,102 | 575 | 2.8 МБ | ~8с |
+| **Итого** | **4,292** | **17,527** | **1,154** | **9.2 МБ** | **~20с** |
 
-**Scheduler:**
-- 02:15 ежедневно — `iiko_receipts_loader.sync` за вчера.
-- 11:30 ежедневно — gap check за последние 7 дней.
-- Воскресенье 04:00 — `scripts/create_receipt_partitions.py`.
-
-**Frontend:**
-- `frontend/src/types/receipts.ts`.
-- `frontend/src/hooks/use-receipts.ts`.
-- `frontend/src/pages/receipts/receipts-page.tsx` — таблица чеков с фильтрами.
-- `frontend/src/pages/receipts/receipt-detail-page.tsx` — модалка/страница с позициями.
-- `frontend/src/pages/receipts/stats-by-product-page.tsx` — топ-блюд BarChart.
-- Sidebar: секция «ЧЕКИ» (`/receipts`, `/receipts/stats/by-product`).
-- Section keys: `receipts.list`, `receipts.stats`.
-
-**Nginx:**
-- `aqniet.conf` — для `/api/receipts/sync` поднять `proxy_read_timeout` до 300s (большие OLAP-выгрузки).
-
-**Тесты:**
-- `tests/services/test_iiko_receipts_loader.py` — fixture с типичным OLAP-ответом, проверка корректной агрегации в шапку + позиции, корректный резолв `product_id`.
-- `tests/services/test_receipt_partitions.py` — скрипт создаёт партицию на следующий месяц, повторный запуск идемпотентен.
-
-**Definition of done:**
-- За тестовый день (1 день × все 30+ активных подразделений × 2 домена) загружено N чеков, M позиций.
-- `EXPLAIN ANALYZE` на `GET /api/receipts` с фильтром `open_date BETWEEN ... AND ...` показывает partition pruning.
-- Реальный sync за 1 день укладывается в < 5 минут.
-
-**Что критично проверить перед началом:**
-- Проверить, что расширенный OLAP с `DishId` отдаёт UUID, который реально совпадает с `product.iiko_product_id` (curl + grep).
-- Оценить размер ответа OLAP на 1 день × 1 домен × 30 подразделений (если > 100 МБ — нужна пагинация/чанкинг по подразделениям).
-- В iiko OLAP `DishAmountInt` — реально int, или float? (От этого зависит тип `qty`).
+**Эндпоинты не реализованные из плана (отложены):**
+- `GET /api/receipts/stats/by-hour-product` — heatmap блюдо×час (Phase 5, per-SKU forecasting)
+- `GET /api/receipts/auto-sync/status` — статус авто-загрузок (добавить по необходимости)
 
 ---
 
