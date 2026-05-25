@@ -17,6 +17,12 @@ class Department(Base):
     type = Column(String(50), default='DEPARTMENT', index=True)
     taxpayer_id_number = Column(String(50), nullable=True)
 
+    # Which iiko server this department was synced from (e.g. "sandy-co-co.iiko.it",
+    # "madlen-group-so.iiko.it"). This is the only reliable source-of-truth for
+    # separating Сандык vs Мадлен catalogs — `taxpayer_id_number` is empty for 47/91
+    # departments. Populated by `iiko_department_loader` on every sync.
+    iiko_source_domain = Column(String, nullable=False, index=True)
+
     # Segmentation and seasonal fields
     segment_type = Column(
         String(50),

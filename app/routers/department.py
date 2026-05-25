@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -10,9 +11,31 @@ from ..auth import get_api_key_or_bypass, ApiKey
 
 router = APIRouter(prefix="/departments", tags=["departments"])
 
+# Department считается неактивным, если у него (тип DEPARTMENT) нет записей
+# в sales_summary за последние N дней. JURPERSON/CORPORATION — всегда активны
+# (это организационные сущности, продаж у них и не должно быть).
+INACTIVE_THRESHOLD_DAYS = 30
 
-def serialize_department(dept, **extra_fields) -> dict:
-    """Convert a Department ORM object to a dict with string UUIDs"""
+
+def _is_dept_active(dept_type: Optional[str], last_sale_date, threshold_date: date) -> bool:
+    if dept_type != "DEPARTMENT":
+        return True
+    if last_sale_date is None:
+        return False
+    return last_sale_date >= threshold_date
+
+
+def serialize_department(dept, last_sale_date=None, threshold_date: Optional[date] = None, **extra_fields) -> dict:
+    """Convert a Department ORM object to a dict with string UUIDs.
+
+    `last_sale_date` is optional: when None, it is looked up via a single
+    aggregate query so callers that don't pre-join (single GET, after CRUD)
+    still return a meaningful `is_active` flag.
+    """
+    if threshold_date is None:
+        threshold_date = date.today() - timedelta(days=INACTIVE_THRESHOLD_DAYS)
+    is_active = _is_dept_active(dept.type, last_sale_date, threshold_date)
+
     result = {
         "id": str(dept.id),
         "parent_id": str(dept.parent_id) if dept.parent_id else None,
@@ -36,9 +59,12 @@ def serialize_department(dept, **extra_fields) -> dict:
         "opened_date": dept.opened_date.isoformat() if dept.opened_date else None,
         "season_start_month": dept.season_start_month,
         "season_end_month": dept.season_end_month,
+        "iiko_source_domain": dept.iiko_source_domain,
         "created_at": dept.created_at,
         "updated_at": dept.updated_at,
-        "synced_at": dept.synced_at
+        "synced_at": dept.synced_at,
+        "last_sale_date": last_sale_date.isoformat() if last_sale_date else None,
+        "is_active": is_active,
     }
     result.update(extra_fields)
     return result
@@ -67,7 +93,28 @@ def get_departments(
         query = query.filter(DepartmentModel.parent_id == parent_id)
 
     departments = query.offset(skip).limit(limit).all()
-    return [serialize_department(dept) for dept in departments]
+
+    # Подтягиваем дату последней продажи одним запросом, чтобы вычислить is_active.
+    threshold_date = date.today() - timedelta(days=INACTIVE_THRESHOLD_DAYS)
+    dept_ids = [d.id for d in departments]
+    last_sale_map: dict = {}
+    if dept_ids:
+        rows = (
+            db.query(SalesSummary.department_id, func.max(SalesSummary.date))
+            .filter(SalesSummary.department_id.in_(dept_ids))
+            .group_by(SalesSummary.department_id)
+            .all()
+        )
+        last_sale_map = {row[0]: row[1] for row in rows}
+
+    return [
+        serialize_department(
+            dept,
+            last_sale_date=last_sale_map.get(dept.id),
+            threshold_date=threshold_date,
+        )
+        for dept in departments
+    ]
 
 
 @router.get("/types/stats")
@@ -180,7 +227,12 @@ def get_department(
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
 
-    return serialize_department(department)
+    last_sale_date = (
+        db.query(func.max(SalesSummary.date))
+        .filter(SalesSummary.department_id == department.id)
+        .scalar()
+    )
+    return serialize_department(department, last_sale_date=last_sale_date)
 
 
 @router.post("/")
@@ -194,7 +246,12 @@ def create_department(
     db.add(db_department)
     db.commit()
     db.refresh(db_department)
-    return serialize_department(db_department)
+    last_sale_date = (
+        db.query(func.max(SalesSummary.date))
+        .filter(SalesSummary.department_id == db_department.id)
+        .scalar()
+    )
+    return serialize_department(db_department, last_sale_date=last_sale_date)
 
 
 @router.put("/{department_id}")
@@ -215,7 +272,12 @@ def update_department(
 
     db.commit()
     db.refresh(department)
-    return serialize_department(department)
+    last_sale_date = (
+        db.query(func.max(SalesSummary.date))
+        .filter(SalesSummary.department_id == department.id)
+        .scalar()
+    )
+    return serialize_department(department, last_sale_date=last_sale_date)
 
 
 @router.delete("/{department_id}")

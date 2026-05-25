@@ -53,6 +53,7 @@ import {
   MONTH_LABELS,
   formatDate,
 } from '@/lib/formatters'
+import { KNOWN_IIKO_SOURCES, iikoSourceLabel } from '@/lib/iiko-sources'
 import { RefreshCw, Plus, Pencil, Trash2, Search } from 'lucide-react'
 
 const SEGMENT_OPTIONS: { value: SegmentType; label: string }[] = [
@@ -117,7 +118,9 @@ export function DepartmentsPage() {
 
   const [typeFilter, setTypeFilter] = useState('ALL')
   const [companyFilter, setCompanyFilter] = useState('__all__')
+  const [sourceFilter, setSourceFilter] = useState('__all__')
   const [search, setSearch] = useState('')
+  const [showInactive, setShowInactive] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [editingDept, setEditingDept] = useState<Department | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Department | null>(null)
@@ -157,6 +160,12 @@ export function DepartmentsPage() {
     if (companyFilter !== '__all__') {
       result = result.filter((d) => d.parent_id === companyFilter)
     }
+    if (sourceFilter !== '__all__') {
+      result = result.filter((d) => d.iiko_source_domain === sourceFilter)
+    }
+    if (!showInactive) {
+      result = result.filter((d) => d.is_active)
+    }
     if (search.trim()) {
       const q = search.toLowerCase()
       result = result.filter(
@@ -169,7 +178,27 @@ export function DepartmentsPage() {
       )
     }
     return result
-  }, [departments, typeFilter, companyFilter, search])
+  }, [departments, typeFilter, companyFilter, sourceFilter, search, showInactive])
+
+  // Список iiko-источников, реально присутствующих в выборке + базовые известные
+  const sourceOptions = useMemo(() => {
+    const present = new Set<string>()
+    for (const d of departments) {
+      if (d.iiko_source_domain) present.add(d.iiko_source_domain)
+    }
+    // Гарантируем устойчивый порядок: сначала известные (Сандык/Мадлен), затем
+    // прочие, отсортированные по алфавиту
+    const known = KNOWN_IIKO_SOURCES.filter((h) => present.has(h))
+    const others = Array.from(present)
+      .filter((h) => !KNOWN_IIKO_SOURCES.includes(h))
+      .sort()
+    return [...known, ...others]
+  }, [departments])
+
+  const inactiveCount = useMemo(
+    () => departments.filter((d) => d.type === 'DEPARTMENT' && !d.is_active).length,
+    [departments],
+  )
 
   const openCreateForm = () => {
     setEditingDept(null)
@@ -297,6 +326,22 @@ export function DepartmentsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Источник iiko</Label>
+              <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">Все источники</SelectItem>
+                  {sourceOptions.map((host) => (
+                    <SelectItem key={host} value={host}>
+                      {iikoSourceLabel(host)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1 flex-1 min-w-[200px]">
               <Label className="text-xs">Поиск</Label>
               <div className="relative">
@@ -309,6 +354,18 @@ export function DepartmentsPage() {
                 />
               </div>
             </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-input"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+              />
+              Показывать неактивные
+              {inactiveCount > 0 && (
+                <span className="text-muted-foreground">({inactiveCount})</span>
+              )}
+            </label>
             <div className="text-sm text-muted-foreground">
               Найдено: <span className="font-semibold">{filtered.length}</span>
             </div>
@@ -329,6 +386,7 @@ export function DepartmentsPage() {
                 <TableHead>Код</TableHead>
                 <TableHead>Название</TableHead>
                 <TableHead>Тип</TableHead>
+                <TableHead>Источник</TableHead>
                 <TableHead>Бренд</TableHead>
                 <TableHead>Локация</TableHead>
                 <TableHead>Сегмент</TableHead>
@@ -343,7 +401,27 @@ export function DepartmentsPage() {
                   <TableCell className="font-mono text-xs">{dept.code || '—'}</TableCell>
                   <TableCell className="font-medium">{dept.name}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{TYPE_LABELS[dept.type] || dept.type}</Badge>
+                    <div className="flex flex-wrap gap-1">
+                      <Badge variant="secondary">{TYPE_LABELS[dept.type] || dept.type}</Badge>
+                      {dept.type === 'DEPARTMENT' && !dept.is_active && (
+                        <Badge
+                          variant="outline"
+                          className="border-destructive/50 text-destructive"
+                          title={
+                            dept.last_sale_date
+                              ? `Последняя продажа: ${formatDate(dept.last_sale_date)}`
+                              : 'Нет продаж'
+                          }
+                        >
+                          Неактивно
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    <span title={dept.iiko_source_domain}>
+                      {iikoSourceLabel(dept.iiko_source_domain)}
+                    </span>
                   </TableCell>
                   <TableCell className="text-xs">{dept.brand || '—'}</TableCell>
                   <TableCell className="text-xs">

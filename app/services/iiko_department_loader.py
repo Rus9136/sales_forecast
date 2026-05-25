@@ -1,6 +1,7 @@
 import httpx
 from sqlalchemy.orm import Session
 from typing import List
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 from datetime import datetime
 from ..models.branch import Department
@@ -11,17 +12,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _domain_host(url: str) -> str:
+    """Extract bare hostname from a base URL so the stored value is stable
+    across scheme/path changes. Mirrors `scripts.backfill_iiko_source_domain._host`."""
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    return parsed.hostname or url
+
+
 class IikoDepartmentLoaderService:
     def __init__(self, db: Session):
         self.db = db
         self.domains = [d.strip() for d in settings.IIKO_DOMAINS.split(",") if d.strip()]
     
     async def fetch_departments_from_single_domain(self, base_url: str) -> List[dict]:
-        """Fetch departments from a single iiko domain"""
+        """Fetch departments from a single iiko domain.
+
+        Each returned dict is tagged with ``iiko_source_domain`` (the bare hostname)
+        so downstream code can persist the source without losing context to merging.
+        """
         try:
             auth_service = IikoAuthService(base_url)
             token = await auth_service.get_auth_token()
-            
+            host = _domain_host(base_url)
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{base_url}/resto/api/corporation/departments",
@@ -31,23 +44,25 @@ class IikoDepartmentLoaderService:
                     }
                 )
                 response.raise_for_status()
-                
+
                 # Parse XML response
                 departments = self._parse_departments_xml(response.text)
+                for dept in departments:
+                    dept['iiko_source_domain'] = host
                 logger.info(f"Fetched {len(departments)} departments from {base_url}")
                 return departments
-                
+
         except httpx.HTTPError as e:
             logger.error(f"Error fetching departments from {base_url}: {e}")
             raise
         except Exception as e:
             logger.error(f"Unexpected error from {base_url}: {e}")
             raise
-    
+
     async def fetch_departments_from_iiko(self) -> List[dict]:
         """Fetch departments from all iiko domains"""
         all_departments = []
-        
+
         for domain in self.domains:
             try:
                 departments = await self.fetch_departments_from_single_domain(domain)
@@ -56,7 +71,7 @@ class IikoDepartmentLoaderService:
                 logger.error(f"Failed to fetch from {domain}: {e}")
                 # Continue with other domains even if one fails
                 continue
-        
+
         logger.info(f"Total fetched {len(all_departments)} departments from all domains")
         return all_departments
     
@@ -163,6 +178,7 @@ class IikoDepartmentLoaderService:
                             existing_dept.type = iiko_dept['type']
                             existing_dept.taxpayer_id_number = resolved_bin
                             existing_dept.parent_id = parent_id
+                            existing_dept.iiko_source_domain = iiko_dept['iiko_source_domain']
                             existing_dept.updated_at = datetime.utcnow()
                             existing_dept.synced_at = datetime.utcnow()
                             updated_count += 1
@@ -174,6 +190,7 @@ class IikoDepartmentLoaderService:
                                 name=iiko_dept['name'],
                                 type=iiko_dept['type'],
                                 taxpayer_id_number=resolved_bin,
+                                iiko_source_domain=iiko_dept['iiko_source_domain'],
                                 synced_at=datetime.utcnow()
                             )
                             self.db.add(new_dept)

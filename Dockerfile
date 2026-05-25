@@ -36,6 +36,7 @@ COPY --from=builder /install /usr/local
 RUN useradd --create-home --shell /bin/bash appuser
 
 COPY --chown=appuser:appuser ./app ./app
+COPY --chown=appuser:appuser ./scripts ./scripts
 COPY --chown=appuser:appuser favicon.ico .
 
 # Copy React SPA build output

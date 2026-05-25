@@ -42,9 +42,12 @@ export interface Department {
   opened_date: string | null
   season_start_month: number | null
   season_end_month: number | null
+  iiko_source_domain: string
   created_at: string
   updated_at: string
   synced_at: string
+  last_sale_date: string | null
+  is_active: boolean
 }
 
 export interface DepartmentCreate {
