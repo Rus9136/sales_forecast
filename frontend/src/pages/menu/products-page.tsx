@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { RefreshCw, Search } from 'lucide-react'
+import { RefreshCw, Search, ChefHat } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
@@ -27,6 +33,7 @@ import {
   useNomenclatureCategories,
   useNomenclatureGroups,
   useProducts,
+  useProductRecipe,
   useSyncNomenclature,
 } from '@/hooks/use-menu'
 import type { ProductType } from '@/types/menu'
@@ -60,6 +67,8 @@ export function MenuProductsPage() {
   const [type, setType] = useState<ProductType | typeof ALL>(ALL)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
+  const [recipeProductId, setRecipeProductId] = useState<number | null>(null)
+  const [recipeProductName, setRecipeProductName] = useState('')
 
   const filters = useMemo(
     () => ({
@@ -77,6 +86,7 @@ export function MenuProductsPage() {
   const { data: products = [], isLoading, error } = useProducts(filters)
   const groups = useNomenclatureGroups(source === ALL ? undefined : source)
   const categories = useNomenclatureCategories(source === ALL ? undefined : source)
+  const recipe = useProductRecipe(recipeProductId)
   const syncMutation = useSyncNomenclature()
 
   const onSync = async () => {
@@ -241,6 +251,7 @@ export function MenuProductsPage() {
                 <TableHead className="text-right">Цена</TableHead>
                 <TableHead className="text-right">Себестоимость</TableHead>
                 <TableHead>Меню</TableHead>
+                <TableHead className="w-[50px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -280,6 +291,17 @@ export function MenuProductsPage() {
                       </Badge>
                     )}
                   </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
+                      title="Техкарта"
+                      onClick={() => { setRecipeProductId(p.id); setRecipeProductName(p.name) }}
+                    >
+                      <ChefHat className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -309,6 +331,86 @@ export function MenuProductsPage() {
           </div>
         </Card>
       )}
+
+      {/* Recipe detail dialog */}
+      <Dialog
+        open={recipeProductId != null}
+        onOpenChange={(open) => { if (!open) setRecipeProductId(null) }}
+      >
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ChefHat className="h-5 w-5" />
+              Техкарта: {recipeProductName}
+            </DialogTitle>
+          </DialogHeader>
+
+          {recipe.isLoading ? (
+            <LoadingSpinner />
+          ) : recipe.data ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Действует с:</span>{' '}
+                  {recipe.data.date_from}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Выход:</span>{' '}
+                  {recipe.data.assembled_amount}
+                </div>
+                {recipe.data.description && (
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground">Описание:</span>{' '}
+                    {recipe.data.description}
+                  </div>
+                )}
+                {recipe.data.technology_description && (
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground">Технология:</span>{' '}
+                    {recipe.data.technology_description}
+                  </div>
+                )}
+              </div>
+
+              {recipe.data.ingredients.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ингредиент</TableHead>
+                      <TableHead>Тип</TableHead>
+                      <TableHead className="text-right">Брутто</TableHead>
+                      <TableHead className="text-right">После х/о</TableHead>
+                      <TableHead className="text-right">Нетто</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {recipe.data.ingredients.map((ing) => (
+                      <TableRow key={ing.id}>
+                        <TableCell>
+                          <div className="text-sm font-medium">{ing.ingredient_name || '—'}</div>
+                          {ing.ingredient_code && (
+                            <div className="text-xs text-muted-foreground font-mono">{ing.ingredient_code}</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {ing.ingredient_type || '—'}
+                        </TableCell>
+                        <TableCell className="text-right tabular">{ing.amount_in}</TableCell>
+                        <TableCell className="text-right tabular">{ing.amount_middle ?? '—'}</TableCell>
+                        <TableCell className="text-right tabular">{ing.amount_out ?? '—'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <p className="text-sm text-muted-foreground">Нет ингредиентов</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Техкарта не найдена для этого продукта</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

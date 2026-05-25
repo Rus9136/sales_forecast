@@ -8,6 +8,8 @@ import type {
   Product,
   ProductDetail,
   ProductListFilters,
+  RecipeDetail,
+  RecipeSyncResponse,
 } from '@/types/menu'
 
 function toParams(filters: ProductListFilters): Record<string, string> {
@@ -78,6 +80,24 @@ export function useSyncNomenclature() {
       api.post<NomenclatureSyncResponse>('/api/menu/sync', {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['menu'] })
+    },
+  })
+}
+
+export function useProductRecipe(productId: number | null) {
+  return useQuery({
+    queryKey: ['menu', 'recipe', productId],
+    queryFn: () => api.get<RecipeDetail | null>(`/api/menu/products/${productId}/recipe`),
+    enabled: productId != null,
+  })
+}
+
+export function useSyncRecipes() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<RecipeSyncResponse>('/api/menu/recipes/sync', {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['menu', 'recipe'] })
     },
   })
 }

@@ -10,3 +10,4 @@ from .ai import AIRecommendation, AIPromptLog, AIPrompt  # noqa: F401
 from .auth_ui import AppRole, AppUser, AppSession  # noqa: F401
 from .menu import NomenclatureCategory, NomenclatureGroup, Product  # noqa: F401
 from .receipts import Receipt, ReceiptItem  # noqa: F401
+from .recipe import Recipe, RecipeIngredient  # noqa: F401

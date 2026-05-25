@@ -69,6 +69,40 @@ export interface NomenclatureSyncResponse {
   errors: string[]
 }
 
+export interface RecipeIngredient {
+  id: number
+  ingredient_product_id: number | null
+  ingredient_name: string | null
+  ingredient_code: string | null
+  ingredient_type: string | null
+  sort_weight: number | null
+  amount_in: number
+  amount_middle: number | null
+  amount_out: number | null
+}
+
+export interface RecipeDetail {
+  id: number
+  iiko_source_domain: string
+  product_id: number
+  product_name: string | null
+  date_from: string
+  date_to: string | null
+  assembled_amount: number
+  description: string | null
+  technology_description: string | null
+  ingredients_count: number
+  ingredients: RecipeIngredient[]
+}
+
+export interface RecipeSyncResponse {
+  status: string
+  total_recipes: number
+  total_ingredients: number
+  per_domain: Array<{ domain: string; recipes: number; ingredients: number }>
+  errors: string[]
+}
+
 export interface ProductListFilters {
   search?: string
   iiko_source_domain?: string

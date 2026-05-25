@@ -82,3 +82,40 @@ class NomenclatureSyncResponse(BaseModel):
     total_products: int
     per_domain: List[dict]
     errors: List[str]
+
+
+class RecipeIngredientResponse(BaseModel):
+    id: int
+    ingredient_product_id: Optional[int] = None
+    ingredient_name: Optional[str] = None
+    ingredient_code: Optional[str] = None
+    ingredient_type: Optional[str] = None
+    sort_weight: Optional[float] = None
+    amount_in: float
+    amount_middle: Optional[float] = None
+    amount_out: Optional[float] = None
+
+
+class RecipeResponse(BaseModel):
+    id: int
+    iiko_source_domain: str
+    product_id: int
+    product_name: Optional[str] = None
+    date_from: str
+    date_to: Optional[str] = None
+    assembled_amount: float
+    description: Optional[str] = None
+    technology_description: Optional[str] = None
+    ingredients_count: int = 0
+
+
+class RecipeDetailResponse(RecipeResponse):
+    ingredients: List[RecipeIngredientResponse] = []
+
+
+class RecipeSyncResponse(BaseModel):
+    status: str
+    total_recipes: int
+    total_ingredients: int
+    per_domain: List[dict]
+    errors: List[str]

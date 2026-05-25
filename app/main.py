@@ -22,6 +22,7 @@ from .services.scheduled_waiter_loader import (
 )
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
+from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -74,6 +75,17 @@ async def lifespan(app: FastAPI):
             minute=0,
             id='weekly_model_retrain',
             name='Weekly Model Retraining',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_recipe_sync,
+            trigger="cron",
+            day_of_week=6,  # Sunday
+            hour=3,
+            minute=30,
+            id='weekly_recipe_sync',
+            name='Weekly Recipe Sync',
             replace_existing=True
         )
 
@@ -160,8 +172,8 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
-            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Metrics 4:00, "
-            "Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
+            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Recipes Sun 3:30, "
+            "Metrics 4:00, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 
     except Exception as e:

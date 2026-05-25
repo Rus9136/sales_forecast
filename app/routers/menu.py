@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..auth import get_api_key_or_bypass, ApiKey
 from ..db import get_db
 from ..models.menu import NomenclatureCategory, NomenclatureGroup, Product
+from ..models.recipe import Recipe, RecipeIngredient
 from ..schemas.menu import (
     NomenclatureCategoryResponse,
     NomenclatureGroupResponse,
@@ -20,8 +21,13 @@ from ..schemas.menu import (
     NomenclatureSyncResponse,
     ProductDetailResponse,
     ProductResponse,
+    RecipeDetailResponse,
+    RecipeIngredientResponse,
+    RecipeResponse,
+    RecipeSyncResponse,
 )
 from ..services.iiko_nomenclature_loader import IikoNomenclatureLoaderService
+from ..services.iiko_recipe_loader import IikoRecipeLoaderService
 
 router = APIRouter(prefix="/menu", tags=["menu"])
 
@@ -178,3 +184,121 @@ async def sync_nomenclature(
     service = IikoNomenclatureLoaderService(db)
     result = await service.sync()
     return NomenclatureSyncResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Recipes (tech cards)
+# ---------------------------------------------------------------------------
+
+@router.get("/products/{product_id}/recipe", response_model=Optional[RecipeDetailResponse])
+def get_product_recipe(
+    product_id: int,
+    db: Session = Depends(get_db),
+    _auth: ApiKey = Depends(get_api_key_or_bypass),
+):
+    """Current (open-ended) recipe for a product, with resolved ingredient names."""
+    recipe = (
+        db.query(Recipe)
+        .filter(Recipe.product_id == product_id, Recipe.date_to.is_(None))
+        .first()
+    )
+    if not recipe:
+        return None
+
+    ingredients = (
+        db.query(RecipeIngredient)
+        .filter(RecipeIngredient.recipe_id == recipe.id)
+        .order_by(RecipeIngredient.sort_weight)
+        .all()
+    )
+
+    # Batch-resolve ingredient names
+    ing_pids = [i.ingredient_product_id for i in ingredients if i.ingredient_product_id]
+    name_map: dict[int, tuple] = {}
+    if ing_pids:
+        rows = (
+            db.query(Product.id, Product.name, Product.code, Product.type)
+            .filter(Product.id.in_(ing_pids))
+            .all()
+        )
+        name_map = {r.id: (r.name, r.code, r.type) for r in rows}
+
+    product_name = db.query(Product.name).filter(Product.id == product_id).scalar()
+
+    return RecipeDetailResponse(
+        id=recipe.id,
+        iiko_source_domain=recipe.iiko_source_domain,
+        product_id=recipe.product_id,
+        product_name=product_name,
+        date_from=str(recipe.date_from),
+        date_to=str(recipe.date_to) if recipe.date_to else None,
+        assembled_amount=float(recipe.assembled_amount),
+        description=recipe.description,
+        technology_description=recipe.technology_description,
+        ingredients_count=len(ingredients),
+        ingredients=[
+            RecipeIngredientResponse(
+                id=i.id,
+                ingredient_product_id=i.ingredient_product_id,
+                ingredient_name=name_map.get(i.ingredient_product_id, (None,))[0] if i.ingredient_product_id else None,
+                ingredient_code=name_map.get(i.ingredient_product_id, (None, None))[1] if i.ingredient_product_id else None,
+                ingredient_type=name_map.get(i.ingredient_product_id, (None, None, None))[2] if i.ingredient_product_id else None,
+                sort_weight=float(i.sort_weight) if i.sort_weight else None,
+                amount_in=float(i.amount_in),
+                amount_middle=float(i.amount_middle) if i.amount_middle else None,
+                amount_out=float(i.amount_out) if i.amount_out else None,
+            )
+            for i in ingredients
+        ],
+    )
+
+
+@router.get("/recipes", response_model=List[RecipeResponse])
+def list_recipes(
+    iiko_source_domain: Optional[str] = Query(None),
+    product_id: Optional[int] = Query(None),
+    active_only: bool = Query(True, description="Only open-ended recipes (date_to IS NULL)"),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _auth: ApiKey = Depends(get_api_key_or_bypass),
+) -> List[RecipeResponse]:
+    q = db.query(Recipe, Product.name).join(Product, Recipe.product_id == Product.id)
+    if iiko_source_domain:
+        q = q.filter(Recipe.iiko_source_domain == iiko_source_domain)
+    if product_id is not None:
+        q = q.filter(Recipe.product_id == product_id)
+    if active_only:
+        q = q.filter(Recipe.date_to.is_(None))
+    q = q.order_by(Product.name).offset(offset).limit(limit)
+
+    result = []
+    for r, pname in q.all():
+        ing_count = (
+            db.query(RecipeIngredient)
+            .filter(RecipeIngredient.recipe_id == r.id)
+            .count()
+        )
+        result.append(RecipeResponse(
+            id=r.id,
+            iiko_source_domain=r.iiko_source_domain,
+            product_id=r.product_id,
+            product_name=pname,
+            date_from=str(r.date_from),
+            date_to=str(r.date_to) if r.date_to else None,
+            assembled_amount=float(r.assembled_amount),
+            description=r.description,
+            technology_description=r.technology_description,
+            ingredients_count=ing_count,
+        ))
+    return result
+
+
+@router.post("/recipes/sync", response_model=RecipeSyncResponse)
+async def sync_recipes(
+    db: Session = Depends(get_db),
+    _auth: ApiKey = Depends(get_api_key_or_bypass),
+) -> RecipeSyncResponse:
+    service = IikoRecipeLoaderService(db)
+    result = await service.sync()
+    return RecipeSyncResponse(**result)
