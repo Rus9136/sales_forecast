@@ -138,3 +138,18 @@ class ApiClient {
 }
 
 export const api = new ApiClient()
+
+/** Fetch a binary file (e.g. XLSX export) with auth headers and return a Blob. */
+export async function apiDownload(url: string): Promise<Blob> {
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${getApiToken()}`,
+  }
+  const sessionToken = getSessionToken()
+  if (sessionToken) headers['X-Session-Token'] = sessionToken
+  const response = await fetch(url, { headers })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new ApiError(response, (body as { detail?: string }).detail)
+  }
+  return response.blob()
+}

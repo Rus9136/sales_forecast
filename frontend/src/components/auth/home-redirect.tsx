@@ -17,6 +17,11 @@ const SECTION_TO_PATH: Record<SectionKey, string> = {
   'receipts.list': '/receipts',
   'receipts.stats': '/receipts/stats',
   'ai.recommendations': '/ai-recommendations',
+  'pricing.dashboard': '/pricing/dashboard',
+  'pricing.recommendations': '/pricing/recommendations',
+  'pricing.rules': '/pricing/rules',
+  'pricing.position_detail': '/pricing/dashboard',
+  'pricing.reports': '/pricing/reports',
   'sync': '/sync',
   'users': '/users',
   'roles': '/roles',
@@ -26,9 +31,12 @@ const PRIORITY: SectionKey[] = [
   'dashboard',
   'departments', 'sales.daily', 'sales.hourly', 'sales.waiters',
   'forecast.branches', 'forecast.comparison',
+  'pricing.dashboard', 'pricing.recommendations',
   'menu.products', 'menu.groups',
   'receipts.list', 'receipts.stats',
-  'ai.recommendations', 'employees', 'sync', 'users', 'roles',
+  'ai.recommendations', 'employees',
+  'pricing.rules', 'pricing.reports', 'pricing.position_detail',
+  'sync', 'users', 'roles',
 ]
 
 export function HomeRedirect() {

@@ -3,6 +3,7 @@ import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
   UserRound, Users, Sparkles, BookOpen, FolderTree, Receipt, BarChart3,
   Shield, UserCog, LogOut, Settings, LayoutDashboard, UtensilsCrossed,
+  BadgePercent, Tags,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
@@ -48,6 +49,13 @@ export const navSections: NavSection[] = [
       { path: '/forecast/branches', label: 'Прогноз по филиалам', icon: TrendingUp, section: 'forecast.branches' },
       { path: '/forecast/comparison', label: 'Сравнение факт / прогноз', icon: GitCompare, section: 'forecast.comparison' },
       { path: '/forecast/sku', label: 'Прогноз по блюдам', icon: UtensilsCrossed, section: 'forecast.sku' },
+    ],
+  },
+  {
+    label: 'Ценообразование',
+    items: [
+      { path: '/pricing/dashboard', label: 'Дашборд цен', icon: BadgePercent, section: 'pricing.dashboard' },
+      { path: '/pricing/recommendations', label: 'Рекомендации цен', icon: Tags, section: 'pricing.recommendations' },
     ],
   },
   {

@@ -18,6 +18,8 @@ import { ForecastComparisonPage } from '@/pages/forecast-comparison-page'
 import { SkuForecastPage } from '@/pages/sku-forecast-page'
 import { SyncPage } from '@/pages/sync-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
+import { PricingDashboardPage } from '@/pages/pricing/dashboard-page'
+import { PricingRecommendationsPage } from '@/pages/pricing/recommendations-page'
 import { MenuProductsPage } from '@/pages/menu/products-page'
 import { MenuGroupsPage } from '@/pages/menu/groups-page'
 import { ReceiptsPage } from '@/pages/receipts/receipts-page'
@@ -79,6 +81,12 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="ai.recommendations" />}>
                     <Route path="/ai-recommendations" element={<AIRecommendationsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="pricing.dashboard" />}>
+                    <Route path="/pricing/dashboard" element={<PricingDashboardPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="pricing.recommendations" />}>
+                    <Route path="/pricing/recommendations" element={<PricingRecommendationsPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="menu.products" />}>
                     <Route path="/menu/products" element={<MenuProductsPage />} />

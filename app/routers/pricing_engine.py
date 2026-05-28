@@ -6,7 +6,7 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -321,12 +321,96 @@ async def list_recommendations(
             "elasticity_grade": r.elasticity_grade,
             "menu_role": r.menu_role,
             "constraints_applied": r.constraints_applied,
+            "llm_explanation": r.llm_explanation,
             "status": r.status,
             "created_at": str(r.created_at),
+            "reviewed_at": str(r.reviewed_at) if r.reviewed_at else None,
+            "review_comment": r.review_comment,
         }
         for r in rows
     ]
     return {"items": items, "total": total}
+
+
+@router.get("/recommendations/export")
+async def export_recommendations(
+    department_id: Optional[str] = None,
+    status: str = Query("approved", description="Filter by status (default approved)"),
+    db: Session = Depends(get_db),
+):
+    """Export recommendations to XLSX for manual upload into iiko."""
+    import io
+    from datetime import date as _date
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    conditions = ["pr.status = :status"]
+    params: dict = {"status": status}
+    if department_id:
+        conditions.append("pr.department_id = CAST(:dept_id AS uuid)")
+        params["dept_id"] = department_id
+    where = " AND ".join(conditions)
+
+    rows = db.execute(
+        text(f"""
+            SELECT pr.*, p.name AS product_name, p.code AS product_code,
+                   d.name AS department_name
+            FROM price_recommendation pr
+            JOIN product p ON p.id = pr.product_id
+            JOIN departments d ON d.id = pr.department_id
+            WHERE {where}
+            ORDER BY d.name, pr.delta_gp DESC NULLS LAST
+        """),
+        params,
+    ).fetchall()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Рекомендации"
+
+    headers = [
+        "Подразделение", "Код", "Позиция", "Роль",
+        "Текущая цена", "Рекомендуемая цена", "Δ %",
+        "COGS", "Текущая GP", "Ожидаемая GP", "Δ GP",
+        "Эластичность", "Надёжность", "Статус",
+    ]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for r in rows:
+        ws.append([
+            r.department_name,
+            r.product_code,
+            r.product_name,
+            r.menu_role,
+            float(r.current_price) if r.current_price is not None else None,
+            float(r.recommended_price) if r.recommended_price is not None else None,
+            float(r.delta_pct) if r.delta_pct is not None else None,
+            float(r.cogs) if r.cogs is not None else None,
+            float(r.current_gp) if r.current_gp is not None else None,
+            float(r.expected_gp) if r.expected_gp is not None else None,
+            float(r.delta_gp) if r.delta_gp is not None else None,
+            float(r.elasticity_used) if r.elasticity_used is not None else None,
+            r.elasticity_grade,
+            r.status,
+        ])
+
+    widths = [26, 12, 36, 16, 14, 16, 8, 12, 14, 14, 14, 13, 11, 12]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"price_recommendations_{status}_{_date.today().isoformat()}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.put("/recommendations/{rec_id}/review")
