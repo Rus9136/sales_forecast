@@ -110,6 +110,7 @@ sales_forecast/
 │   │   │   ├── error_analysis.py  # Error segments, problematic branches, temporal errors
 │   │   │   └── postprocessing.py  # Forecast smoothing, business rules, settings
 │   │   ├── receipts.py            # Receipts list/detail, stats by product, sync
+│   │   ├── pricing_analytics.py   # Price history, weekly summaries, menu roles, clustering trigger
 │   │   └── monitoring.py          # Model health, performance, alerts
 │   ├── models/                    # SQLAlchemy models (16 моделей, разделены по файлам)
 │   │   ├── __init__.py            # Re-exports all models for mapper registration
@@ -120,13 +121,15 @@ sales_forecast/
 │   │   ├── employee.py            # Employee, SalesByWaiter
 │   │   ├── ai.py                  # AIRecommendation, AIPromptLog, AIPrompt
 │   │   ├── receipts.py            # Receipt, ReceiptItem (partitioned by open_date)
+│   │   ├── pricing_analytics.py   # SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole
 │   │   ├── sku_forecast.py        # SkuDailySales, SkuForecast (SKU-level forecasting)
 │   │   └── branch.py              # Branch, Sale (legacy) + backward-compat re-exports
 │   ├── schemas/
 │   │   ├── branch.py              # Pydantic schemas (18 схем)
 │   │   ├── ai.py                  # AnalyzeRequest/Response, HistoryItem, PromptInfo, RerunAgentRequest
 │   │   ├── receipts.py            # Receipt/Item/Detail/SyncResponse, ProductSalesStats
-│   │   └── sku_forecast.py        # SKU forecast request/response schemas
+│   │   ├── sku_forecast.py        # SKU forecast request/response schemas
+│   │   └── pricing_analytics.py  # Price history, weekly summaries, menu role schemas
 │   ├── agents/
 │   │   ├── sales_forecaster_agent.py  # LightGBM agent (department-level revenue)
 │   │   └── sku_forecaster_agent.py    # LightGBM agent (SKU-level quantity)
@@ -150,6 +153,9 @@ sales_forecast/
 │       ├── model_monitoring_service.py       # Performance monitoring
 │       ├── forecast_postprocessing_service.py # Post-processing rules
 │       ├── error_analysis_service.py         # Error analysis
+│       ├── pricing_analytics_service.py     # A2: price history + weekly summary aggregation
+│       ├── menu_clustering_service.py       # B1: KMeans menu role classification (5 roles)
+│       ├── scheduled_pricing_analytics.py   # Scheduler wrappers for A2 + B1
 │       └── ai/                               # AI Recommendations subsystem
 │           ├── data_collector.py             # Direct SQL (replaces hr-miniapp MCP)
 │           ├── multi_agent_system.py         # Phase 1→2 orchestrator + compress + render
@@ -343,7 +349,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 
 ## Key Components
 
-### Database Models (23 модели в `app/models/`)
+### Database Models (27 моделей в `app/models/`)
 | Файл | Модели | Описание |
 |------|--------|----------|
 | `department.py` | Department | Подразделения, организации, сегменты, iiko_source_domain |
@@ -355,6 +361,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 | `menu.py` | NomenclatureCategory, NomenclatureGroup, Product | Каталог номенклатуры iiko (категории, группы, товары) |
 | `receipts.py` | Receipt, ReceiptItem | Чеки + позиции (партиционировано по open_date) |
 | `sku_forecast.py` | SkuDailySales, SkuForecast | Агрегированные продажи по SKU + хранение прогнозов |
+| `pricing_analytics.py` | SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole | Ценовые события, недельные агрегаты, роли меню |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -413,6 +420,15 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/forecast/sku/comparison` — Факт vs прогноз SKU (GET, department_id, from_date, to_date)
 - `/api/forecast/sku/export/csv` — CSV экспорт прогнозов SKU (GET)
 - `/api/forecast/sku/aggregate/backfill` — Backfill sku_daily_sales агрегации (POST)
+- `/api/pricing-analytics/price-history` — История ценовых изменений SKU (GET, product_id, department_id, from_date, to_date)
+- `/api/pricing-analytics/sku-weekly` — Недельные агрегаты SKU (GET, product_id, department_id, from_week, to_week)
+- `/api/pricing-analytics/department-weekly` — Недельные агрегаты подразделений (GET, department_id, from_week, to_week)
+- `/api/pricing-analytics/aggregate` — Ручной запуск агрегации витрин (POST, from_date, to_date)
+- `/api/pricing-analytics/backfill` — Полный backfill витрин (POST)
+- `/api/pricing-analytics/menu-roles` — Роли позиций меню (GET, department_id, effective_role, product_id)
+- `/api/pricing-analytics/menu-roles/summary` — Распределение ролей (GET, department_id)
+- `/api/pricing-analytics/menu-roles/{product_id}/{department_id}` — Ручное переопределение роли (PUT, manual_role)
+- `/api/pricing-analytics/menu-roles/cluster` — Запуск кластеризации (POST, lookback_days)
 - `/` — React SPA (fallback: Jinja2 admin.html)
 - `/health` — Health check
 
@@ -423,9 +439,11 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **02:15** — Daily receipts sync (per-dish OLAP)
 - **02:30** — Daily waiter sales sync (per-waiter OLAP)
 - **03:00 Sun** — Weekly model retraining (department-level)
+- **03:15 Sun** — Weekly menu role clustering (KMeans → sku_menu_role)
 - **03:30 Sun** — Weekly recipe sync
 - **03:45 Sun** — Weekly SKU model retraining
 - **04:00** — Daily performance metrics calculation
+- **04:30** — Daily pricing analytics aggregation (price history + weekly summaries)
 - **10:00** — Daily sales gap check
 - **11:00** — Daily waiter sales gap check
 - **11:30** — Daily receipts gap check

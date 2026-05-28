@@ -10,7 +10,7 @@ from .config import settings
 from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
-from .routers import ai_recommendations, menu, receipts
+from .routers import ai_recommendations, menu, receipts, pricing_analytics, pricing_engine
 from .routers.users_ui import ui_auth_router, ui_users_router
 from .auth_ui import bootstrap_admin, seed_default_roles
 from .db import SessionLocal
@@ -22,6 +22,8 @@ from .services.scheduled_waiter_loader import (
 )
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
+from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregation, run_menu_clustering
+from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.sku_model_retraining_service import run_sku_auto_retrain
@@ -102,12 +104,65 @@ async def lifespan(app: FastAPI):
         )
 
         scheduler.add_job(
+            func=run_menu_clustering,
+            trigger="cron",
+            day_of_week=6,  # Sunday
+            hour=3,
+            minute=15,
+            id='weekly_menu_clustering',
+            name='Weekly Menu Role Clustering',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
             func=run_daily_metrics_calculation,
             trigger="cron",
             hour=4,
             minute=0,
             id='daily_metrics_calculation',
             name='Daily Performance Metrics Calculation',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_pricing_analytics_aggregation,
+            trigger="cron",
+            hour=4,
+            minute=30,
+            id='daily_pricing_analytics',
+            name='Daily Pricing Analytics Aggregation',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_catalog_price_sync,
+            trigger="cron",
+            day_of_week=6,  # Sunday
+            hour=3,
+            minute=20,
+            id='weekly_catalog_price_sync',
+            name='Weekly Menu Price Sync (orders)',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_elasticity_update,
+            trigger="cron",
+            day_of_week=6,  # Sunday
+            hour=3,
+            minute=30,
+            id='weekly_elasticity_update',
+            name='Weekly Elasticity Estimation',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_price_optimization,
+            trigger="cron",
+            hour=5,
+            minute=0,
+            id='daily_price_optimization',
+            name='Daily Price Optimization',
             replace_existing=True
         )
 
@@ -184,8 +239,8 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
-            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Recipes Sun 3:30, "
-            "Metrics 4:00, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
+            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Recipes Sun 3:30, "
+            "Metrics 4:00, Pricing analytics 4:30, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 
     except Exception as e:
@@ -254,6 +309,8 @@ app.include_router(employee.router, prefix="/api")
 app.include_router(ai_recommendations.router, prefix="/api")
 app.include_router(menu.router, prefix="/api")
 app.include_router(receipts.router, prefix="/api")
+app.include_router(pricing_analytics.router, prefix="/api")
+app.include_router(pricing_engine.router, prefix="/api")
 app.include_router(ui_auth_router, prefix="/api")
 app.include_router(ui_users_router, prefix="/api")
 

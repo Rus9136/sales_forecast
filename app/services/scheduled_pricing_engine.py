@@ -1,0 +1,94 @@
+"""Scheduler wrappers for pricing engine (B2 elasticity + B3 optimizer)."""
+
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy import text
+
+from ..db import SessionLocal
+
+logger = logging.getLogger(__name__)
+
+
+def run_catalog_price_sync():
+    """Weekly menu price sync from iiko orders. Schedule: Sunday 03:20.
+
+    Pulls real catalog prices (GET /resto/api/v2/price) — the authoritative
+    price source for elasticity. Must run BEFORE elasticity update (03:30).
+    """
+    import asyncio
+    logger.info("Starting weekly catalog price sync")
+    db = SessionLocal()
+    try:
+        from .iiko_price_loader import IikoPriceLoader
+        loader = IikoPriceLoader(db)
+        result = asyncio.run(loader.sync())
+        logger.info("Catalog price sync complete: %s intervals", result.get("total_intervals"))
+        return result
+    except Exception as e:
+        logger.error("Catalog price sync failed: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+def run_elasticity_update():
+    """Weekly elasticity re-estimation. Schedule: Sunday 03:30."""
+    logger.info("Starting weekly elasticity estimation")
+    db = SessionLocal()
+    try:
+        from .elasticity_estimation_service import ElasticityEstimationService
+        svc = ElasticityEstimationService(db)
+        result = svc.estimate_all()
+        logger.info("Elasticity estimation complete: %s", result.get("status"))
+        return result
+    except Exception as e:
+        logger.error("Elasticity estimation failed: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+def run_price_optimization():
+    """Daily price recommendation generation. Schedule: daily 05:00."""
+    logger.info("Starting daily price optimization")
+    db = SessionLocal()
+    try:
+        active_depts = db.execute(
+            text("""
+                SELECT DISTINCT department_id::text
+                FROM sku_daily_sales
+                WHERE sale_date >= CURRENT_DATE - 30
+            """)
+        ).fetchall()
+
+        from .price_optimizer_service import PriceOptimizerService
+        svc = PriceOptimizerService(db)
+
+        total_recs = 0
+        dept_results = {}
+        for (dept_id,) in active_depts:
+            try:
+                result = svc.generate_recommendations(dept_id)
+                dept_results[dept_id] = result.get("recommendations_created", 0)
+                total_recs += result.get("recommendations_created", 0)
+            except Exception as e:
+                logger.error("Optimization failed for dept %s: %s", dept_id, e)
+                dept_results[dept_id] = f"error: {e}"
+
+        logger.info(
+            "Price optimization complete: %d recommendations across %d departments",
+            total_recs, len(active_depts),
+        )
+        return {
+            "status": "ok",
+            "total_recommendations": total_recs,
+            "departments_processed": len(active_depts),
+            "per_department": dept_results,
+        }
+    except Exception as e:
+        logger.error("Price optimization failed: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()

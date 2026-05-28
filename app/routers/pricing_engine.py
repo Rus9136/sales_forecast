@@ -1,0 +1,391 @@
+"""Pricing engine API — elasticity (B2), optimizer (B3), rules (B4)."""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from ..auth import get_api_key_or_bypass
+from ..db import get_db
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/pricing-engine",
+    tags=["pricing-engine"],
+    dependencies=[Depends(get_api_key_or_bypass)],
+)
+
+
+# ==================== B4: Rules ====================
+
+@router.get("/rules")
+async def list_rules(
+    rule_type: Optional[str] = None,
+    scope_type: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db),
+):
+    from ..services.pricing_rules_service import PricingRulesService
+    svc = PricingRulesService(db)
+    items = svc.list_rules(rule_type, scope_type, is_active)
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/rules")
+async def create_rule(
+    rule_type: str = Query(...),
+    scope_type: str = Query("global"),
+    scope_id: Optional[str] = None,
+    params: str = Query(..., description="JSON string"),
+    configured_by_role: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    import json
+    from ..services.pricing_rules_service import PricingRulesService
+    try:
+        params_dict = json.loads(params)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON in params")
+
+    svc = PricingRulesService(db)
+    return svc.create_rule({
+        "rule_type": rule_type,
+        "scope_type": scope_type,
+        "scope_id": scope_id,
+        "params": params_dict,
+        "configured_by_role": configured_by_role,
+    })
+
+
+@router.put("/rules/{rule_id}")
+async def update_rule(
+    rule_id: int,
+    params: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db),
+):
+    import json
+    from ..services.pricing_rules_service import PricingRulesService
+    data = {}
+    if params:
+        try:
+            data["params"] = json.loads(params)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Invalid JSON in params")
+    if is_active is not None:
+        data["is_active"] = is_active
+
+    svc = PricingRulesService(db)
+    return svc.update_rule(rule_id, data)
+
+
+@router.delete("/rules/{rule_id}")
+async def delete_rule(rule_id: int, db: Session = Depends(get_db)):
+    from ..services.pricing_rules_service import PricingRulesService
+    svc = PricingRulesService(db)
+    return svc.delete_rule(rule_id)
+
+
+@router.get("/rules/effective/{product_id}/{department_id}")
+async def get_effective_rules(
+    product_id: int,
+    department_id: str,
+    segment_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from ..services.pricing_rules_service import PricingRulesService
+    svc = PricingRulesService(db)
+    rules = svc.get_effective_rules(product_id, department_id, segment_type)
+    return {"rules": rules}
+
+
+# ==================== B2: Elasticity ====================
+
+@router.get("/elasticity")
+async def list_elasticity(
+    department_id: Optional[str] = None,
+    product_id: Optional[int] = None,
+    reliability_grade: Optional[str] = None,
+    estimation_level: Optional[str] = None,
+    limit: int = Query(200, le=2000),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    conditions = ["1=1"]
+    params: dict = {}
+    if department_id:
+        conditions.append("se.department_id = CAST(:dept_id AS uuid)")
+        params["dept_id"] = department_id
+    if product_id:
+        conditions.append("se.product_id = :product_id")
+        params["product_id"] = product_id
+    if reliability_grade:
+        conditions.append("se.reliability_grade = :grade")
+        params["grade"] = reliability_grade
+    if estimation_level:
+        conditions.append("se.estimation_level = :level")
+        params["level"] = estimation_level
+
+    where = " AND ".join(conditions)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM sku_elasticity se WHERE {where}"), params
+    ).scalar()
+
+    rows = db.execute(
+        text(f"""
+            SELECT se.*, p.name AS product_name
+            FROM sku_elasticity se
+            JOIN product p ON p.id = se.product_id
+            WHERE {where}
+            ORDER BY ABS(se.elasticity_mean) DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    ).fetchall()
+
+    items = [
+        {
+            "product_id": r.product_id,
+            "department_id": str(r.department_id),
+            "product_name": r.product_name,
+            "elasticity_mean": float(r.elasticity_mean),
+            "elasticity_ci_lower": float(r.elasticity_ci_lower),
+            "elasticity_ci_upper": float(r.elasticity_ci_upper),
+            "elasticity_se": float(r.elasticity_se) if r.elasticity_se else None,
+            "n_price_events": r.n_price_events,
+            "n_observations": r.n_observations,
+            "estimation_level": r.estimation_level,
+            "reliability_grade": r.reliability_grade,
+            "group_key": r.group_key,
+            "model_r_squared": float(r.model_r_squared) if r.model_r_squared else None,
+            "model_version": r.model_version,
+            "updated_at": str(r.updated_at),
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": total}
+
+
+@router.get("/elasticity/summary")
+async def elasticity_summary(db: Session = Depends(get_db)):
+    by_grade = {}
+    rows = db.execute(text(
+        "SELECT reliability_grade, COUNT(*) FROM sku_elasticity GROUP BY 1 ORDER BY 1"
+    )).fetchall()
+    for r in rows:
+        by_grade[r[0]] = r[1]
+
+    by_level = {}
+    rows = db.execute(text(
+        "SELECT estimation_level, COUNT(*) FROM sku_elasticity GROUP BY 1 ORDER BY 1"
+    )).fetchall()
+    for r in rows:
+        by_level[r[0]] = r[1]
+
+    total = sum(by_grade.values())
+
+    global_prior = db.execute(text(
+        "SELECT elasticity_mean FROM sku_elasticity WHERE estimation_level = 'global' LIMIT 1"
+    )).scalar()
+
+    return {
+        "by_grade": by_grade,
+        "by_level": by_level,
+        "total": total,
+        "global_prior": float(global_prior) if global_prior else None,
+    }
+
+
+@router.post("/elasticity/estimate")
+async def trigger_elasticity_estimation(
+    lookback_days: int = Query(540, ge=90, le=730),
+    db: Session = Depends(get_db),
+):
+    from ..services.elasticity_estimation_service import ElasticityEstimationService
+    svc = ElasticityEstimationService(db)
+    return svc.estimate_all(lookback_days=lookback_days)
+
+
+@router.get("/elasticity/{product_id}/{department_id}")
+async def get_sku_elasticity(
+    product_id: int,
+    department_id: str,
+    db: Session = Depends(get_db),
+):
+    row = db.execute(
+        text("""
+            SELECT se.*, p.name AS product_name
+            FROM sku_elasticity se
+            JOIN product p ON p.id = se.product_id
+            WHERE se.product_id = :pid AND se.department_id = CAST(:did AS uuid)
+        """),
+        {"pid": product_id, "did": department_id},
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Elasticity not found for this SKU")
+
+    return {
+        "product_id": row.product_id,
+        "department_id": str(row.department_id),
+        "product_name": row.product_name,
+        "elasticity_mean": float(row.elasticity_mean),
+        "elasticity_ci_lower": float(row.elasticity_ci_lower),
+        "elasticity_ci_upper": float(row.elasticity_ci_upper),
+        "n_price_events": row.n_price_events,
+        "estimation_level": row.estimation_level,
+        "reliability_grade": row.reliability_grade,
+        "group_key": row.group_key,
+        "diagnostics": row.diagnostics,
+    }
+
+
+# ==================== B3: Recommendations ====================
+
+@router.post("/recommendations/generate")
+async def generate_recommendations(
+    department_id: str = Query(...),
+    min_gp_threshold: float = Query(500.0, ge=0),
+    db: Session = Depends(get_db),
+):
+    from ..services.price_optimizer_service import PriceOptimizerService
+    svc = PriceOptimizerService(db)
+    return svc.generate_recommendations(department_id, min_gp_threshold)
+
+
+@router.get("/recommendations")
+async def list_recommendations(
+    department_id: Optional[str] = None,
+    status: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    limit: int = Query(100, le=1000),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    conditions = ["1=1"]
+    params: dict = {}
+    if department_id:
+        conditions.append("pr.department_id = CAST(:dept_id AS uuid)")
+        params["dept_id"] = department_id
+    if status:
+        conditions.append("pr.status = :status")
+        params["status"] = status
+    if batch_id:
+        conditions.append("pr.batch_id = CAST(:batch_id AS uuid)")
+        params["batch_id"] = batch_id
+
+    where = " AND ".join(conditions)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM price_recommendation pr WHERE {where}"), params
+    ).scalar()
+
+    rows = db.execute(
+        text(f"""
+            SELECT pr.*, p.name AS product_name, d.name AS department_name
+            FROM price_recommendation pr
+            JOIN product p ON p.id = pr.product_id
+            JOIN departments d ON d.id = pr.department_id
+            WHERE {where}
+            ORDER BY pr.delta_gp DESC NULLS LAST
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    ).fetchall()
+
+    items = [
+        {
+            "id": r.id,
+            "product_id": r.product_id,
+            "product_name": r.product_name,
+            "department_id": str(r.department_id),
+            "department_name": r.department_name,
+            "batch_id": str(r.batch_id),
+            "current_price": float(r.current_price),
+            "recommended_price": float(r.recommended_price),
+            "delta_pct": float(r.delta_pct) if r.delta_pct else None,
+            "cogs": float(r.cogs) if r.cogs else None,
+            "current_qty_forecast": float(r.current_qty_forecast) if r.current_qty_forecast else None,
+            "new_qty_forecast": float(r.new_qty_forecast) if r.new_qty_forecast else None,
+            "current_gp": float(r.current_gp) if r.current_gp else None,
+            "expected_gp": float(r.expected_gp) if r.expected_gp else None,
+            "delta_gp": float(r.delta_gp) if r.delta_gp else None,
+            "elasticity_used": float(r.elasticity_used) if r.elasticity_used else None,
+            "elasticity_grade": r.elasticity_grade,
+            "menu_role": r.menu_role,
+            "constraints_applied": r.constraints_applied,
+            "status": r.status,
+            "created_at": str(r.created_at),
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": total}
+
+
+@router.put("/recommendations/{rec_id}/review")
+async def review_recommendation(
+    rec_id: int,
+    status: str = Query(..., description="approved or rejected"),
+    comment: Optional[str] = None,
+    reviewer_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from ..services.price_optimizer_service import PriceOptimizerService
+    svc = PriceOptimizerService(db)
+    return svc.review_recommendation(rec_id, status, reviewer_id, comment)
+
+
+@router.post("/recommendations/batch-review")
+async def batch_review_recommendations(
+    rec_ids: str = Query(..., description="Comma-separated IDs"),
+    status: str = Query(..., description="approved or rejected"),
+    reviewer_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from ..services.price_optimizer_service import PriceOptimizerService
+    ids = [int(x.strip()) for x in rec_ids.split(",") if x.strip()]
+    svc = PriceOptimizerService(db)
+    return svc.batch_review(ids, status, reviewer_id)
+
+
+@router.get("/recommendations/summary")
+async def recommendations_summary(
+    department_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    dept_filter = ""
+    params: dict = {}
+    if department_id:
+        dept_filter = "WHERE department_id = CAST(:dept_id AS uuid)"
+        params["dept_id"] = department_id
+
+    by_status = {}
+    rows = db.execute(
+        text(f"SELECT status, COUNT(*) FROM price_recommendation {dept_filter} GROUP BY 1"),
+        params,
+    ).fetchall()
+    for r in rows:
+        by_status[r[0]] = r[1]
+
+    total_delta_gp = db.execute(
+        text(f"""
+            SELECT COALESCE(SUM(delta_gp), 0)
+            FROM price_recommendation
+            {'WHERE department_id = CAST(:dept_id AS uuid) AND' if department_id else 'WHERE'}
+            status = 'new' AND delta_gp > 0
+        """),
+        params,
+    ).scalar()
+
+    return {
+        "by_status": by_status,
+        "total": sum(by_status.values()),
+        "total_delta_gp_new": float(total_delta_gp),
+    }
