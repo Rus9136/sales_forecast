@@ -429,6 +429,9 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/pricing-analytics/menu-roles/summary` — Распределение ролей (GET, department_id)
 - `/api/pricing-analytics/menu-roles/{product_id}/{department_id}` — Ручное переопределение роли (PUT, manual_role)
 - `/api/pricing-analytics/menu-roles/cluster` — Запуск кластеризации (POST, lookback_days)
+- `/api/labor-demand/{department_id}/menu-mix` — Сигнал для TCO: роли меню, топ-блюда, загрузка цехов (GET, from_date, to_date, top_n)
+- `/api/labor-demand/{department_id}/forecast` — Сигнал для TCO: дневной спрос + почасовая кривая (GET, from_date, to_date)
+- `/api/labor-demand/{department_id}/elasticity-signal` — Сигнал для TCO: эластичность флагманов (GET, grade)
 - `/` — React SPA (fallback: Jinja2 admin.html)
 - `/health` — Health check
 
@@ -649,65 +652,61 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 
 ## Labor Optimization (Schedule Generation)
 
-Подсистема оптимизации ФОТ через AI: на основе прогноза продаж генерируется график работы сотрудников на неделю/месяц. **Статус: дизайн (2026-05-02), реализация не начата.** Полная архитектура — [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md).
+Подсистема оптимизации ФОТ: TCO («Учет рабочего времени») генерирует график сотрудников, а Sales Forecast обогащает процесс **сигналом спроса по локации**. **Статус: дизайн, контур согласован с TCO 2026-06-10 (Вариант А), эндпоинты §2 не реализованы.** Полная архитектура — [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md).
 
 ### Ключевое архитектурное решение
 
-**Solver (генерация графика) живёт в сервисе «Учет рабочего времени», не здесь.** Принцип data gravity: ~80% входов солвера (сотрудники, ставки, ФОТ, отпуска, фактическое посещение, ТК, календарь, утверждение) — в Time Tracking. Sales Forecast — поставщик сигнала спроса + LLM-надстройка.
+**Solver (генерация графика) И LLM-агенты (ревью/правка графика) живут в TCO, не здесь.** Принцип data gravity: ~80% входов солвера (сотрудники, ставки, ФОТ, отпуска, фактическое посещение, ТК, календарь, утверждение) и сами агенты — в TCO. Sales Forecast — **только поставщик сигнала спроса** (read-only эндпоинты). У TCO уже есть свой солвер (OR-Tools) и своя multi-agent LLM-система — не дублируем.
 
-### Что остаётся в Sales Forecast
+### Что остаётся в Sales Forecast (Вариант А)
 
-| Компонент | Назначение |
-|---|---|
-| LightGBM прогноз (уже есть) | Источник `forecast_revenue` по часам |
-| Таблица `labor_norms` (TODO) | Нормативы труда: revenue/checks per role per hour, версионируется через `effective_from/to` |
-| `forecast_to_demand()` (TODO) | Конвертация прогноза в потребность по ролям |
-| `GET /api/labor-demand` (TODO) | Отдача сигнала спроса для Time Tracking (hourly demand by role + confidence + версии моделей) |
-| `POST /api/ai/review-schedule` (TODO) | LLM-разбор предложенного графика → warnings + narrative + suggested edits |
-| `POST /api/ai/edit-schedule` (TODO) | LLM-редактирование графика командой на естественном языке → JSON-патчи |
-| Multi-agent расширение (TODO) | `DemandForecastAgent`, `ScheduleReviewerAgent`, `ScheduleNarrativeAgent`, `ScheduleEditorAgent` в `app/services/ai/multi_agent_system.py` |
-| UI `/labor-norms` (TODO) | Управляющий выверяет нормативы для своей локации |
+Три read-only эндпоинта под `/api/labor-demand/`. Auth — общий `Bearer $API_TOKEN`. Таймзона Asia/Almaty (UTC+5). Строятся на уже готовых данных (SKU-прогноз, кластеризация меню, витрины, эластичность) — новых ML-моделей не нужно.
 
-### Что строится в Time Tracking (НЕ здесь)
+| Эндпоинт | Приоритет | Что отдаёт | Источники |
+|---|---|---|---|
+| `GET /api/labor-demand/{id}/menu-mix` | **P1** | `role_distribution` (5 ролей меню), `top_dishes` (predicted_qty), `category_load` (загрузка цехов), `data_quality` | `sku_menu_role` + `forecast/sku/batch` + `sku_weekly_summary` + `product` |
+| `GET /api/labor-demand/{id}/forecast` | **P2** | Дневной спрос (revenue/receipts/qty) + почасовая кривая (`hourly_profile`, историческая средняя) | `forecast/batch` + `department_weekly_summary` + `sales_by_hour` |
+| `GET /api/labor-demand/{id}/elasticity-signal` | **P3** | `elasticity_mean`, `reliability_grade`, `global_prior` по флагманам | `sku_elasticity` |
 
-- **Solver (OR-Tools CP-SAT)** — генерация графика из (demand + employees + constraints) с минимизацией ФОТ
-- Календарь UI с drag-and-drop редактированием
-- Workflow утверждения (Draft → On Review → Approved → Published)
-- Хранение сотрудников / ставок / ФОТ (из 1С)
-- Отпуска / больничные / доступность / фактическое посещение
-- ТК-ограничения РК как constraints солвера
-- Уведомления сотрудникам при публикации
+### Что строится / уже есть в TCO (НЕ здесь)
+
+- **Solver (OR-Tools)** — генерация графика из (demand + employees + constraints)
+- **Расчёт `demand_by_role`** — TCO конвертирует сигнал в потребность по ролям из своей калибровки (факт-смены + посещаемость + ставки у них)
+- **Своя multi-agent LLM-система** — агенты Sales / Schedule / Risks / Orchestrator, напрямую Claude + prompt-caching
+- Календарь UI, workflow утверждения, хранение сотрудников/ставок/ФОТ, отпуска, ТК-ограничения, уведомления
 
 ### Поток end-to-end
 
-1. Управляющий в Time Tracking жмёт «Сгенерировать график на неделю»
-2. Time Tracking → `GET /api/labor-demand` → получает hourly demand by role
-3. Time Tracking прогоняет солвер → optimal schedule
-4. Time Tracking → `POST /api/ai/review-schedule` → получает AI-разбор
-5. UI показывает график + AI warnings + кнопки [Утвердить] [Редактировать]
-6. (опционально) Управляющий пишет команду → `POST /api/ai/edit-schedule` → патчи → пере-прогон солвера
-7. [Утвердить] → публикация + уведомления
+1. Управляющий в TCO жмёт «Сгенерировать график»
+2. TCO собирает контекст: зовёт `/menu-mix` + `/forecast` + `/elasticity-signal` (Promise.allSettled, graceful degradation)
+3. TCO конвертирует сигнал в `demand_by_role` + прогоняет свой солвер → optimal schedule
+4. TCO прогоняет СВОИ LLM-агенты с обогащённым контекстом → warnings + narrative + состав смены по цехам
+5. UI: график + AI-разбор + [Утвердить]/[Редактировать]; правки — через агенты TCO
+6. [Утвердить] → публикация + уведомления (всё внутри TCO)
+
+Sales Forecast участвует только в шаге 2.
 
 ### Правила доработки
 
 **❌ НЕЛЬЗЯ:**
-- Создавать в Sales Forecast таблицы `shifts`, `payroll_records`, `employee_vacations` — это всё в Time Tracking
-- Реализовывать здесь логику OR-Tools / constraint solving / TК-валидацию
-- Отдавать через `/labor-demand` уже сгенерированный график — только сигнал спроса
-- Хардкодить нормативы в Python — только через таблицу `labor_norms` (со scope: per-department / per-segment / global fallback)
+- Создавать в Sales Forecast `labor_norms`, `forecast_to_demand()`, расчёт `demand_by_role`, плоский `GET /api/labor-demand` — потребность по ролям считает TCO (убрано из дизайна v1)
+- Делать LLM-ревью/правку графика и schedule-агентов (`ScheduleReviewerAgent` и пр.) — это агенты TCO
+- Реализовывать логику OR-Tools / constraint solving / ТК-валидацию
+- Создавать таблицы `shifts`, `payroll_records`, `employee_vacations` — всё в TCO
+- Отдавать через `/api/labor-demand/*` уже сгенерированный график — только сигнал спроса
 
 **✅ ОБЯЗАТЕЛЬНО:**
-- Версионировать нормативы через `effective_from/to` (старые не удалять — нужны для воспроизводимости старых анализов)
-- В `/labor-demand` всегда возвращать `norms_version` и `forecast_model_version` — Time Tracking логирует их в audit графика
-- Для LLM-эндпоинтов использовать structured output (Claude `tool_use` / OpenAI `json_schema`) — патчи и warnings должны автоматически применяться солвером
-- Prompt caching для контекста подразделения (15-30k токенов константа per request)
+- Во всех ответах отдавать `data_quality`-флаги (`cost_coverage`, `clustering_silhouette`, `sku_model_trained`) — TCO делает graceful-degradation, пока SKU-модель дообучается
+- Эндпоинты — read-only, авторизация общим `Bearer $API_TOKEN`, ISO-8601 с зоной `+05:00`
+- `hourly_profile.*_share` суммируются в ~1.0 (TCO умножает на дневной `predicted_revenue`)
+- Мэппинг `category_name` → цех/станция НЕ делать здесь — отдаём категории iiko «как есть», сопоставление на стороне TCO
 
-### Что критично уточнить с командой Time Tracking
+### Что согласовать с командой TCO
 
-- Стек (Python → OR-Tools идеально; .NET → OR-Tools binding или Gurobi; 1С → отдельный микросервис рядом)
-- Service-to-service auth (API key / JWT / mTLS)
-- Кто инициирует генерацию: UI / cron / push от Sales Forecast
-- За сколько дней до недели нужен утверждённый график — от этого зависит cron cadence
+- Мэппинг категория iiko → цех/станция (справочник на стороне TCO)
+- Глубина усреднения `hourly_profile` (4 vs 8 недель)
+- Поведение для неактивных/новых точек (рекомендация: пустой блок + флаг в `data_quality`)
+- SLA / частота вызовов эндпоинтов, нужен ли rate limiting
 
 ## Deployment (Production)
 

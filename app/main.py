@@ -11,6 +11,7 @@ from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
 from .routers import ai_recommendations, menu, receipts, pricing_analytics, pricing_engine
+from .routers import labor_demand
 from .routers.users_ui import ui_auth_router, ui_users_router
 from .auth_ui import bootstrap_admin, seed_default_roles
 from .db import SessionLocal
@@ -311,6 +312,7 @@ app.include_router(menu.router, prefix="/api")
 app.include_router(receipts.router, prefix="/api")
 app.include_router(pricing_analytics.router, prefix="/api")
 app.include_router(pricing_engine.router, prefix="/api")
+app.include_router(labor_demand.router, prefix="/api")
 app.include_router(ui_auth_router, prefix="/api")
 app.include_router(ui_users_router, prefix="/api")
 
