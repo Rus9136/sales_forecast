@@ -26,6 +26,24 @@ def _share(value: float, total: float) -> float:
     return round(value / total, 4) if total else 0.0
 
 
+def _sane_margin(value) -> Optional[float]:
+    """Keep gp_margin only inside the plausible [0, 1] band.
+
+    Upstream cost data is incomplete for some SKUs, producing absurd raw
+    margins (e.g. -5.37 = cost 6.4x revenue, or 1.0 = missing cost). We null
+    those out rather than ship an untrustworthy per-item signal — matching the
+    consumer's own 0–100% guard. `data_quality.cost_coverage` is the aggregate
+    flag.
+    """
+    if value is None:
+        return None
+    try:
+        m = float(value)
+    except (TypeError, ValueError):
+        return None
+    return m if 0.0 <= m <= 1.0 else None
+
+
 class LaborDemandService:
     def __init__(self, db: Session):
         self.db = db
@@ -70,6 +88,12 @@ class LaborDemandService:
                 "data_quality": data_quality,
             }
 
+        # Price comes from realised receipts (sku_weekly_summary.avg_price =
+        # revenue/qty), NOT product.default_sale_price — the latter is far too
+        # sparse on some iiko domains (~2% coverage), which collapses
+        # revenue_share to a single SKU. Forecast avg_price is the fallback.
+        price_map = self._price_map(department_id)
+
         # Aggregate the SKU forecast across every day in the period.
         # top_n=None → forecast all active SKUs (needed for role/category shares).
         agg: dict[int, dict] = {}
@@ -84,15 +108,22 @@ class LaborDemandService:
                         "product_type": it["product_type"],
                         "group_name": it.get("group_name"),
                         "category_name": it.get("category_name"),
-                        "avg_price": it.get("avg_price"),
+                        "fc_price": it.get("avg_price"),
                         "qty": 0.0,
-                        "revenue": 0.0,
                     }
                 a["qty"] += it.get("predicted_qty") or 0.0
-                a["revenue"] += it.get("estimated_revenue") or 0.0
-                if a["avg_price"] is None and it.get("avg_price") is not None:
-                    a["avg_price"] = it["avg_price"]
+                if a["fc_price"] is None and it.get("avg_price") is not None:
+                    a["fc_price"] = it["avg_price"]
             d += timedelta(days=1)
+
+        # Resolve price (realised first, forecast fallback) and derive revenue.
+        for pid, a in agg.items():
+            price = price_map.get(pid)
+            if price is None:
+                price = a.get("fc_price")
+            a.pop("fc_price", None)
+            a["avg_price"] = round(price, 2) if price else None
+            a["revenue"] = a["qty"] * price if price else 0.0
 
         total_qty = sum(a["qty"] for a in agg.values())
         total_rev = sum(a["revenue"] for a in agg.values())
@@ -294,10 +325,21 @@ class LaborDemandService:
             feats = r.features or {}
             out[r.product_id] = {
                 "role": r.effective_role,
-                "gp_margin": feats.get("gp_margin"),
+                "gp_margin": _sane_margin(feats.get("gp_margin")),
                 "demand_cv": feats.get("demand_cv"),
             }
         return out
+
+    def _price_map(self, department_id: str) -> dict[int, float]:
+        """product_id → latest realised avg_price (revenue/qty) from sku_weekly_summary."""
+        rows = self.db.execute(text("""
+            SELECT DISTINCT ON (product_id) product_id, avg_price
+            FROM sku_weekly_summary
+            WHERE department_id = CAST(:dept AS uuid)
+              AND avg_price IS NOT NULL AND avg_price > 0
+            ORDER BY product_id, week_start DESC
+        """), {"dept": department_id}).fetchall()
+        return {r.product_id: float(r.avg_price) for r in rows}
 
     @staticmethod
     def _role_distribution(agg, roles, total_qty, total_rev) -> dict:

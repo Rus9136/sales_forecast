@@ -3,7 +3,7 @@
 Интеграционная документация по трём read-only эндпоинтам, которыми Sales Forecast
 снабжает ИИ-агентов TCO сигналом спроса по локации.
 
-- **Версия:** 1.0 (2026-06-10)
+- **Версия:** 1.1 (2026-06-10)
 - **Статус:** в проде на `https://aqniet.site`
 - **Архитектура:** [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md) §2
 - **Зона ответственности:** Sales Forecast — только поставщик сигнала. Солвер, `demand_by_role`
@@ -104,8 +104,8 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 | `predicted_qty` | float | Прогноз количества за период (SKU LightGBM) |
 | `qty_share` | float | Доля блюда в общем прогнозном количестве |
 | `revenue_share` | float | Доля блюда в общей прогнозной выручке |
-| `avg_price` | float\|null | Средняя цена позиции |
-| `gp_margin` | float\|null | Валовая маржа (из `sku_menu_role.features`, сырое значение) |
+| `avg_price` | float\|null | Реальная средняя цена = выручка/кол-во из `sku_weekly_summary` (fallback — прайс прогноза) |
+| `gp_margin` | float\|null | Валовая маржа в диапазоне `[0..1]`. Вне диапазона → `null` (недостоверная себестоимость) |
 | `demand_cv` | float\|null | Коэффициент вариации спроса (волатильность) |
 | `rank` | int | Ранг по `predicted_qty` (1 = топ) |
 
@@ -171,9 +171,14 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 > **Мэппинг категория → цех** — на стороне TCO. Sales Forecast отдаёт `category_name` из
 > номенклатуры iiko «как есть».
 >
-> **Замечание по данным:** у части `GOODS` `gp_margin` может приходить аномальным
-> (например `-9.99`) из-за неполной себестоимости в исходных данных. Ориентируйтесь на
-> `data_quality.cost_coverage`.
+> **Цена/выручка (v1.1):** `avg_price` и `revenue_share` берутся из реальных продаж
+> (`sku_weekly_summary.avg_price` = выручка/кол-во), а не из `product.default_sale_price`
+> (он разрежён на части доменов). `revenue_share` теперь распределён по всем ролям, а не
+> вырождён в одну.
+>
+> **Маржа (v1.1):** `gp_margin` санитизируется — возвращается только при значении в `[0..1]`,
+> иначе `null` (исходная себестоимость для части позиций недостоверна и давала отрицательные
+> значения). Агрегатный сигнал достоверности — `data_quality.cost_coverage`.
 
 ---
 
