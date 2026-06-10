@@ -209,13 +209,40 @@ async def elasticity_summary(db: Session = Depends(get_db)):
 @router.post("/elasticity/estimate")
 def trigger_elasticity_estimation(
     lookback_days: int = Query(540, ge=90, le=730),
+    background: bool = Query(False, description="true → 202 + job_id, статус через GET /jobs/{id}"),
     db: Session = Depends(get_db),
 ):
     """Sync def: FastAPI runs it in the threadpool — иначе многоминутный
-    OLS-прогон блокирует event loop единственного воркера."""
+    OLS-прогон блокирует event loop единственного воркера.
+    С background=true возвращается сразу job_id (не держит HTTP-соединение)."""
+    if background:
+        from ..db import SessionLocal
+        from ..services.pricing_jobs import job_registry
+
+        def _run():
+            job_db = SessionLocal()
+            try:
+                from ..services.elasticity_estimation_service import ElasticityEstimationService
+                return ElasticityEstimationService(job_db).estimate_all(lookback_days=lookback_days)
+            finally:
+                job_db.close()
+
+        job_id = job_registry.submit("elasticity_estimate", _run)
+        return {"status": "running", "job_id": job_id}
+
     from ..services.elasticity_estimation_service import ElasticityEstimationService
     svc = ElasticityEstimationService(db)
     return svc.estimate_all(lookback_days=lookback_days)
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """Статус фонового джоба, запущенного с ?background=true."""
+    from ..services.pricing_jobs import job_registry
+    job = job_registry.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found (реестр процесс-локальный и очищается при рестарте)")
+    return job
 
 
 @router.get("/elasticity/{product_id}/{department_id}")
@@ -271,6 +298,7 @@ async def list_recommendations(
     department_id: Optional[str] = None,
     status: Optional[str] = None,
     batch_id: Optional[str] = None,
+    rec_type: Optional[str] = Query(None, description="optimizer | experiment"),
     limit: int = Query(100, le=1000),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -286,6 +314,9 @@ async def list_recommendations(
     if batch_id:
         conditions.append("pr.batch_id = CAST(:batch_id AS uuid)")
         params["batch_id"] = batch_id
+    if rec_type:
+        conditions.append("pr.rec_type = :rec_type")
+        params["rec_type"] = rec_type
 
     where = " AND ".join(conditions)
 
@@ -329,6 +360,7 @@ async def list_recommendations(
             "constraints_applied": r.constraints_applied,
             "llm_explanation": r.llm_explanation,
             "status": r.status,
+            "rec_type": r.rec_type,
             "created_at": str(r.created_at),
             "reviewed_at": str(r.reviewed_at) if r.reviewed_at else None,
             "review_comment": r.review_comment,
@@ -433,6 +465,8 @@ async def review_recommendation(
     svc = PriceOptimizerService(db)
     result = svc.review_recommendation(rec_id, status, reviewer_id, comment)
     if result.get("status") == "error":
+        if result.get("code") == "cycle_cap_exceeded":
+            raise HTTPException(409, result.get("message"))
         raise HTTPException(404, result.get("message", "Recommendation not found"))
     return result
 
@@ -453,7 +487,86 @@ async def batch_review_recommendations(
     except ValueError:
         raise HTTPException(400, "rec_ids must be comma-separated integers")
     svc = PriceOptimizerService(db)
-    return svc.batch_review(ids, status, reviewer_id, comment)
+    result = svc.batch_review(ids, status, reviewer_id, comment)
+    if result.get("status") == "error" and result.get("code") == "cycle_cap_exceeded":
+        raise HTTPException(409, result.get("message"))
+    return result
+
+
+# ==================== №7: Price experiments ====================
+
+@router.post("/experiments/generate")
+def generate_experiments(
+    department_id: str = Query(...),
+    n: int = Query(10, ge=1, le=50),
+    delta_pct: float = Query(4.0, ge=2.0, le=5.0),
+    db: Session = Depends(get_db),
+):
+    """Сгенерировать контролируемые ценовые эксперименты для grade C/D SKU.
+    Идут обычным циклом approve → applied → outcome; цель — измерение эластичности."""
+    from ..services.price_optimizer_service import PriceOptimizerService
+    svc = PriceOptimizerService(db)
+    return svc.generate_experiments(department_id, n, delta_pct)
+
+
+# ==================== Audit log ====================
+
+@router.get("/audit-log")
+async def list_audit_log(
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    action: Optional[str] = None,
+    department_id: Optional[str] = None,
+    limit: int = Query(100, le=1000),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    conditions = ["1=1"]
+    params: dict = {}
+    if entity_type:
+        conditions.append("a.entity_type = :etype")
+        params["etype"] = entity_type
+    if entity_id:
+        conditions.append("a.entity_id = :eid")
+        params["eid"] = entity_id
+    if action:
+        conditions.append("a.action = :action")
+        params["action"] = action
+    if department_id:
+        conditions.append("a.department_id = CAST(:dept_id AS uuid)")
+        params["dept_id"] = department_id
+    where = " AND ".join(conditions)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM pricing_audit_log a WHERE {where}"), params
+    ).scalar()
+
+    rows = db.execute(
+        text(f"""
+            SELECT a.id, a.entity_type, a.entity_id, a.action, a.actor,
+                   a.department_id::text AS department_id, a.details, a.created_at
+            FROM pricing_audit_log a
+            WHERE {where}
+            ORDER BY a.id DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    ).fetchall()
+
+    items = [
+        {
+            "id": r.id,
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "action": r.action,
+            "actor": r.actor,
+            "department_id": r.department_id,
+            "details": r.details,
+            "created_at": str(r.created_at),
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": total}
 
 
 # ==================== Feedback loop: applied + outcomes + baseline ====================

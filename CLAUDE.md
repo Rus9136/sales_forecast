@@ -429,6 +429,13 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/pricing-analytics/menu-roles/summary` — Распределение ролей (GET, department_id)
 - `/api/pricing-analytics/menu-roles/{product_id}/{department_id}` — Ручное переопределение роли (PUT, manual_role)
 - `/api/pricing-analytics/menu-roles/cluster` — Запуск кластеризации (POST, lookback_days)
+- `/api/pricing-engine/elasticity|recommendations|rules` — Ценовой движок: эластичность (B2), рекомендации (B3), правила (B4) — см. API_DOCUMENTATION_PRICING.md
+- `/api/pricing-engine/experiments/generate` — Ценовые эксперименты для grade C/D (POST, измерение эластичности)
+- `/api/pricing-engine/recommendations/detect-applied` — Детекция применённых цен по каталогу (POST)
+- `/api/pricing-engine/outcomes` — Пост-анализ applied-рекомендаций: факт vs ожидание, реализованная эластичность (GET, + /summary, + POST /evaluate)
+- `/api/pricing-engine/baseline` — KPI-база пилота (GET, + POST /freeze)
+- `/api/pricing-engine/audit-log` — Append-only журнал действий ценообразования (GET)
+- `/api/pricing-engine/jobs/{id}` — Статус фоновых джобов (`?background=true` на estimate/backfill)
 - `/api/labor-demand/{department_id}/menu-mix` — Сигнал для TCO: роли меню, топ-блюда, загрузка цехов (GET, from_date, to_date, top_n)
 - `/api/labor-demand/{department_id}/forecast` — Сигнал для TCO: дневной спрос + почасовая кривая (GET, from_date, to_date)
 - `/api/labor-demand/{department_id}/elasticity-signal` — Сигнал для TCO: эластичность флагманов (GET, grade)

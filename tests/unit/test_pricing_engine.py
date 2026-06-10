@@ -188,6 +188,95 @@ class TestAssignGrade:
         assert _assign_grade(0, 0) == "D"
 
 
+class TestWithinEstimator:
+    """Within-преобразование должно убирать межпозиционные различия уровней цен."""
+
+    @staticmethod
+    def _make_df(rows):
+        import pandas as pd
+        return pd.DataFrame(rows, columns=[
+            "product_id", "department_id", "log_qty", "log_price",
+            "month", "week_index", "cat_log_qty",
+        ])
+
+    def test_pooled_cross_sectional_bias_removed(self):
+        import numpy as np
+        from app.services.elasticity_estimation_service import (
+            _build_design_matrix, _run_ols,
+        )
+        # Два SKU с РАЗНЫМИ уровнями цен и спроса, но БЕЗ временной вариации цены.
+        # Дорогой продаётся меньше → pooled-OLS найдёт ложную ε, within — нет сигнала.
+        rows = []
+        for w in range(12):
+            rows.append((1, "d1", np.log(100 + w % 3), np.log(1000), 1 + w % 3, w, 0.0))
+            rows.append((2, "d1", np.log(10 + w % 3), np.log(5000), 1 + w % 3, w, 0.0))
+        df = self._make_df(rows)
+
+        X, y, cols, extra_dof = _build_design_matrix(df, within=True)
+        assert extra_dof == 1  # 2 пары → 1 поглощённое среднее
+        beta, se, _, _, _ = _run_ols(X, y, extra_dof)
+        eps = beta[cols.index("log_price")]
+        # после демининга log_price внутри пары константен → нет идентификации, ε≈0
+        assert abs(eps) < 1e-6
+
+    def test_within_recovers_true_elasticity(self):
+        import numpy as np
+        from app.services.elasticity_estimation_service import (
+            _build_design_matrix, _run_ols,
+        )
+        # Истинная ε = -0.8; у пар разные базовые уровни (FE), цена меняется во времени
+        true_eps = -0.8
+        rng_prices = [1000, 1000, 1050, 1050, 1100, 1100, 1000, 1050, 1100, 1000, 1050, 1100]
+        rows = []
+        for pid, base_q in ((1, 100.0), (2, 30.0)):
+            for w, p in enumerate(rng_prices):
+                q = base_q * (p / 1000.0) ** true_eps
+                rows.append((pid, "d1", np.log(q), np.log(p), 1 + w % 3, w, 0.0))
+        df = self._make_df(rows)
+
+        X, y, cols, extra_dof = _build_design_matrix(df, within=True)
+        beta, se, _, _, _ = _run_ols(X, y, extra_dof)
+        eps = beta[cols.index("log_price")]
+        assert eps == pytest.approx(true_eps, abs=0.05)
+
+
+class TestJobRegistry:
+    def test_submit_and_get(self):
+        import time
+        from app.services.pricing_jobs import JobRegistry
+
+        reg = JobRegistry()
+        job_id = reg.submit("test", lambda: {"status": "ok", "value": 42})
+        for _ in range(50):
+            job = reg.get(job_id)
+            if job["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert job["status"] == "done"
+        assert job["result"]["value"] == 42
+
+    def test_failure_recorded(self):
+        import time
+        from app.services.pricing_jobs import JobRegistry
+
+        def boom():
+            raise RuntimeError("nope")
+
+        reg = JobRegistry()
+        job_id = reg.submit("fail", boom)
+        for _ in range(50):
+            job = reg.get(job_id)
+            if job["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert job["status"] == "error"
+        assert "nope" in job["result"]["message"]
+
+    def test_unknown_job(self):
+        from app.services.pricing_jobs import JobRegistry
+        assert JobRegistry().get("missing") is None
+
+
 class TestRealizedElasticity:
     def test_control_adjustment(self):
         # своя qty -10%, контроль -5% → скорректированное ≈ -5.26%

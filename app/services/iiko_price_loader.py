@@ -146,13 +146,16 @@ class IikoPriceLoader:
         raw = self.db.connection().connection
         cur = raw.cursor()
         try:
+            # synced_at = clock_timestamp(): реальное время выполнения, НЕ NOW()
+            # (NOW() прибит к началу транзакции сессии и может быть РАНЬШЕ
+            # sync_started_at — stale-маркировка зацепила бы свежие строки)
             execute_values(
                 cur,
                 """
                 INSERT INTO sku_catalog_price
                     (department_id, iiko_product_id, product_id, product_size_id,
                      price, date_from, date_to, price_type, document_id,
-                     included, is_dish_of_day, iiko_source_domain)
+                     included, is_dish_of_day, iiko_source_domain, synced_at)
                 VALUES %s
                 ON CONFLICT (department_id, iiko_product_id,
                     COALESCE(product_size_id, '00000000-0000-0000-0000-000000000000'::uuid),
@@ -164,9 +167,11 @@ class IikoPriceLoader:
                     document_id = EXCLUDED.document_id,
                     included = EXCLUDED.included,
                     is_dish_of_day = EXCLUDED.is_dish_of_day,
-                    synced_at = NOW()
+                    is_stale = false,
+                    synced_at = clock_timestamp()
                 """,
                 values,
+                template="(" + ", ".join(["%s"] * 12) + ", clock_timestamp())",
                 page_size=1000,
             )
             raw.commit()
@@ -174,16 +179,55 @@ class IikoPriceLoader:
             cur.close()
         return len(values)
 
+    def _mark_stale(self, host: str, sync_started_at, upserted: int) -> int:
+        """Интервалы домена, не пришедшие в полном снапшоте — отозванные
+        приказы. Помечаем is_stale (не удаляем: аудит); при повторном
+        появлении upsert снимает флаг.
+
+        Предохранитель: если снапшот подозрительно мал относительно уже
+        известных интервалов домена (обрезанный ответ iiko), маркировку
+        пропускаем — лучше недомаркировать, чем выключить домен целиком."""
+        existing = self.db.execute(
+            text("""
+                SELECT COUNT(*) FROM sku_catalog_price
+                WHERE iiko_source_domain = :host AND NOT is_stale
+            """),
+            {"host": host},
+        ).scalar() or 0
+        if existing > 0 and upserted < 0.5 * existing:
+            logger.warning(
+                "%s: snapshot has %d intervals vs %d known — skipping stale marking",
+                host, upserted, existing,
+            )
+            return 0
+
+        result = self.db.execute(
+            text("""
+                UPDATE sku_catalog_price
+                SET is_stale = true
+                WHERE iiko_source_domain = :host
+                  AND synced_at < :started
+                  AND is_stale = false
+            """),
+            {"host": host, "started": sync_started_at},
+        )
+        self.db.commit()
+        return result.rowcount
+
     async def sync(self, date_from: str = DEFAULT_FROM, date_to: str = DEFAULT_TO) -> dict:
         total_rows = 0
         total_resolved = 0
         per_domain = []
         errors = []
         known_depts = self._known_departments()
+        # stale-маркировка корректна только при полном снапшоте всей истории
+        full_snapshot = (date_from == DEFAULT_FROM and date_to == DEFAULT_TO)
 
         for base_url in self.domains:
             host = _domain_host(base_url)
             try:
+                # отметка по часам БД — сравнение с synced_at без расхождений часов
+                sync_started_at = self.db.execute(text("SELECT clock_timestamp()")).scalar()
                 products = await self.fetch_from_single_domain(base_url, date_from, date_to)
                 parsed = self._parse(products, host)
 
@@ -192,6 +236,14 @@ class IikoPriceLoader:
                 resolved = sum(1 for r in parsed if r["iiko_product_id"] in product_map)
 
                 upserted = self._upsert(parsed, product_map, known_depts)
+
+                stale_marked = 0
+                if full_snapshot and parsed:
+                    stale_marked = self._mark_stale(host, sync_started_at, upserted)
+                    if stale_marked:
+                        logger.info("%s: %d price intervals marked stale (rescinded orders)",
+                                    host, stale_marked)
+
                 total_rows += upserted
                 total_resolved += resolved
                 per_domain.append({
@@ -199,6 +251,7 @@ class IikoPriceLoader:
                     "products": len(products),
                     "price_intervals": len(parsed),
                     "upserted": upserted,
+                    "stale_marked": stale_marked,
                     "product_resolved": resolved,
                     "resolve_pct": round(100.0 * resolved / len(parsed), 1) if parsed else 0,
                 })

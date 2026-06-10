@@ -236,8 +236,26 @@ def run_aggregate(
 # ---------- POST: full backfill ----------
 
 @router.post("/backfill")
-def run_backfill(db: Session = Depends(get_db)):
-    """Sync def → threadpool: полный пересчёт витрин занимает минуты."""
+def run_backfill(
+    background: bool = Query(False, description="true → job_id, статус через GET /api/pricing-engine/jobs/{id}"),
+    db: Session = Depends(get_db),
+):
+    """Sync def → threadpool: полный пересчёт витрин занимает минуты.
+    С background=true возвращается сразу job_id."""
+    if background:
+        from ..db import SessionLocal
+        from ..services.pricing_jobs import job_registry
+
+        def _run():
+            job_db = SessionLocal()
+            try:
+                return PricingAnalyticsService(job_db).backfill_all()
+            finally:
+                job_db.close()
+
+        job_id = job_registry.submit("pricing_backfill", _run)
+        return {"status": "running", "job_id": job_id}
+
     svc = PricingAnalyticsService(db)
     result = svc.backfill_all()
     return {"status": "ok", **result}
@@ -355,6 +373,10 @@ async def update_menu_role(
     row = result.fetchone()
     if not row:
         raise HTTPException(404, "SKU menu role not found")
+    from ..services.pricing_audit import log_audit
+    log_audit(db, "menu_role", f"{product_id}/{department_id}", "override",
+              department_id=department_id,
+              details={"manual_role": manual_role, "effective_role": row.effective_role})
     db.commit()
     return {"status": "ok", "effective_role": row.effective_role}
 

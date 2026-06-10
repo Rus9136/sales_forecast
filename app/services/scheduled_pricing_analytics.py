@@ -34,11 +34,17 @@ def run_pricing_analytics_aggregation():
                 "Pricing analytics done: price_history=%s, sku_weekly=%s, dept_weekly=%s",
                 r1, r2, r3,
             )
-            return {"price_history": r1, "sku_weekly": r2, "department_weekly": r3}
+            result = {"status": "ok", "price_history": r1, "sku_weekly": r2, "department_weekly": r3}
+            from .pricing_jobs import log_job_run
+            log_job_run("pricing_analytics", result,
+                        records=r2.get("rows_upserted", 0) + r3.get("rows_upserted", 0))
+            return result
         finally:
             db.close()
     except Exception as e:
         logger.error("Pricing analytics aggregation failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_analytics", {"status": "error", "message": str(e)})
         return {"status": "error", "message": str(e)}
 
 
@@ -51,9 +57,13 @@ def run_menu_clustering():
             svc = MenuClusteringService(db)
             result = svc.run_clustering()
             logger.info("Menu clustering done: %s", result)
+            from .pricing_jobs import log_job_run
+            log_job_run("menu_clustering", result, records=result.get("skus_classified", 0))
             return result
         finally:
             db.close()
     except Exception as e:
         logger.error("Menu clustering failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("menu_clustering", {"status": "error", "message": str(e)})
         return {"status": "error", "message": str(e)}

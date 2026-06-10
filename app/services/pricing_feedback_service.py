@@ -73,6 +73,7 @@ class PricingFeedbackService:
                         ON scp.product_id = pr.product_id
                         AND scp.department_id = pr.department_id
                         AND scp.price > 0
+                        AND NOT scp.is_stale
                         AND ABS(scp.price - pr.recommended_price) <= :tol
                         AND scp.date_from >= pr.reviewed_at::date
                     WHERE pr.status = 'approved'
@@ -89,6 +90,10 @@ class PricingFeedbackService:
             {"tol": PRICE_MATCH_TOLERANCE},
         )
         applied_ids = [r[0] for r in result.fetchall()]
+        if applied_ids:
+            from .pricing_audit import log_audit
+            for rid in applied_ids:
+                log_audit(self.db, "recommendation", rid, "applied", actor="scheduler")
         self.db.commit()
         if applied_ids:
             logger.info("Detected %d applied recommendations: %s", len(applied_ids), applied_ids)
@@ -173,6 +178,7 @@ class PricingFeedbackService:
                     SELECT DISTINCT product_id FROM sku_catalog_price
                     WHERE department_id = CAST(:did AS uuid)
                       AND date_from BETWEEN :bfrom AND :eto
+                      AND NOT is_stale
                 ),
                 peers AS (
                     SELECT p2.id FROM product p2
@@ -357,6 +363,10 @@ class PricingFeedbackService:
             """),
             {"label": label, "weeks": weeks, "bfrom": baseline_from, "bto": baseline_to},
         )
+        from .pricing_audit import log_audit
+        log_audit(self.db, "baseline", label, "freeze",
+                  details={"weeks": weeks, "departments": dept_count,
+                           "baseline_from": str(baseline_from), "baseline_to": str(baseline_to)})
         self.db.commit()
 
         logger.info("Baseline '%s' frozen: %d departments, %s..%s",

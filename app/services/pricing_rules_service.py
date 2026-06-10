@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 VALID_RULE_TYPES = {
     "min_margin", "max_step", "min_frequency", "no_decrease_anchor",
     "min_competitive_idx", "rounding", "no_psychological", "stop_list",
+    "max_changes_per_cycle",
 }
 
 PREMIUM_ROLES = {"premium_anchor", "image_rare"}
@@ -66,6 +67,34 @@ class PricingRulesService:
             if row[0] not in effective:
                 effective[row[0]] = row[3]
         return effective
+
+    def get_change_cycle_cap(self, department_id: str) -> Optional[dict[str, Any]]:
+        """Portfolio-правило max_changes_per_cycle для точки (department > global).
+        → {'value': N, 'window_days': D} или None, если правило не настроено."""
+        today = date.today()
+        row = self.db.execute(
+            text("""
+                SELECT params FROM pricing_rule
+                WHERE rule_type = 'max_changes_per_cycle'
+                  AND is_active = true
+                  AND effective_from <= :today
+                  AND (effective_to IS NULL OR effective_to >= :today)
+                  AND (
+                      (scope_type = 'department' AND scope_id = :dept_id)
+                      OR (scope_type = 'global' AND scope_id IS NULL)
+                  )
+                ORDER BY CASE scope_type WHEN 'department' THEN 1 ELSE 2 END, id
+                LIMIT 1
+            """),
+            {"today": today, "dept_id": str(department_id)},
+        ).fetchone()
+        if not row:
+            return None
+        params = row[0]
+        return {
+            "value": int(params.get("value", 15)),
+            "window_days": int(params.get("window_days", 14)),
+        }
 
     def check_recommendation(
         self,
@@ -174,6 +203,8 @@ class PricingRulesService:
         ]
 
     def create_rule(self, data: dict) -> dict:
+        from .pricing_audit import log_audit
+
         if data["rule_type"] not in VALID_RULE_TYPES:
             raise ValueError(
                 f"Invalid rule_type '{data['rule_type']}'. "
@@ -198,6 +229,9 @@ class PricingRulesService:
                 "effective_to": data.get("effective_to"),
             },
         )
+        log_audit(self.db, "rule", None, "create",
+                  details={"rule_type": data["rule_type"], "scope_type": data["scope_type"],
+                           "scope_id": data.get("scope_id"), "params": data["params"]})
         self.db.commit()
         return {"status": "ok"}
 
@@ -221,17 +255,30 @@ class PricingRulesService:
             text(f"UPDATE pricing_rule SET {', '.join(sets)} WHERE id = :id"),
             params,
         )
+        from .pricing_audit import log_audit
+        log_audit(self.db, "rule", rule_id, "update",
+                  details={k: v for k, v in data.items() if v is not None})
         self.db.commit()
         return {"status": "ok"}
 
     def delete_rule(self, rule_id: int) -> dict:
+        from .pricing_audit import log_audit
+
         # Hard delete: soft-deleted строки блокировали повторное создание
         # правила через UNIQUE (rule_type, scope_type, scope_id).
         result = self.db.execute(
-            text("DELETE FROM pricing_rule WHERE id = :id"),
+            text("""
+                DELETE FROM pricing_rule WHERE id = :id
+                RETURNING rule_type, scope_type, scope_id, params
+            """),
             {"id": rule_id},
         )
-        self.db.commit()
-        if result.rowcount == 0:
+        deleted = result.fetchone()
+        if deleted is None:
+            self.db.rollback()
             return {"status": "error", "message": f"Rule {rule_id} not found"}
+        log_audit(self.db, "rule", rule_id, "delete",
+                  details={"rule_type": deleted[0], "scope_type": deleted[1],
+                           "scope_id": deleted[2], "params": deleted[3]})
+        self.db.commit()
         return {"status": "ok"}

@@ -39,9 +39,13 @@ def run_catalog_price_sync():
             logger.error("Applied-recommendation detection failed: %s", e, exc_info=True)
             result["applied_detection"] = {"status": "error", "message": str(e)}
 
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_catalog_price", result, records=result.get("total_intervals", 0))
         return result
     except Exception as e:
         logger.error("Catalog price sync failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_catalog_price", {"status": "error", "message": str(e)})
         return {"status": "error", "message": str(e)}
     finally:
         db.close()
@@ -58,9 +62,13 @@ def run_outcome_evaluation():
             "Outcome evaluation complete: %s evaluated of %s pending",
             result.get("evaluated"), result.get("pending"),
         )
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_outcomes", result, records=result.get("evaluated", 0))
         return result
     except Exception as e:
         logger.error("Outcome evaluation failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_outcomes", {"status": "error", "message": str(e)})
         return {"status": "error", "message": str(e)}
     finally:
         db.close()
@@ -81,9 +89,13 @@ def run_elasticity_update():
         svc = ElasticityEstimationService(db)
         result = svc.estimate_all(lookback_days=730)
         logger.info("Elasticity estimation complete: %s", result.get("status"))
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_elasticity", result, records=result.get("upserted", 0))
         return result
     except Exception as e:
         logger.error("Elasticity estimation failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_elasticity", {"status": "error", "message": str(e)})
         return {"status": "error", "message": str(e)}
     finally:
         db.close()
@@ -120,14 +132,19 @@ def run_price_optimization():
             "Price optimization complete: %d recommendations across %d departments",
             total_recs, len(active_depts),
         )
-        return {
+        result = {
             "status": "ok",
             "total_recommendations": total_recs,
             "departments_processed": len(active_depts),
             "per_department": dept_results,
         }
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_optimization", result, records=total_recs)
+        return result
     except Exception as e:
         logger.error("Price optimization failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_optimization", {"status": "error", "message": str(e)})
         return {"status": "error", "message": str(e)}
     finally:
         db.close()

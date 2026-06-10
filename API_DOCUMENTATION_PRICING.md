@@ -196,8 +196,9 @@ Authorization: Bearer <API_TOKEN>
 | Параметр | Тип | Описание |
 |----------|-----|----------|
 | `department_id` | uuid? | Фильтр |
-| `status` | string? | `new`/`approved`/`rejected` |
+| `status` | string? | `new`/`approved`/`rejected`/`expired`/`applied` |
 | `batch_id` | uuid? | Фильтр по партии генерации |
+| `rec_type` | string? | `optimizer` / `experiment` |
 | `limit` | int=100 (≤1000) / `offset` | Пагинация |
 
 **Элемент:** `id, product_id, product_name, department_id, department_name, batch_id, current_price, recommended_price, delta_pct, cogs, current_qty_forecast, new_qty_forecast, current_gp, expected_gp, delta_gp, elasticity_used, elasticity_grade, menu_role, constraints_applied, llm_explanation, status, created_at, reviewed_at, review_comment`. Сортировка по `delta_gp DESC`.
@@ -256,11 +257,55 @@ active_skus, cost_coverage`.
 
 ---
 
+## EX. Ценовые эксперименты — `/api/pricing-engine/experiments`
+
+Контролируемые изменения цены для **измерения** эластичности grade C/D SKU (а не для max GP).
+
+### EX.1 `POST /experiments/generate`
+Query: `department_id` (req), `n` (10, ≤50), `delta_pct` (4.0, 2–5).
+Кандидаты: grade C/D, известная себестоимость, без изменений цены ≥28 дней, ранжирование по
+обороту (быстрее сигнал). Цена +delta% с округлением по роли, все бизнес-правила соблюдаются.
+→ `{status, batch_id, candidates, experiments_created, items}`.
+Созданные записи имеют `rec_type='experiment'` и идут обычным циклом approve → applied →
+outcome; `realized_elasticity` из outcome — новое ценовое событие для будущих переоценок.
+Оптимизатор не трогает SKU с открытым экспериментом и не вытесняет эксперименты ежедневным батчем.
+
+---
+
+## AU. Аудит — `GET /api/pricing-engine/audit-log`
+
+Append-only журнал действий (ТЗ п.9.3, `pricing_audit_log`): утверждения/отклонения рекомендаций
+(в т.ч. batch), `applied`-детекция, CRUD правил, override ролей меню, заморозка baseline,
+генерация экспериментов.
+Query: `entity_type?` (`recommendation`/`rule`/`menu_role`/`baseline`/`experiment`), `entity_id?`,
+`action?`, `department_id?`, `limit`/`offset`.
+**Элемент:** `entity_type, entity_id, action, actor, department_id, details (JSONB), created_at`.
+
+---
+
+## JB. Фоновые джобы — `/api/pricing-engine/jobs`
+
+Тяжёлые ручные прогоны можно запускать без удержания HTTP-соединения:
+`POST /elasticity/estimate?background=true` и `POST /pricing-analytics/backfill?background=true`
+сразу возвращают `{status: "running", job_id}`.
+
+### JB.1 `GET /jobs/{job_id}`
+→ `{job_id, name, status: running|done|error, started_at, finished_at, result}`.
+Реестр процесс-локальный (in-memory): очищается при рестарте контейнера, хранит последние 50
+завершённых. Регулярные прогоны идут через планировщик, фоновый режим — для отладки.
+
+---
+
 ## B4. Бизнес-правила — `/api/pricing-engine/rules`
 
-8 типов ограничений со scope-каскадом (`product` > `department` > `segment` > `global`).
-6 дефолтных глобальных правил засеяны (шаг ≤ +5%, маржа ≥ 60%, премиум-якоря только дорожают,
-округление до 50₸ / флагманы 100₸, не чаще 1 изменения в 2 недели).
+9 типов ограничений со scope-каскадом (`product` > `department` > `segment` > `global`).
+7 дефолтных глобальных правил засеяны (шаг ≤ +5%, маржа ≥ 60%, премиум-якоря только дорожают,
+округление до 50₸ / флагманы 100₸, не чаще 1 изменения в 2 недели, ≤15 утверждённых
+изменений на точку за 14 дней).
+
+`max_changes_per_cycle` (`{"value": N, "window_days": D}`) — портфельное правило: проверяется
+не на кандидате, а при утверждении (review/batch-review). Превышение → `409 Conflict` с
+деталями (использовано/лимит/окно). Scope: `department` > `global`.
 
 ### B4.1 `GET /rules`
 Список правил. Query: `rule_type?`, `scope_type?`, `is_active?`. → `{items, total}`.
@@ -284,7 +329,7 @@ active_skus, cost_coverage`.
 | Время | Задача | Эффект |
 |-------|--------|--------|
 | Вс 03:15 | Кластеризация меню (B1) | `sku_menu_role` |
-| Ежедн. 03:20 | Синк цен из приказов iiko + детекция applied | `sku_catalog_price`, `price_recommendation.status` |
+| Ежедн. 03:20 | Синк цен из приказов iiko (+stale-маркировка отозванных, + детекция applied) | `sku_catalog_price`, `price_recommendation.status` |
 | Вс 03:30 | Переоценка эластичности (B2, lookback 730) | `sku_elasticity` |
 | Ежедн. 04:30 | Агрегация витрин (A2) | `sku_price_history`, `*_weekly_summary` |
 | Ежедн. 05:00 | Генерация рекомендаций (B3) | `price_recommendation` |
@@ -292,6 +337,16 @@ active_skus, cost_coverage`.
 
 Ручные `POST`-эндпоинты (`/aggregate`, `/backfill`, `/elasticity/estimate`, `/recommendations/generate`,
 `/menu-roles/cluster`) — для отладки/первичного наполнения; в норме всё обновляется планировщиком.
+
+Каждый прогон pricing-джоба пишет итог (success/partial/error + счётчики) в `auto_sync_log`
+(`sync_type`: `pricing_catalog_price`, `pricing_elasticity`, `pricing_optimization`,
+`pricing_outcomes`, `pricing_analytics`, `menu_clustering`) — виден через
+`GET /api/sales/auto-sync/status` и на странице «Синхронизация».
+
+Методология эластичности: group/global-регрессии используют **within-оценку** (fixed effects
+по паре SKU×dept) — ε идентифицируется только из временной вариации цен (реальные приказы),
+межпозиционные различия уровней цен не загрязняют оценку; SE с поправкой степеней свободы
+на поглощённые FE.
 
 ---
 

@@ -43,6 +43,7 @@ WITH catalog_week AS (
         AND scp.date_from <= sws.week_start
         AND scp.date_to > sws.week_start
         AND scp.price > 0
+        AND NOT scp.is_stale
     WHERE sws.total_qty > 0
       AND sws.week_start >= :from_date
       AND sws.week_start <= :to_date
@@ -105,6 +106,7 @@ WITH variation AS (
     FROM sku_catalog_price
     WHERE product_id IS NOT NULL AND price > 0
       AND date_to > :from_date
+      AND NOT is_stale
     GROUP BY product_id, department_id
 ),
 sales_span AS (
@@ -136,10 +138,14 @@ def _assign_grade(n_events: int, n_days: int) -> str:
     return "D"
 
 
-def _run_ols(X: np.ndarray, y: np.ndarray):
-    """OLS regression. Returns (beta, se, r_squared, n, k)."""
+def _run_ols(X: np.ndarray, y: np.ndarray, extra_dof: int = 0):
+    """OLS regression. Returns (beta, se, r_squared, n, k).
+
+    extra_dof — параметры, поглощённые вне матрицы (например, fixed effects
+    при within-преобразовании): уменьшают остаточные степени свободы для SE.
+    """
     n, k = X.shape
-    if n <= k:
+    if n <= k + extra_dof:
         return None, None, None, n, k
 
     try:
@@ -156,7 +162,7 @@ def _run_ols(X: np.ndarray, y: np.ndarray):
         return beta, np.zeros(k), 0.0, n, k
 
     r_squared = 1.0 - ss_res / ss_tot
-    s_sq = ss_res / max(n - k, 1)
+    s_sq = ss_res / max(n - k - extra_dof, 1)
 
     try:
         XtX_inv = np.linalg.inv(X.T @ X)
@@ -168,22 +174,39 @@ def _run_ols(X: np.ndarray, y: np.ndarray):
     return beta, se, r_squared, n, k
 
 
-def _build_design_matrix(df: pd.DataFrame):
-    """Build OLS design matrix: intercept + log_price + month dummies + trend + cat_control."""
+def _build_design_matrix(df: pd.DataFrame, within: bool = False):
+    """Build OLS design matrix: intercept + log_price + month dummies + trend + cat_control.
+
+    within=True — within-преобразование (fixed effects по паре SKU×dept):
+    все регрессоры и y деминятся по паре, ε идентифицируется только из
+    ВРЕМЕННОЙ вариации цен (реальные изменения приказами), а не из
+    межпозиционных различий уровней цен. Возвращаемый extra_dof — число
+    поглощённых средних (n_pairs − 1) для честных SE.
+    """
     n = len(df)
     month_dummies = pd.get_dummies(df["month"], prefix="m", drop_first=True, dtype=float)
 
-    X = np.column_stack([
-        np.ones(n),
-        df["log_price"].values,
-        month_dummies.values,
-        df["week_index"].values.astype(float),
-        df["cat_log_qty"].values,
-    ])
-    y = df["log_qty"].values
+    mat = pd.DataFrame(
+        np.column_stack([
+            df["log_price"].values.astype(float),
+            month_dummies.values,
+            df["week_index"].values.astype(float),
+            df["cat_log_qty"].values.astype(float),
+        ]),
+        index=df.index,
+    )
+    y = pd.Series(df["log_qty"].values.astype(float), index=df.index)
 
+    extra_dof = 0
+    if within:
+        groups = (df["product_id"].astype(str) + "|" + df["department_id"].astype(str)).values
+        mat = mat - mat.groupby(groups).transform("mean")
+        y = y - y.groupby(groups).transform("mean")
+        extra_dof = len(np.unique(groups)) - 1
+
+    X = np.column_stack([np.ones(n), mat.values])
     col_names = ["intercept", "log_price"] + list(month_dummies.columns) + ["trend", "cat_log_qty"]
-    return X, y, col_names
+    return X, y.values, col_names, extra_dof
 
 
 class ElasticityEstimationService:
@@ -252,14 +275,15 @@ class ElasticityEstimationService:
         }
 
     def _estimate_global(self, df: pd.DataFrame) -> dict:
-        X, y, col_names = _build_design_matrix(df)
-        beta, se, r_sq, n, k = _run_ols(X, y)
+        # within-оценка: ε только из временной вариации цен (FE по паре SKU×dept)
+        X, y, col_names, extra_dof = _build_design_matrix(df, within=True)
+        beta, se, r_sq, n, k = _run_ols(X, y, extra_dof)
 
         if beta is None:
             return {"epsilon": -1.0, "se": 0.5, "r_squared": 0.0, "n": n}
 
         eps_idx = col_names.index("log_price")
-        t_crit = stats.t.ppf(0.975, df=max(n - k, 1))
+        t_crit = stats.t.ppf(0.975, df=max(n - k - extra_dof, 1))
 
         return {
             "epsilon": float(np.clip(beta[eps_idx], CLAMP_LOWER, CLAMP_UPPER)),
@@ -275,8 +299,9 @@ class ElasticityEstimationService:
         for gk, gdf in df.groupby("group_key"):
             if len(gdf) < MIN_GROUP_OBS:
                 continue
-            X, y, col_names = _build_design_matrix(gdf)
-            beta, se, r_sq, n, k = _run_ols(X, y)
+            # within-оценка: межпозиционные различия уровней цен не загрязняют ε
+            X, y, col_names, extra_dof = _build_design_matrix(gdf, within=True)
+            beta, se, r_sq, n, k = _run_ols(X, y, extra_dof)
             if beta is None:
                 continue
 
@@ -284,7 +309,7 @@ class ElasticityEstimationService:
             if np.isnan(se[eps_idx]) or se[eps_idx] == 0:
                 continue
 
-            t_crit = stats.t.ppf(0.975, df=max(n - k, 1))
+            t_crit = stats.t.ppf(0.975, df=max(n - k - extra_dof, 1))
             results[gk] = {
                 "epsilon": float(np.clip(beta[eps_idx], CLAMP_LOWER, CLAMP_UPPER)),
                 "se": float(se[eps_idx]),
@@ -316,7 +341,8 @@ class ElasticityEstimationService:
             if key not in eligible or len(sdf) < MIN_OLS_OBS:
                 continue
 
-            X, y, col_names = _build_design_matrix(sdf)
+            # одна пара: FE эквивалентен intercept — within не нужен
+            X, y, col_names, _ = _build_design_matrix(sdf)
             beta, se, r_sq, n, k = _run_ols(X, y)
             if beta is None:
                 continue
