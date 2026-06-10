@@ -1,9 +1,7 @@
-"""APScheduler wrappers for pricing analytics (A2 views), menu clustering (B1)
-and price elasticity estimation (B2).
+"""APScheduler wrappers for pricing analytics (A2 views) and menu clustering (B1).
 
-These run inside BackgroundScheduler's own thread pool — separate from the
-uvicorn event loop — so the CPU-heavy elasticity regression does NOT block the
-single web worker (unlike calling POST /elasticity/estimate at runtime).
+Elasticity (B2) estimation and the price optimizer (B3) have their own wrappers
+in scheduled_pricing_engine.py.
 """
 
 import logging
@@ -12,12 +10,8 @@ from datetime import date, timedelta
 from ..db import get_db
 from .pricing_analytics_service import PricingAnalyticsService
 from .menu_clustering_service import MenuClusteringService
-from .elasticity_estimation_service import ElasticityEstimationService
 
 logger = logging.getLogger(__name__)
-
-# Full sales history (~24 months) so the grade counter sees every price event.
-ELASTICITY_LOOKBACK_DAYS = 730
 
 
 def run_pricing_analytics_aggregation():
@@ -62,26 +56,4 @@ def run_menu_clustering():
             db.close()
     except Exception as e:
         logger.error("Menu clustering failed: %s", e, exc_info=True)
-        return {"status": "error", "message": str(e)}
-
-
-def run_elasticity_estimation():
-    """Weekly price elasticity estimation (B2), Sunday 05:00.
-
-    Runs after menu clustering (03:15) and pricing analytics (04:30) so it reads
-    fresh sku_menu_role + sku_weekly_summary. Heavy OLS regressions execute in
-    the scheduler's background thread, never on the web event loop.
-    """
-    logger.info("Scheduler triggered: elasticity estimation")
-    try:
-        db = next(get_db())
-        try:
-            svc = ElasticityEstimationService(db)
-            result = svc.estimate_all(lookback_days=ELASTICITY_LOOKBACK_DAYS)
-            logger.info("Elasticity estimation done: %s", result)
-            return result
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error("Elasticity estimation failed: %s", e, exc_info=True)
         return {"status": "error", "message": str(e)}

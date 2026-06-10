@@ -34,13 +34,19 @@ def run_catalog_price_sync():
 
 
 def run_elasticity_update():
-    """Weekly elasticity re-estimation. Schedule: Sunday 03:30."""
+    """Weekly elasticity re-estimation. Schedule: Sunday 03:30.
+
+    Runs in BackgroundScheduler's thread pool (not the web event loop), so the
+    heavy OLS regressions never block the single uvicorn worker. lookback=730d
+    covers the full ~24-month sales history so the grade counter sees every
+    price event.
+    """
     logger.info("Starting weekly elasticity estimation")
     db = SessionLocal()
     try:
         from .elasticity_estimation_service import ElasticityEstimationService
         svc = ElasticityEstimationService(db)
-        result = svc.estimate_all()
+        result = svc.estimate_all(lookback_days=730)
         logger.info("Elasticity estimation complete: %s", result.get("status"))
         return result
     except Exception as e:

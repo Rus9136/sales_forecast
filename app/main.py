@@ -23,9 +23,7 @@ from .services.scheduled_waiter_loader import (
 )
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
-from .services.scheduled_pricing_analytics import (
-    run_pricing_analytics_aggregation, run_menu_clustering, run_elasticity_estimation,
-)
+from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregation, run_menu_clustering
 from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
@@ -114,17 +112,6 @@ async def lifespan(app: FastAPI):
             minute=15,
             id='weekly_menu_clustering',
             name='Weekly Menu Role Clustering',
-            replace_existing=True
-        )
-
-        scheduler.add_job(
-            func=run_elasticity_estimation,
-            trigger="cron",
-            day_of_week=6,  # Sunday
-            hour=5,
-            minute=0,
-            id='weekly_elasticity_estimation',
-            name='Weekly Price Elasticity Estimation',
             replace_existing=True
         )
 
@@ -253,9 +240,9 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
-            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Recipes Sun 3:30, "
-            "SKU retrain Sun 3:45, Metrics 4:00, Pricing analytics 4:30, Elasticity Sun 5:00, "
-            "Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
+            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Catalog price Sun 3:20, "
+            "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain Sun 3:45, Metrics 4:00, Pricing analytics 4:30, "
+            "Price optimization 5:00, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 
     except Exception as e:
