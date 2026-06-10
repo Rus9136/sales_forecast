@@ -456,6 +456,185 @@ async def batch_review_recommendations(
     return svc.batch_review(ids, status, reviewer_id, comment)
 
 
+# ==================== Feedback loop: applied + outcomes + baseline ====================
+
+@router.post("/recommendations/detect-applied")
+def detect_applied_recommendations(db: Session = Depends(get_db)):
+    """Mark approved recs as applied when the catalog shows the recommended price.
+    Также выполняется автоматически после ежедневного синка цен (03:20)."""
+    from ..services.pricing_feedback_service import PricingFeedbackService
+    return PricingFeedbackService(db).detect_applied()
+
+
+@router.post("/outcomes/evaluate")
+def evaluate_outcomes_now(db: Session = Depends(get_db)):
+    """Evaluate applied recs whose 14-day window elapsed (планировщик: 05:30)."""
+    from ..services.pricing_feedback_service import PricingFeedbackService
+    return PricingFeedbackService(db).evaluate_outcomes()
+
+
+@router.get("/outcomes")
+async def list_outcomes(
+    department_id: Optional[str] = None,
+    limit: int = Query(100, le=1000),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    conditions = ["1=1"]
+    params: dict = {}
+    if department_id:
+        conditions.append("o.department_id = CAST(:dept_id AS uuid)")
+        params["dept_id"] = department_id
+    where = " AND ".join(conditions)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM price_recommendation_outcome o WHERE {where}"), params
+    ).scalar()
+
+    rows = db.execute(
+        text(f"""
+            SELECT o.*, p.name AS product_name, d.name AS department_name
+            FROM price_recommendation_outcome o
+            JOIN product p ON p.id = o.product_id
+            JOIN departments d ON d.id = o.department_id
+            WHERE {where}
+            ORDER BY o.applied_at DESC, o.id DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    ).fetchall()
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    items = [
+        {
+            "id": r.id,
+            "recommendation_id": r.recommendation_id,
+            "product_id": r.product_id,
+            "product_name": r.product_name,
+            "department_id": str(r.department_id),
+            "department_name": r.department_name,
+            "applied_at": str(r.applied_at),
+            "eval_window_days": r.eval_window_days,
+            "old_price": _f(r.old_price),
+            "new_price": _f(r.new_price),
+            "qty_before": _f(r.qty_before),
+            "qty_after": _f(r.qty_after),
+            "gp_before": _f(r.gp_before),
+            "gp_after": _f(r.gp_after),
+            "expected_delta_gp": _f(r.expected_delta_gp),
+            "actual_delta_gp": _f(r.actual_delta_gp),
+            "qty_change_pct": _f(r.qty_change_pct),
+            "control_qty_change_pct": _f(r.control_qty_change_pct),
+            "adj_qty_change_pct": _f(r.adj_qty_change_pct),
+            "realized_elasticity": _f(r.realized_elasticity),
+            "n_control_skus": r.n_control_skus,
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": total}
+
+
+@router.get("/outcomes/summary")
+async def outcomes_summary(
+    department_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    dept_filter = ""
+    params: dict = {}
+    if department_id:
+        dept_filter = "WHERE department_id = CAST(:dept_id AS uuid)"
+        params["dept_id"] = department_id
+
+    row = db.execute(
+        text(f"""
+            SELECT COUNT(*),
+                   COALESCE(SUM(expected_delta_gp), 0),
+                   COALESCE(SUM(actual_delta_gp), 0),
+                   COUNT(*) FILTER (WHERE actual_delta_gp > 0),
+                   AVG(realized_elasticity)
+            FROM price_recommendation_outcome
+            {dept_filter}
+        """),
+        params,
+    ).fetchone()
+
+    total = row[0]
+    return {
+        "total_evaluated": total,
+        "expected_delta_gp": float(row[1]),
+        "actual_delta_gp": float(row[2]),
+        "positive_outcomes": row[3],
+        "hit_rate": round(row[3] / total, 4) if total else None,
+        "avg_realized_elasticity": float(row[4]) if row[4] is not None else None,
+    }
+
+
+@router.post("/baseline/freeze")
+def freeze_baseline(
+    label: str = Query(..., description="Например 'pre-pilot-2026-06'"),
+    weeks: int = Query(8, ge=2, le=26),
+    db: Session = Depends(get_db),
+):
+    """Заморозить KPI за N полных недель как базу для метрики пилота."""
+    from ..services.pricing_feedback_service import PricingFeedbackService
+    return PricingFeedbackService(db).freeze_baseline(label, weeks)
+
+
+@router.get("/baseline")
+async def get_baseline(
+    label: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    conditions = ["1=1"]
+    params: dict = {}
+    if label:
+        conditions.append("b.label = :label")
+        params["label"] = label
+    where = " AND ".join(conditions)
+
+    rows = db.execute(
+        text(f"""
+            SELECT b.*, d.name AS department_name
+            FROM pricing_baseline_kpi b
+            LEFT JOIN departments d ON d.id = b.department_id
+            WHERE {where}
+            ORDER BY b.label, b.scope DESC, d.name NULLS FIRST
+        """),
+        params,
+    ).fetchall()
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    items = [
+        {
+            "id": r.id,
+            "label": r.label,
+            "scope": r.scope,
+            "department_id": str(r.department_id) if r.department_id else None,
+            "department_name": r.department_name,
+            "baseline_from": str(r.baseline_from),
+            "baseline_to": str(r.baseline_to),
+            "weeks": r.weeks,
+            "total_revenue": _f(r.total_revenue),
+            "total_cost": _f(r.total_cost),
+            "gross_profit": _f(r.gross_profit),
+            "gp_margin": _f(r.gp_margin),
+            "total_receipts": r.total_receipts,
+            "avg_receipt_sum": _f(r.avg_receipt_sum),
+            "weekly_gp_avg": _f(r.weekly_gp_avg),
+            "weekly_gp_stddev": _f(r.weekly_gp_stddev),
+            "active_skus": r.active_skus,
+            "cost_coverage": _f(r.cost_coverage),
+            "created_at": str(r.created_at),
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/recommendations/summary")
 async def recommendations_summary(
     department_id: Optional[str] = None,

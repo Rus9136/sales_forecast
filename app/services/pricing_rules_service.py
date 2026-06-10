@@ -81,7 +81,7 @@ class PricingRulesService:
 
         # Rule 1: min_margin
         r = rules.get("min_margin")
-        if r and cogs is not None and candidate_price > 0:
+        if r is not None and cogs is not None and candidate_price > 0:
             min_margin = r.get("value", 0.60)
             margin = (candidate_price - cogs) / candidate_price
             if margin < min_margin:
@@ -89,7 +89,7 @@ class PricingRulesService:
 
         # Rule 2: max_step
         r = rules.get("max_step")
-        if r and current_price > 0:
+        if r is not None and current_price > 0:
             max_step = r.get("value", 0.05)
             step = abs(candidate_price - current_price) / current_price
             if step > max_step:
@@ -97,7 +97,7 @@ class PricingRulesService:
 
         # Rule 3: min_frequency
         r = rules.get("min_frequency")
-        if r and last_change_date:
+        if r is not None and last_change_date:
             days_since = (date.today() - last_change_date).days
             min_days = r.get("days", 14)
             if days_since < min_days:
@@ -105,7 +105,7 @@ class PricingRulesService:
 
         # Rule 4: no_decrease_anchor
         r = rules.get("no_decrease_anchor")
-        if r and r.get("enabled", True) and menu_role == "premium_anchor":
+        if r is not None and r.get("enabled", True) and menu_role == "premium_anchor":
             if candidate_price < current_price:
                 violations.append("no_decrease_anchor: price decrease on premium_anchor")
 
@@ -113,14 +113,14 @@ class PricingRulesService:
 
         # Rule 6: rounding
         r = rules.get("rounding")
-        if r:
+        if r is not None:
             step = r.get("flagship_step", 100) if menu_role in PREMIUM_ROLES else r.get("step", 50)
             if candidate_price % step != 0:
                 violations.append(f"rounding: {candidate_price} not divisible by {step}")
 
         # Rule 7: no_psychological
         r = rules.get("no_psychological")
-        if r and r.get("enabled", True) and menu_role in PREMIUM_ROLES:
+        if r is not None and r.get("enabled", True) and menu_role in PREMIUM_ROLES:
             endings = r.get("endings", [9, 99])
             last_digits = int(candidate_price) % 100
             if last_digits in endings:
@@ -128,7 +128,7 @@ class PricingRulesService:
 
         # Rule 8: stop_list
         r = rules.get("stop_list")
-        if r:
+        if r is not None:
             if candidate_price != current_price:
                 violations.append("stop_list: price change blocked")
 

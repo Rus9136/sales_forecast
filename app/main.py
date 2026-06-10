@@ -24,7 +24,7 @@ from .services.scheduled_waiter_loader import (
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregation, run_menu_clustering
-from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization
+from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.sku_model_retraining_service import run_sku_auto_retrain
@@ -138,11 +138,20 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(
             func=run_catalog_price_sync,
             trigger="cron",
-            day_of_week=6,  # Sunday
             hour=3,
             minute=20,
-            id='weekly_catalog_price_sync',
-            name='Weekly Menu Price Sync (orders)',
+            id='daily_catalog_price_sync',
+            name='Daily Menu Price Sync (orders) + applied detection',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_outcome_evaluation,
+            trigger="cron",
+            hour=5,
+            minute=30,
+            id='daily_outcome_evaluation',
+            name='Daily Recommendation Outcome Evaluation',
             replace_existing=True
         )
 
@@ -240,9 +249,9 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
-            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Catalog price Sun 3:20, "
+            "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Catalog price 3:20, "
             "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain Sun 3:45, Metrics 4:00, Pricing analytics 4:30, "
-            "Price optimization 5:00, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
+            "Price optimization 5:00, Outcome evaluation 5:30, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 
     except Exception as e:

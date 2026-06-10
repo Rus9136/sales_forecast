@@ -16,6 +16,26 @@ from .pricing_rules_service import PricingRulesService
 logger = logging.getLogger(__name__)
 
 MIN_GP_THRESHOLD = 500.0
+DEFAULT_ELASTICITY = -0.5
+CONSERVATIVE_FALLBACK_ELASTICITY = -1.0
+
+
+def select_planning_elasticity(
+    mean: float, ci_lower: Optional[float], grade: str,
+) -> float:
+    """Elasticity used for planning expected qty/GP.
+
+    Grade A/B — точечная оценка надёжна. Grade C/D — оценка в основном
+    заимствована (group/global), точечная ε почти не информативна, поэтому
+    планируем по консервативному краю CI (наиболее эластичный сценарий):
+    завышенные ΔGP от «слепого» prior не проходят порог. Без записи
+    эластичности — жёсткий консервативный fallback.
+    """
+    if grade in ("A", "B"):
+        return mean
+    if ci_lower is not None:
+        return ci_lower
+    return min(mean, CONSERVATIVE_FALLBACK_ELASTICITY)
 
 
 class PriceOptimizerService:
@@ -127,7 +147,8 @@ class PriceOptimizerService:
                     COALESCE(cn.catalog_price, rs.derived_price) AS current_price,
                     rs.avg_daily_qty,
                     rc.unit_cogs,
-                    COALESCE(se.elasticity_mean, -0.5) AS elasticity,
+                    COALESCE(se.elasticity_mean, :default_eps) AS elasticity,
+                    se.elasticity_ci_lower,
                     COALESCE(se.reliability_grade, 'D') AS elasticity_grade,
                     COALESCE(smr.effective_role, 'unknown') AS menu_role,
                     cn.last_change_date,
@@ -146,25 +167,29 @@ class PriceOptimizerService:
                 WHERE COALESCE(cn.catalog_price, rs.derived_price) > 0
                 ORDER BY COALESCE(cn.catalog_price, rs.derived_price) * rs.avg_daily_qty DESC
             """),
-            {"dept_id": department_id},
+            {"dept_id": department_id, "default_eps": DEFAULT_ELASTICITY},
         ).fetchall()
 
-        return [
-            {
+        skus = []
+        for r in rows:
+            mean = float(r[5])
+            ci_lower = float(r[6]) if r[6] is not None else None
+            grade = r[7]
+            skus.append({
                 "product_id": r[0],
                 "product_name": r[1],
                 "current_price": float(r[2]),
                 "avg_daily_qty": float(r[3]),
                 "cogs": float(r[4]) if r[4] is not None else None,
-                "elasticity": float(r[5]),
-                "elasticity_grade": r[6],
-                "menu_role": r[7],
-                "last_change_date": r[8],
-                "segment_type": r[9],
+                "elasticity": select_planning_elasticity(mean, ci_lower, grade),
+                "elasticity_mean": mean,
+                "elasticity_grade": grade,
+                "menu_role": r[8],
+                "last_change_date": r[9],
+                "segment_type": r[10],
                 "department_id": department_id,
-            }
-            for r in rows
-        ]
+            })
+        return skus
 
     def _optimize_single(
         self,

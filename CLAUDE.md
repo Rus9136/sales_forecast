@@ -32,7 +32,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (17 задач: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync, elasticity estimation, price optimization, metrics, pricing analytics, gap checks ×3)
+- **Scheduler**: APScheduler (18 задач: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, metrics, pricing analytics, gap checks ×3)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -443,13 +443,14 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **02:30** — Daily waiter sales sync (per-waiter OLAP)
 - **03:00 Sun** — Weekly model retraining (department-level)
 - **03:15 Sun** — Weekly menu role clustering (KMeans → sku_menu_role)
-- **03:20 Sun** — Weekly catalog price sync (iiko orders → sku_catalog_price)
+- **03:20** — Daily catalog price sync (iiko orders → sku_catalog_price) + детекция applied-рекомендаций
 - **03:30 Sun** — Weekly price elasticity estimation (B2, lookback 730д → sku_elasticity)
 - **03:30 Sun** — Weekly recipe sync
 - **03:45 Sun** — Weekly SKU model retraining
 - **04:00** — Daily performance metrics calculation
 - **04:30** — Daily pricing analytics aggregation (price history + weekly summaries)
 - **05:00** — Daily price optimization (B3 → recommendations)
+- **05:30** — Daily recommendation outcome evaluation (applied recs, 14д окно → price_recommendation_outcome)
 - **10:00** — Daily sales gap check
 - **11:00** — Daily waiter sales gap check
 - **11:30** — Daily receipts gap check

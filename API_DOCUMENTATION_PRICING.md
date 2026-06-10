@@ -35,7 +35,7 @@ Authorization: Bearer <API_TOKEN>
 | `effective_role` / `menu_role` / `manual_role` | `traffic_driver`, `margin_driver`, `premium_anchor`, `image_rare`, `tail` |
 | `reliability_grade` (эластичность) | `A` (≥5 ценовых событий и ≥90 дн.), `B` (≥4 и ≥60), `C` (≥3), `D` (fallback) |
 | `estimation_level` | `sku`, `group`, `global` |
-| `status` (рекомендации) | `new`, `approved`, `rejected`, `expired` (вытеснена следующим батчем) |
+| `status` (рекомендации) | `new`, `approved`, `rejected`, `expired` (вытеснена следующим батчем), `applied` (цена обнаружена в каталоге) |
 | `scope_type` (правила) | `global`, `segment`, `department`, `product` |
 
 ### Коды ошибок
@@ -185,6 +185,10 @@ Authorization: Bearer <API_TOKEN>
 > дней; SKU без себестоимости пропускаются (`skipped_no_cogs`), иначе правило min_margin
 > было бы необъективно. `constraints_applied` содержит правила, реально ограничившие
 > пространство поиска (например `max_step`, `min_margin`).
+>
+> Эластичность для планирования: grade A/B — точечная `elasticity_mean`; grade C/D —
+> консервативный край CI (`elasticity_ci_lower`), без записи — fallback −1.0. Поэтому
+> ΔGP для ненадёжных оценок — нижняя граница, а не оптимистичный прогноз.
 
 ### B3.2 `GET /recommendations`
 Список рекомендаций (`price_recommendation`).
@@ -211,7 +215,44 @@ Authorization: Bearer <API_TOKEN>
 → `{updated: <фактически обновлено>, requested: <передано>}`. Обновляются только записи в статусе `new`. `400` при ином статусе.
 
 ### B3.6 `GET /recommendations/summary`
-→ `{by_status: {new, approved, rejected}, total, total_delta_gp_new}` (потенциальный прирост GP по новым с `delta_gp>0`). Query: `department_id?`.
+→ `{by_status: {new, approved, rejected, expired, applied}, total, total_delta_gp_new}` (потенциальный прирост GP по новым с `delta_gp>0`). Query: `department_id?`.
+
+---
+
+## FB. Фидбек-loop — `/api/pricing-engine` (applied / outcomes / baseline)
+
+Замыкает цикл «рекомендация → приказ в iiko → измеренный эффект» (roadmap §7.4) и
+фиксирует базу KPI для пилота (A3).
+
+### FB.1 `POST /recommendations/detect-applied`
+Пометить `approved`-рекомендации как `applied`, если в `sku_catalog_price` появился
+интервал с рекомендованной ценой, начавшийся не раньше даты утверждения.
+→ `{status, applied: <n>, ids}`. Выполняется автоматически после ежедневного синка цен (03:20).
+
+### FB.2 `POST /outcomes/evaluate`
+Оценить applied-рекомендации, у которых прошло полное окно (14 дней).
+→ `{status, pending, evaluated, skipped}`. Планировщик: ежедневно 05:30.
+
+### FB.3 `GET /outcomes`
+Список оценённых результатов (`price_recommendation_outcome`). Query: `department_id?`, `limit`/`offset`.
+**Элемент:** `recommendation_id, product_name, applied_at, old_price, new_price, qty_before/after,
+gp_before/after, expected_delta_gp, actual_delta_gp, qty_change_pct, control_qty_change_pct,
+adj_qty_change_pct, realized_elasticity, n_control_skus`. Контрольная группа — SKU той же
+категории и точки без изменения каталожной цены за период наблюдения.
+
+### FB.4 `GET /outcomes/summary`
+→ `{total_evaluated, expected_delta_gp, actual_delta_gp, positive_outcomes, hit_rate, avg_realized_elasticity}`. Query: `department_id?`.
+
+### FB.5 `POST /baseline/freeze`
+Заморозить KPI за N полных ISO-недель как базу пилота. Query: `label` (req, напр. `pre-pilot-2026-06`), `weeks` (8, 2–26).
+→ `{status, label, departments, baseline_from, baseline_to, weeks}`. Повторный вызов с тем же label перезаписывает.
+Пишет строки `scope=department` (по точкам) + `scope=network` (агрегат).
+
+### FB.6 `GET /baseline`
+Снимки базы (`pricing_baseline_kpi`). Query: `label?`.
+**Элемент:** `label, scope, department_name, baseline_from/to, weeks, total_revenue, total_cost,
+gross_profit, gp_margin, total_receipts, avg_receipt_sum, weekly_gp_avg, weekly_gp_stddev,
+active_skus, cost_coverage`.
 
 ---
 
@@ -243,10 +284,11 @@ Authorization: Bearer <API_TOKEN>
 | Время | Задача | Эффект |
 |-------|--------|--------|
 | Вс 03:15 | Кластеризация меню (B1) | `sku_menu_role` |
-| Вс 03:20 | Синк цен из приказов iiko | `sku_catalog_price` |
+| Ежедн. 03:20 | Синк цен из приказов iiko + детекция applied | `sku_catalog_price`, `price_recommendation.status` |
 | Вс 03:30 | Переоценка эластичности (B2, lookback 730) | `sku_elasticity` |
 | Ежедн. 04:30 | Агрегация витрин (A2) | `sku_price_history`, `*_weekly_summary` |
 | Ежедн. 05:00 | Генерация рекомендаций (B3) | `price_recommendation` |
+| Ежедн. 05:30 | Оценка результатов applied-рекомендаций (FB) | `price_recommendation_outcome` |
 
 Ручные `POST`-эндпоинты (`/aggregate`, `/backfill`, `/elasticity/estimate`, `/recommendations/generate`,
 `/menu-roles/cluster`) — для отладки/первичного наполнения; в норме всё обновляется планировщиком.

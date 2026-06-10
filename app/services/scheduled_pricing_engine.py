@@ -12,22 +12,55 @@ logger = logging.getLogger(__name__)
 
 
 def run_catalog_price_sync():
-    """Weekly menu price sync from iiko orders. Schedule: Sunday 03:20.
+    """Daily menu price sync from iiko orders. Schedule: daily 03:20.
 
     Pulls real catalog prices (GET /resto/api/v2/price) — the authoritative
-    price source for elasticity. Must run BEFORE elasticity update (03:30).
+    price source for elasticity AND the optimizer's current_price. Daily (not
+    weekly) so that approved→applied detection sees a fresh catalog. On
+    Sundays still runs BEFORE elasticity update (03:30).
+
+    After a successful sync, immediately detects applied recommendations —
+    approved recs whose price has appeared in the catalog (feedback loop §7.4).
     """
     import asyncio
-    logger.info("Starting weekly catalog price sync")
+    logger.info("Starting daily catalog price sync")
     db = SessionLocal()
     try:
         from .iiko_price_loader import IikoPriceLoader
         loader = IikoPriceLoader(db)
         result = asyncio.run(loader.sync())
         logger.info("Catalog price sync complete: %s intervals", result.get("total_intervals"))
+
+        try:
+            from .pricing_feedback_service import PricingFeedbackService
+            detection = PricingFeedbackService(db).detect_applied()
+            result["applied_detection"] = detection
+        except Exception as e:
+            logger.error("Applied-recommendation detection failed: %s", e, exc_info=True)
+            result["applied_detection"] = {"status": "error", "message": str(e)}
+
         return result
     except Exception as e:
         logger.error("Catalog price sync failed: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+def run_outcome_evaluation():
+    """Daily evaluation of applied recommendations (14d window). Schedule: 05:30."""
+    logger.info("Starting recommendation outcome evaluation")
+    db = SessionLocal()
+    try:
+        from .pricing_feedback_service import PricingFeedbackService
+        result = PricingFeedbackService(db).evaluate_outcomes()
+        logger.info(
+            "Outcome evaluation complete: %s evaluated of %s pending",
+            result.get("evaluated"), result.get("pending"),
+        )
+        return result
+    except Exception as e:
+        logger.error("Outcome evaluation failed: %s", e, exc_info=True)
         return {"status": "error", "message": str(e)}
     finally:
         db.close()
