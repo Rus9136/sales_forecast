@@ -44,13 +44,16 @@ class TestSyncDepartments:
         iiko_response = [
             # Child of dept (deepest)
             {"id": sub_id, "parent_id": dept_id, "code": "S001",
-             "name": "Sub", "type": "DEPARTMENT", "taxpayer_id_number": None},
+             "name": "Sub", "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
             # Mid-level dept (parent of Sub)
             {"id": dept_id, "parent_id": jur_id, "code": "D001",
-             "name": "Dept", "type": "DEPARTMENT", "taxpayer_id_number": None},
+             "name": "Dept", "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
             # Root (parent of Dept)
             {"id": jur_id, "parent_id": None, "code": "J001",
-             "name": "JurPerson", "type": "JURPERSON", "taxpayer_id_number": "12345"},
+             "name": "JurPerson", "type": "JURPERSON", "taxpayer_id_number": "12345",
+             "iiko_source_domain": "test.iiko.it"},
         ]
 
         with patch.object(
@@ -78,9 +81,11 @@ class TestSyncDepartments:
             "fetch_departments_from_iiko",
             return_value=[
                 {"id": jur_id, "parent_id": None, "code": "J", "name": "Jur",
-                 "type": "JURPERSON", "taxpayer_id_number": "BIN-FROM-JUR"},
+                 "type": "JURPERSON", "taxpayer_id_number": "BIN-FROM-JUR",
+             "iiko_source_domain": "test.iiko.it"},
                 {"id": dept_id, "parent_id": jur_id, "code": "D", "name": "Dept",
-                 "type": "DEPARTMENT", "taxpayer_id_number": None},
+                 "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
             ],
         ):
             await loader.sync_departments()
@@ -94,11 +99,13 @@ class TestSyncDepartments:
         dept_id = _did("D")
         first_response = [
             {"id": dept_id, "parent_id": None, "code": "OLD", "name": "Old Name",
-             "type": "DEPARTMENT", "taxpayer_id_number": None},
+             "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
         ]
         second_response = [
             {"id": dept_id, "parent_id": None, "code": "NEW", "name": "New Name",
-             "type": "DEPARTMENT", "taxpayer_id_number": "NEW-BIN"},
+             "type": "DEPARTMENT", "taxpayer_id_number": "NEW-BIN",
+             "iiko_source_domain": "test.iiko.it"},
         ]
 
         with patch.object(loader, "fetch_departments_from_iiko", return_value=first_response):
@@ -124,7 +131,8 @@ class TestSyncDepartments:
             "fetch_departments_from_iiko",
             return_value=[
                 {"id": orphan_id, "parent_id": str(uuid4()), "code": "ORPH",
-                 "name": "Orphan", "type": "DEPARTMENT", "taxpayer_id_number": None},
+                 "name": "Orphan", "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
             ],
         ):
             total = await loader.sync_departments()
@@ -146,7 +154,8 @@ class TestSyncDepartments:
             "fetch_departments_from_iiko",
             return_value=[
                 {"id": dept_id, "parent_id": None, "code": "D", "name": "X",
-                 "type": "DEPARTMENT", "taxpayer_id_number": None},
+                 "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
             ],
         ):
             await loader.sync_departments()
@@ -162,7 +171,8 @@ class TestSyncDepartments:
             "fetch_departments_from_iiko",
             return_value=[
                 {"id": dept_id, "parent_id": None, "code": "D", "name": "X-renamed",
-                 "type": "DEPARTMENT", "taxpayer_id_number": None},
+                 "type": "DEPARTMENT", "taxpayer_id_number": None,
+             "iiko_source_domain": "test.iiko.it"},
             ],
         ):
             await loader.sync_departments()

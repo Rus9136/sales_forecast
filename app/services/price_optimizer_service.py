@@ -44,11 +44,15 @@ class PriceOptimizerService:
                 "errors": ["No active SKUs found"],
             }
 
-        self._expire_old_recommendations(department_id)
+        self._supersede_open_recommendations(department_id)
 
         created = 0
+        skipped_no_cogs = 0
         for sku in skus:
             try:
+                if sku["cogs"] is None:
+                    skipped_no_cogs += 1
+                    continue
                 rec = self._optimize_single(sku, batch_id, min_gp_threshold, today)
                 if rec:
                     self._insert_recommendation(rec)
@@ -59,8 +63,8 @@ class PriceOptimizerService:
 
         self.db.commit()
         logger.info(
-            "Optimization for dept %s: %d recommendations from %d SKUs",
-            department_id, created, len(skus),
+            "Optimization for dept %s: %d recommendations from %d SKUs (%d skipped: no COGS)",
+            department_id, created, len(skus), skipped_no_cogs,
         )
 
         return {
@@ -68,22 +72,44 @@ class PriceOptimizerService:
             "department_id": department_id,
             "recommendations_created": created,
             "skus_processed": len(skus),
+            "skipped_no_cogs": skipped_no_cogs,
             "batch_id": batch_id,
             "errors": errors,
         }
 
     def _load_sku_data(self, department_id: str) -> list[dict]:
-        """Load current price, COGS, elasticity, role, base qty for active SKUs."""
+        """Load current price, COGS, elasticity, role, base qty for active SKUs.
+
+        current_price comes from sku_catalog_price (real menu prices set by
+        orders) with fallback on the derived revenue/qty price — the derived
+        price is contaminated by modifiers/weight items. last_change_date also
+        comes from the catalog (start of the current price interval), not from
+        the noisy sku_price_history.
+        """
         rows = self.db.execute(
             text("""
                 WITH recent_sales AS (
+                    -- avg_daily_qty over 30 CALENDAR days, not days-with-sales:
+                    -- dividing by days-with-sales inflated sparse SKUs ~15x
                     SELECT product_id,
-                        ROUND(SUM(total_sum) / NULLIF(SUM(total_qty), 0), 2) AS current_price,
-                        ROUND(SUM(total_qty) / COUNT(DISTINCT sale_date), 1) AS avg_daily_qty
+                        ROUND(SUM(total_sum) / NULLIF(SUM(total_qty), 0), 2) AS derived_price,
+                        ROUND(SUM(total_qty) / 30.0, 2) AS avg_daily_qty
                     FROM sku_daily_sales
                     WHERE department_id = CAST(:dept_id AS uuid)
                       AND sale_date >= CURRENT_DATE - 30
                       AND total_qty > 0
+                    GROUP BY product_id
+                ),
+                catalog_now AS (
+                    SELECT product_id,
+                        ROUND(AVG(price), 2) AS catalog_price,
+                        MAX(date_from) AS last_change_date
+                    FROM sku_catalog_price
+                    WHERE department_id = CAST(:dept_id AS uuid)
+                      AND product_id IS NOT NULL
+                      AND price > 0
+                      AND date_from <= CURRENT_DATE
+                      AND date_to > CURRENT_DATE
                     GROUP BY product_id
                 ),
                 recent_cost AS (
@@ -94,29 +120,22 @@ class PriceOptimizerService:
                       AND sws.week_start >= CURRENT_DATE - 28
                       AND sws.total_cost > 0
                     GROUP BY sws.product_id
-                ),
-                last_change AS (
-                    SELECT product_id,
-                        MAX(first_seen_date) AS last_change_date
-                    FROM sku_price_history
-                    WHERE department_id = CAST(:dept_id AS uuid)
-                      AND prev_price IS NOT NULL
-                    GROUP BY product_id
                 )
                 SELECT
                     rs.product_id,
                     p.name AS product_name,
-                    rs.current_price,
+                    COALESCE(cn.catalog_price, rs.derived_price) AS current_price,
                     rs.avg_daily_qty,
                     rc.unit_cogs,
                     COALESCE(se.elasticity_mean, -0.5) AS elasticity,
                     COALESCE(se.reliability_grade, 'D') AS elasticity_grade,
                     COALESCE(smr.effective_role, 'unknown') AS menu_role,
-                    lc.last_change_date,
+                    cn.last_change_date,
                     d.segment_type
                 FROM recent_sales rs
                 JOIN product p ON p.id = rs.product_id
                 JOIN departments d ON d.id = CAST(:dept_id AS uuid)
+                LEFT JOIN catalog_now cn ON cn.product_id = rs.product_id
                 LEFT JOIN recent_cost rc ON rc.product_id = rs.product_id
                 LEFT JOIN sku_elasticity se
                     ON se.product_id = rs.product_id
@@ -124,9 +143,8 @@ class PriceOptimizerService:
                 LEFT JOIN sku_menu_role smr
                     ON smr.product_id = rs.product_id
                     AND smr.department_id = CAST(:dept_id AS uuid)
-                LEFT JOIN last_change lc ON lc.product_id = rs.product_id
-                WHERE rs.current_price > 0
-                ORDER BY rs.current_price * rs.avg_daily_qty DESC
+                WHERE COALESCE(cn.catalog_price, rs.derived_price) > 0
+                ORDER BY COALESCE(cn.catalog_price, rs.derived_price) * rs.avg_daily_qty DESC
             """),
             {"dept_id": department_id},
         ).fetchall()
@@ -137,7 +155,7 @@ class PriceOptimizerService:
                 "product_name": r[1],
                 "current_price": float(r[2]),
                 "avg_daily_qty": float(r[3]),
-                "cogs": float(r[4]) if r[4] else None,
+                "cogs": float(r[4]) if r[4] is not None else None,
                 "elasticity": float(r[5]),
                 "elasticity_grade": r[6],
                 "menu_role": r[7],
@@ -165,6 +183,11 @@ class PriceOptimizerService:
         if current_price <= 0 or q_base <= 0:
             return None
 
+        # Без себестоимости GP вырождается в выручку (маржа 100%), а правило
+        # min_margin молча пропускается — такие SKU не оптимизируем.
+        if cogs is None:
+            return None
+
         rules = self.rules_service.get_effective_rules(
             sku["product_id"], sku["department_id"], sku.get("segment_type"),
         )
@@ -178,7 +201,7 @@ class PriceOptimizerService:
         best_price = current_price
         best_gp = current_gp
         best_qty = q_base
-        best_constraints: list[str] = []
+        binding_constraints: set[str] = set()
 
         for p in candidates:
             if p == current_price:
@@ -188,6 +211,8 @@ class PriceOptimizerService:
                 current_price, p, cogs, menu_role, sku.get("last_change_date"), rules,
             )
             if not is_valid:
+                # правила, отсёкшие кандидатов, ограничили пространство поиска
+                binding_constraints.update(v.split(":", 1)[0] for v in violations)
                 continue
 
             gp, qty = self._compute_gp_and_qty(p, current_price, cogs, q_base, elasticity)
@@ -205,9 +230,10 @@ class PriceOptimizerService:
 
         delta_pct = (best_price - current_price) / current_price * 100
 
-        _, applied = self.rules_service.check_recommendation(
-            current_price, best_price, cogs, menu_role, sku.get("last_change_date"), rules,
-        )
+        # коридор ±max_step ограничивает грид всегда; фиксируем, если упёрлись в край
+        if best_price == candidates[-1] or best_price == candidates[0]:
+            binding_constraints.add("max_step")
+        applied = sorted(binding_constraints)
 
         return {
             "product_id": sku["product_id"],
@@ -307,14 +333,19 @@ class PriceOptimizerService:
             },
         )
 
-    def _expire_old_recommendations(self, department_id: str) -> int:
+    def _supersede_open_recommendations(self, department_id: str) -> int:
+        """Expire ALL open recommendations for the department before a new batch.
+
+        Каждая генерация полностью заменяет открытый список: иначе ежедневные
+        батчи копят дубли 'new' на один SKU и summary завышает ΔGP кратно.
+        Runs in the same transaction as the inserts (commit at the end).
+        """
         result = self.db.execute(
             text("""
                 UPDATE price_recommendation
                 SET status = 'expired'
                 WHERE status = 'new'
                   AND department_id = CAST(:dept_id AS uuid)
-                  AND created_at < NOW() - INTERVAL '14 days'
             """),
             {"dept_id": department_id},
         )
@@ -327,7 +358,7 @@ class PriceOptimizerService:
         if status not in ("approved", "rejected"):
             return {"status": "error", "message": "Status must be 'approved' or 'rejected'"}
 
-        self.db.execute(
+        result = self.db.execute(
             text("""
                 UPDATE price_recommendation
                 SET status = :status,
@@ -339,23 +370,32 @@ class PriceOptimizerService:
             {"id": rec_id, "status": status, "reviewer_id": reviewer_id, "comment": comment},
         )
         self.db.commit()
+        if result.rowcount == 0:
+            return {
+                "status": "error",
+                "message": f"Recommendation {rec_id} not found or not in 'new' status",
+            }
         return {"status": "ok", "recommendation_id": rec_id, "new_status": status}
 
     def batch_review(
         self, rec_ids: list[int], status: str, reviewer_id: Optional[str] = None,
+        comment: Optional[str] = None,
     ) -> dict:
+        if status not in ("approved", "rejected"):
+            return {"status": "error", "message": "Status must be 'approved' or 'rejected'"}
         if not rec_ids:
             return {"status": "ok", "updated": 0}
 
-        self.db.execute(
+        result = self.db.execute(
             text("""
                 UPDATE price_recommendation
                 SET status = :status,
                     reviewed_by = CAST(:reviewer_id AS uuid),
-                    reviewed_at = NOW()
+                    reviewed_at = NOW(),
+                    review_comment = :comment
                 WHERE id = ANY(:ids) AND status = 'new'
             """),
-            {"status": status, "reviewer_id": reviewer_id, "ids": rec_ids},
+            {"status": status, "reviewer_id": reviewer_id, "ids": rec_ids, "comment": comment},
         )
         self.db.commit()
-        return {"status": "ok", "updated": len(rec_ids)}
+        return {"status": "ok", "updated": result.rowcount, "requested": len(rec_ids)}

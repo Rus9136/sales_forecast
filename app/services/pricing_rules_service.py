@@ -50,7 +50,8 @@ class PricingRulesService:
                         WHEN 'department' THEN 2
                         WHEN 'segment' THEN 3
                         WHEN 'global' THEN 4
-                    END
+                    END,
+                    id
             """),
             {
                 "today": today,
@@ -81,16 +82,18 @@ class PricingRulesService:
         # Rule 1: min_margin
         r = rules.get("min_margin")
         if r and cogs is not None and candidate_price > 0:
+            min_margin = r.get("value", 0.60)
             margin = (candidate_price - cogs) / candidate_price
-            if margin < r.get("value", 0.60):
-                violations.append(f"min_margin: {margin:.2%} < {r['value']:.0%}")
+            if margin < min_margin:
+                violations.append(f"min_margin: {margin:.2%} < {min_margin:.0%}")
 
         # Rule 2: max_step
         r = rules.get("max_step")
         if r and current_price > 0:
+            max_step = r.get("value", 0.05)
             step = abs(candidate_price - current_price) / current_price
-            if step > r.get("value", 0.05):
-                violations.append(f"max_step: {step:.2%} > {r['value']:.0%}")
+            if step > max_step:
+                violations.append(f"max_step: {step:.2%} > {max_step:.0%}")
 
         # Rule 3: min_frequency
         r = rules.get("min_frequency")
@@ -171,6 +174,11 @@ class PricingRulesService:
         ]
 
     def create_rule(self, data: dict) -> dict:
+        if data["rule_type"] not in VALID_RULE_TYPES:
+            raise ValueError(
+                f"Invalid rule_type '{data['rule_type']}'. "
+                f"Must be one of: {', '.join(sorted(VALID_RULE_TYPES))}"
+            )
         self.db.execute(
             text("""
                 INSERT INTO pricing_rule
@@ -217,9 +225,13 @@ class PricingRulesService:
         return {"status": "ok"}
 
     def delete_rule(self, rule_id: int) -> dict:
-        self.db.execute(
-            text("UPDATE pricing_rule SET is_active = false, updated_at = NOW() WHERE id = :id"),
+        # Hard delete: soft-deleted строки блокировали повторное создание
+        # правила через UNIQUE (rule_type, scope_type, scope_id).
+        result = self.db.execute(
+            text("DELETE FROM pricing_rule WHERE id = :id"),
             {"id": rule_id},
         )
         self.db.commit()
+        if result.rowcount == 0:
+            return {"status": "error", "message": f"Rule {rule_id} not found"}
         return {"status": "ok"}

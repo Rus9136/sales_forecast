@@ -37,7 +37,10 @@ def alice_employee(db_session: Session) -> Employee:
 
 @pytest.fixture()
 def alpha_dept(db_session: Session) -> Department:
-    dept = Department(id=uuid4(), code="D001", name="Alpha", type="DEPARTMENT")
+    dept = Department(
+        id=uuid4(), code="D001", name="Alpha", type="DEPARTMENT",
+        iiko_source_domain="test.iiko.it",
+    )
     db_session.add(dept)
     db_session.commit()
     db_session.refresh(dept)

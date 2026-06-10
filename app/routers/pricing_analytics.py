@@ -78,8 +78,8 @@ async def get_price_history(
                 "product_name": r.product_name,
                 "department_id": r.department_id,
                 "price": float(r.price),
-                "prev_price": float(r.prev_price) if r.prev_price else None,
-                "change_pct": float(r.change_pct) if r.change_pct else None,
+                "prev_price": float(r.prev_price) if r.prev_price is not None else None,
+                "change_pct": float(r.change_pct) if r.change_pct is not None else None,
                 "first_seen_date": r.first_seen_date,
                 "last_seen_date": r.last_seen_date,
             }
@@ -149,13 +149,13 @@ async def get_sku_weekly(
                 "total_revenue": float(r.total_revenue),
                 "total_cost": float(r.total_cost),
                 "gross_profit": float(r.gross_profit),
-                "gp_margin": float(r.gp_margin) if r.gp_margin else None,
-                "avg_price": float(r.avg_price) if r.avg_price else None,
-                "avg_daily_qty": float(r.avg_daily_qty) if r.avg_daily_qty else None,
+                "gp_margin": float(r.gp_margin) if r.gp_margin is not None else None,
+                "avg_price": float(r.avg_price) if r.avg_price is not None else None,
+                "avg_daily_qty": float(r.avg_daily_qty) if r.avg_daily_qty is not None else None,
                 "unique_receipts": r.unique_receipts,
                 "days_with_sales": r.days_with_sales,
-                "qty_cv": float(r.qty_cv) if r.qty_cv else None,
-                "cost_coverage": float(r.cost_coverage) if r.cost_coverage else None,
+                "qty_cv": float(r.qty_cv) if r.qty_cv is not None else None,
+                "cost_coverage": float(r.cost_coverage) if r.cost_coverage is not None else None,
             }
             for r in rows
         ],
@@ -207,11 +207,11 @@ async def get_department_weekly(
                 "total_revenue": float(r.total_revenue),
                 "total_cost": float(r.total_cost),
                 "gross_profit": float(r.gross_profit),
-                "gp_margin": float(r.gp_margin) if r.gp_margin else None,
+                "gp_margin": float(r.gp_margin) if r.gp_margin is not None else None,
                 "total_receipts": r.total_receipts,
-                "avg_receipt_sum": float(r.avg_receipt_sum) if r.avg_receipt_sum else None,
+                "avg_receipt_sum": float(r.avg_receipt_sum) if r.avg_receipt_sum is not None else None,
                 "unique_guests": r.unique_guests,
-                "cost_coverage": float(r.cost_coverage) if r.cost_coverage else None,
+                "cost_coverage": float(r.cost_coverage) if r.cost_coverage is not None else None,
             }
             for r in rows
         ],
@@ -222,11 +222,12 @@ async def get_department_weekly(
 # ---------- POST: manual aggregation ----------
 
 @router.post("/aggregate")
-async def run_aggregate(
+def run_aggregate(
     from_date: date = Query(...),
     to_date: date = Query(...),
     db: Session = Depends(get_db),
 ):
+    """Sync def → threadpool: тяжёлая агрегация не блокирует event loop."""
     svc = PricingAnalyticsService(db)
     result = svc.aggregate_all(from_date, to_date)
     return {"status": "ok", **result}
@@ -235,7 +236,8 @@ async def run_aggregate(
 # ---------- POST: full backfill ----------
 
 @router.post("/backfill")
-async def run_backfill(db: Session = Depends(get_db)):
+def run_backfill(db: Session = Depends(get_db)):
+    """Sync def → threadpool: полный пересчёт витрин занимает минуты."""
     svc = PricingAnalyticsService(db)
     result = svc.backfill_all()
     return {"status": "ok", **result}
@@ -360,9 +362,10 @@ async def update_menu_role(
 # ---------- POST: trigger clustering ----------
 
 @router.post("/menu-roles/cluster")
-async def run_clustering_now(
+def run_clustering_now(
     lookback_days: int = Query(90, ge=30, le=365),
     db: Session = Depends(get_db),
 ):
+    """Sync def → threadpool: KMeans-кластеризация не блокирует event loop."""
     svc = MenuClusteringService(db)
     return svc.run_clustering(lookback_days=lookback_days)

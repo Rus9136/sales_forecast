@@ -68,7 +68,8 @@ category_weekly AS (
     SELECT
         category_id,
         week_start,
-        AVG(LN(total_qty)) AS cat_log_qty
+        SUM(LN(total_qty)) AS sum_log_qty,
+        COUNT(*) AS n_rows
     FROM weekly
     GROUP BY category_id, week_start
 )
@@ -80,7 +81,12 @@ SELECT
     LN(w.price) AS log_price,
     EXTRACT(MONTH FROM w.week_start)::int AS month,
     (w.week_start - :from_date)::int / 7 AS week_index,
-    COALESCE(cw.cat_log_qty, 0) AS cat_log_qty,
+    -- leave-one-out: среднее по категории БЕЗ самого SKU, иначе контроль
+    -- частично объясняет зависимую переменную и тянет ε к нулю
+    CASE WHEN cw.n_rows > 1
+         THEN (cw.sum_log_qty - LN(w.total_qty)) / (cw.n_rows - 1)
+         ELSE 0
+    END AS cat_log_qty,
     w.category_id,
     w.menu_role
 FROM weekly w
@@ -92,10 +98,13 @@ ORDER BY w.product_id, w.department_id, w.week_start
 
 GRADE_SQL = """
 WITH variation AS (
-    -- Number of DISTINCT real menu prices (from orders) = price-change signal
+    -- Number of DISTINCT real menu prices (from orders) = price-change signal.
+    -- Only intervals overlapping the lookback window (date_to > :from_date):
+    -- prices that expired before the window carry no usable signal.
     SELECT product_id, department_id, COUNT(DISTINCT price) AS n_events
     FROM sku_catalog_price
     WHERE product_id IS NOT NULL AND price > 0
+      AND date_to > :from_date
     GROUP BY product_id, department_id
 ),
 sales_span AS (
@@ -124,8 +133,6 @@ def _assign_grade(n_events: int, n_days: int) -> str:
         return "B"
     if n_events >= 3:
         return "C"
-    if n_events >= 2:
-        return "D"
     return "D"
 
 
@@ -294,13 +301,19 @@ class ElasticityEstimationService:
         grades_df: pd.DataFrame,
         group_estimates: dict[str, dict],
     ) -> dict[tuple, dict]:
-        ab_pairs = grades_df[grades_df["grade"].isin(["A", "B", "C"])][["product_id", "department_id"]].values
-        results = {}
+        """Two-pass empirical Bayes: raw per-SKU OLS, then shrinkage toward
+        the group estimate with tau² from the spread of raw SKU epsilons
+        WITHIN the group (between-SKU heterogeneity)."""
+        eligible = {
+            (int(r["product_id"]), str(r["department_id"]))
+            for _, r in grades_df[grades_df["grade"].isin(["A", "B", "C"])].iterrows()
+        }
 
-        for pid, did in ab_pairs:
-            mask = (df["product_id"] == pid) & (df["department_id"].astype(str) == str(did))
-            sdf = df[mask]
-            if len(sdf) < MIN_OLS_OBS:
+        # Pass 1: raw OLS per eligible SKU×dept
+        raw: dict[tuple, dict] = {}
+        for (pid, did), sdf in df.groupby(["product_id", "department_id"]):
+            key = (int(pid), str(did))
+            if key not in eligible or len(sdf) < MIN_OLS_OBS:
                 continue
 
             X, y, col_names = _build_design_matrix(sdf)
@@ -312,24 +325,48 @@ class ElasticityEstimationService:
             if np.isnan(se[eps_idx]) or se[eps_idx] == 0:
                 continue
 
-            gk = sdf["group_key"].iloc[0]
+            raw[key] = {
+                "eps": float(beta[eps_idx]),
+                "se": float(se[eps_idx]),
+                "r_squared": float(r_sq) if r_sq is not None else 0.0,
+                "n": n,
+                "k": k,
+                "group_key": sdf["group_key"].iloc[0],
+            }
+
+        # tau² per group: var of raw SKU epsilons minus mean sampling variance
+        tau_sq_by_group: dict[str, float] = {}
+        by_group: dict[str, list[dict]] = {}
+        for est in raw.values():
+            by_group.setdefault(est["group_key"], []).append(est)
+        for gk, ests in by_group.items():
+            if len(ests) >= 2:
+                var_across = float(np.var([e["eps"] for e in ests]))
+                mean_se_sq = float(np.mean([e["se"] ** 2 for e in ests]))
+                tau_sq_by_group[gk] = max(var_across - mean_se_sq, 0.001)
+
+        # Pass 2: shrink toward group estimate
+        results = {}
+        for key, est in raw.items():
+            gk = est["group_key"]
             group_est = group_estimates.get(gk)
             if group_est:
+                tau_sq = tau_sq_by_group.get(gk, group_est["se"] ** 2)
                 eps_shrunk, se_shrunk = self._shrink(
-                    beta[eps_idx], se[eps_idx], group_est, group_estimates, gk
+                    est["eps"], est["se"], group_est["epsilon"], tau_sq
                 )
             else:
-                eps_shrunk = beta[eps_idx]
-                se_shrunk = se[eps_idx]
+                eps_shrunk = est["eps"]
+                se_shrunk = est["se"]
 
-            t_crit = stats.t.ppf(0.975, df=max(n - k, 1))
-            results[(int(pid), str(did))] = {
+            t_crit = stats.t.ppf(0.975, df=max(est["n"] - est["k"], 1))
+            results[key] = {
                 "epsilon": float(np.clip(eps_shrunk, CLAMP_LOWER, CLAMP_UPPER)),
                 "se": float(se_shrunk),
                 "ci_lower": float(np.clip(eps_shrunk - t_crit * se_shrunk, CLAMP_LOWER, CLAMP_UPPER)),
                 "ci_upper": float(np.clip(eps_shrunk + t_crit * se_shrunk, CLAMP_LOWER, CLAMP_UPPER)),
-                "r_squared": float(r_sq) if r_sq is not None else 0.0,
-                "n": n,
+                "r_squared": est["r_squared"],
+                "n": est["n"],
                 "group_key": gk,
             }
 
@@ -339,31 +376,14 @@ class ElasticityEstimationService:
         self,
         eps_sku: float,
         se_sku: float,
-        group_est: dict,
-        all_group_ests: dict,
-        group_key: str,
+        eps_group: float,
+        tau_sq: float,
     ) -> tuple[float, float]:
         """Empirical Bayes shrinkage toward group mean."""
-        eps_group = group_est["epsilon"]
-        se_group = group_est["se"]
-
-        same_group_epsilons = []
-        same_group_ses = []
-        for gk, ge in all_group_ests.items():
-            if gk == group_key:
-                same_group_epsilons.append(ge["epsilon"])
-                same_group_ses.append(ge["se"])
-
-        if len(same_group_epsilons) < 2:
-            tau_sq = se_group ** 2
-        else:
-            var_across = np.var(same_group_epsilons)
-            mean_se_sq = np.mean(np.array(same_group_ses) ** 2)
-            tau_sq = max(var_across - mean_se_sq, 0.001)
-
+        tau_sq = max(tau_sq, 1e-8)
         w = tau_sq / (tau_sq + se_sku ** 2)
         eps_shrunk = w * eps_sku + (1 - w) * eps_group
-        se_shrunk = np.sqrt(1.0 / (1.0 / max(se_sku ** 2, 1e-8) + 1.0 / max(tau_sq, 1e-8)))
+        se_shrunk = np.sqrt(1.0 / (1.0 / max(se_sku ** 2, 1e-8) + 1.0 / tau_sq))
 
         return float(eps_shrunk), float(se_shrunk)
 
@@ -412,12 +432,18 @@ class ElasticityEstimationService:
                 ci_lo = max(ci_lo, CLAMP_LOWER)
                 ci_hi = min(ci_hi, CLAMP_UPPER)
 
+            positive_eps_overridden = None
             if eps > 0:
+                positive_eps_overridden = round(float(eps), 4)
                 eps = -0.1
                 ci_lo = -0.5
                 ci_hi = 0.0
                 grade = "D"
                 level = "global" if level == "sku" else level
+
+            diagnostics = {"global_prior": round(global_est["epsilon"], 4)}
+            if positive_eps_overridden is not None:
+                diagnostics["positive_eps_overridden"] = positive_eps_overridden
 
             MAX_VAL = 9999.0
             results.append({
@@ -434,7 +460,7 @@ class ElasticityEstimationService:
                 "group_key": gk,
                 "model_r_squared": round(max(min(est.get("r_squared", 0.0), 9.9999), -9.9999), 4),
                 "model_version": version,
-                "diagnostics": {"global_prior": round(global_est["epsilon"], 4)},
+                "diagnostics": diagnostics,
             })
 
         return results

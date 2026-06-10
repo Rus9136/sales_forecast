@@ -35,7 +35,7 @@ Authorization: Bearer <API_TOKEN>
 | `effective_role` / `menu_role` / `manual_role` | `traffic_driver`, `margin_driver`, `premium_anchor`, `image_rare`, `tail` |
 | `reliability_grade` (эластичность) | `A` (≥5 ценовых событий и ≥90 дн.), `B` (≥4 и ≥60), `C` (≥3), `D` (fallback) |
 | `estimation_level` | `sku`, `group`, `global` |
-| `status` (рекомендации) | `new`, `approved`, `rejected` |
+| `status` (рекомендации) | `new`, `approved`, `rejected`, `expired` (вытеснена следующим батчем) |
 | `scope_type` (правила) | `global`, `segment`, `department`, `product` |
 
 ### Коды ошибок
@@ -160,8 +160,9 @@ Authorization: Bearer <API_TOKEN>
 ### B2.3 `POST /elasticity/estimate`
 Ручной запуск переоценки. Query: `lookback_days` (540, диапазон 90–730).
 → отчёт `{status, total, upserted, global_prior, groups_estimated, by_grade, by_level, model_version}`.
-> ⚠️ **Тяжёлый синхронный прогон — на проде использует один воркер.** Регулярная переоценка
-> уже выполняется планировщиком в фоне (воскресенье 03:30, lookback 730). Ручной вызов — для отладки.
+> ⚠️ **Тяжёлый прогон (минуты).** Выполняется в threadpool и не блокирует event loop, но грузит
+> CPU и держит соединение. Регулярная переоценка уже выполняется планировщиком в фоне
+> (воскресенье 03:30, lookback 730). Ручной вызов — для отладки.
 
 ### B2.4 `GET /elasticity/{product_id}/{department_id}`
 Одна оценка с диагностикой. → поля как в списке + `diagnostics` (JSONB, напр. `{global_prior: ...}`). `404` если нет.
@@ -174,8 +175,16 @@ Authorization: Bearer <API_TOKEN>
 
 ### B3.1 `POST /recommendations/generate`
 Сгенерировать рекомендации для подразделения. Query: `department_id` (req), `min_gp_threshold` (500.0).
-→ `{status, recommendations_created, ...}`.
+→ `{status, recommendations_created, skipped_no_cogs, ...}`.
 > Также планировщик: ежедневно 05:00 по всем активным точкам.
+>
+> Семантика: каждый прогон **вытесняет** все открытые (`new`) рекомендации подразделения в
+> `expired` и публикует свежий батч — открытый список всегда отражает последний расчёт,
+> по одной рекомендации на SKU. `current_price` берётся из каталожных цен (`sku_catalog_price`,
+> приказы iiko) с fallback на производную цену; прогноз спроса — среднее за 30 календарных
+> дней; SKU без себестоимости пропускаются (`skipped_no_cogs`), иначе правило min_margin
+> было бы необъективно. `constraints_applied` содержит правила, реально ограничившие
+> пространство поиска (например `max_step`, `min_margin`).
 
 ### B3.2 `GET /recommendations`
 Список рекомендаций (`price_recommendation`).
@@ -194,10 +203,12 @@ Authorization: Bearer <API_TOKEN>
 → `.xlsx` (колонки: Подразделение, Код, Позиция, Роль, Текущая/Рекоменд. цена, Δ%, COGS, GP-поля, Эластичность, Надёжность, Статус).
 
 ### B3.4 `PUT /recommendations/{rec_id}/review`
-Утвердить/отклонить одну. Query: `status` (`approved`/`rejected`, req), `comment?`, `reviewer_id?`. → обновлённая запись.
+Утвердить/отклонить одну. Query: `status` (`approved`/`rejected`, req), `comment?`, `reviewer_id?`.
+→ обновлённая запись. `400` при ином статусе, `404` если запись не найдена или уже не `new`.
 
 ### B3.5 `POST /recommendations/batch-review`
-Массовое решение. Query: `rec_ids` (CSV ID, req), `status` (req), `reviewer_id?`. → `{updated: <n>}`.
+Массовое решение. Query: `rec_ids` (CSV ID, req), `status` (`approved`/`rejected`, req), `reviewer_id?`, `comment?`.
+→ `{updated: <фактически обновлено>, requested: <передано>}`. Обновляются только записи в статусе `new`. `400` при ином статусе.
 
 ### B3.6 `GET /recommendations/summary`
 → `{by_status: {new, approved, rejected}, total, total_delta_gp_new}` (потенциальный прирост GP по новым с `delta_gp>0`). Query: `department_id?`.
@@ -220,7 +231,7 @@ Authorization: Bearer <API_TOKEN>
 Обновить. Query: `params?` (JSON-строка), `is_active?`.
 
 ### B4.4 `DELETE /rules/{rule_id}`
-Удалить правило.
+Удалить правило (физическое удаление — освобождает UNIQUE-слот для пере-создания).
 
 ### B4.5 `GET /rules/effective/{product_id}/{department_id}`
 Эффективный набор правил для позиции после scope-каскада. Query: `segment_type?`. → `{rules: [...]}`.

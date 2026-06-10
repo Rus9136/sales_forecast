@@ -54,13 +54,16 @@ async def create_rule(
         raise HTTPException(400, "Invalid JSON in params")
 
     svc = PricingRulesService(db)
-    return svc.create_rule({
-        "rule_type": rule_type,
-        "scope_type": scope_type,
-        "scope_id": scope_id,
-        "params": params_dict,
-        "configured_by_role": configured_by_role,
-    })
+    try:
+        return svc.create_rule({
+            "rule_type": rule_type,
+            "scope_type": scope_type,
+            "scope_id": scope_id,
+            "params": params_dict,
+            "configured_by_role": configured_by_role,
+        })
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.put("/rules/{rule_id}")
@@ -158,13 +161,13 @@ async def list_elasticity(
             "elasticity_mean": float(r.elasticity_mean),
             "elasticity_ci_lower": float(r.elasticity_ci_lower),
             "elasticity_ci_upper": float(r.elasticity_ci_upper),
-            "elasticity_se": float(r.elasticity_se) if r.elasticity_se else None,
+            "elasticity_se": float(r.elasticity_se) if r.elasticity_se is not None else None,
             "n_price_events": r.n_price_events,
             "n_observations": r.n_observations,
             "estimation_level": r.estimation_level,
             "reliability_grade": r.reliability_grade,
             "group_key": r.group_key,
-            "model_r_squared": float(r.model_r_squared) if r.model_r_squared else None,
+            "model_r_squared": float(r.model_r_squared) if r.model_r_squared is not None else None,
             "model_version": r.model_version,
             "updated_at": str(r.updated_at),
         }
@@ -199,15 +202,17 @@ async def elasticity_summary(db: Session = Depends(get_db)):
         "by_grade": by_grade,
         "by_level": by_level,
         "total": total,
-        "global_prior": float(global_prior) if global_prior else None,
+        "global_prior": float(global_prior) if global_prior is not None else None,
     }
 
 
 @router.post("/elasticity/estimate")
-async def trigger_elasticity_estimation(
+def trigger_elasticity_estimation(
     lookback_days: int = Query(540, ge=90, le=730),
     db: Session = Depends(get_db),
 ):
+    """Sync def: FastAPI runs it in the threadpool — иначе многоминутный
+    OLS-прогон блокирует event loop единственного воркера."""
     from ..services.elasticity_estimation_service import ElasticityEstimationService
     svc = ElasticityEstimationService(db)
     return svc.estimate_all(lookback_days=lookback_days)
@@ -250,11 +255,12 @@ async def get_sku_elasticity(
 # ==================== B3: Recommendations ====================
 
 @router.post("/recommendations/generate")
-async def generate_recommendations(
+def generate_recommendations(
     department_id: str = Query(...),
     min_gp_threshold: float = Query(500.0, ge=0),
     db: Session = Depends(get_db),
 ):
+    """Sync def → threadpool: не блокирует event loop при долгом прогоне."""
     from ..services.price_optimizer_service import PriceOptimizerService
     svc = PriceOptimizerService(db)
     return svc.generate_recommendations(department_id, min_gp_threshold)
@@ -310,14 +316,14 @@ async def list_recommendations(
             "batch_id": str(r.batch_id),
             "current_price": float(r.current_price),
             "recommended_price": float(r.recommended_price),
-            "delta_pct": float(r.delta_pct) if r.delta_pct else None,
-            "cogs": float(r.cogs) if r.cogs else None,
-            "current_qty_forecast": float(r.current_qty_forecast) if r.current_qty_forecast else None,
-            "new_qty_forecast": float(r.new_qty_forecast) if r.new_qty_forecast else None,
-            "current_gp": float(r.current_gp) if r.current_gp else None,
-            "expected_gp": float(r.expected_gp) if r.expected_gp else None,
-            "delta_gp": float(r.delta_gp) if r.delta_gp else None,
-            "elasticity_used": float(r.elasticity_used) if r.elasticity_used else None,
+            "delta_pct": float(r.delta_pct) if r.delta_pct is not None else None,
+            "cogs": float(r.cogs) if r.cogs is not None else None,
+            "current_qty_forecast": float(r.current_qty_forecast) if r.current_qty_forecast is not None else None,
+            "new_qty_forecast": float(r.new_qty_forecast) if r.new_qty_forecast is not None else None,
+            "current_gp": float(r.current_gp) if r.current_gp is not None else None,
+            "expected_gp": float(r.expected_gp) if r.expected_gp is not None else None,
+            "delta_gp": float(r.delta_gp) if r.delta_gp is not None else None,
+            "elasticity_used": float(r.elasticity_used) if r.elasticity_used is not None else None,
             "elasticity_grade": r.elasticity_grade,
             "menu_role": r.menu_role,
             "constraints_applied": r.constraints_applied,
@@ -421,9 +427,14 @@ async def review_recommendation(
     reviewer_id: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    if status not in ("approved", "rejected"):
+        raise HTTPException(400, "status must be 'approved' or 'rejected'")
     from ..services.price_optimizer_service import PriceOptimizerService
     svc = PriceOptimizerService(db)
-    return svc.review_recommendation(rec_id, status, reviewer_id, comment)
+    result = svc.review_recommendation(rec_id, status, reviewer_id, comment)
+    if result.get("status") == "error":
+        raise HTTPException(404, result.get("message", "Recommendation not found"))
+    return result
 
 
 @router.post("/recommendations/batch-review")
@@ -431,12 +442,18 @@ async def batch_review_recommendations(
     rec_ids: str = Query(..., description="Comma-separated IDs"),
     status: str = Query(..., description="approved or rejected"),
     reviewer_id: Optional[str] = None,
+    comment: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    if status not in ("approved", "rejected"):
+        raise HTTPException(400, "status must be 'approved' or 'rejected'")
     from ..services.price_optimizer_service import PriceOptimizerService
-    ids = [int(x.strip()) for x in rec_ids.split(",") if x.strip()]
+    try:
+        ids = [int(x.strip()) for x in rec_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, "rec_ids must be comma-separated integers")
     svc = PriceOptimizerService(db)
-    return svc.batch_review(ids, status, reviewer_id)
+    return svc.batch_review(ids, status, reviewer_id, comment)
 
 
 @router.get("/recommendations/summary")
