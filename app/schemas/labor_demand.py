@@ -99,6 +99,13 @@ class ElasticityItem(BaseModel):
     product_name: Optional[str] = None
     menu_role: Optional[str] = None
     elasticity_mean: float
+    elasticity_ci_lower: Optional[float] = None
+    elasticity_ci_upper: Optional[float] = None
+    elasticity_se: Optional[float] = None
+    # True when the 95% CI lies entirely below 0 — the price→demand effect is
+    # statistically distinguishable from "no effect". When False, elasticity_mean
+    # near 0 means "no measurable signal", not real inelasticity.
+    significant: bool
     reliability_grade: str
     estimation_level: str
 

@@ -47,7 +47,7 @@ def _validate_uuid(department_id: str) -> None:
 # ------------------------------------------------------------------
 
 @router.get("/{department_id}/menu-mix", response_model=MenuMixResponse)
-async def get_menu_mix(
+def get_menu_mix(
     department_id: str,
     from_date: date = Query(..., description="Start of the forecast period"),
     to_date: Optional[date] = Query(None, description="End of the period (default = from_date)"),
@@ -81,7 +81,7 @@ async def get_menu_mix(
 # ------------------------------------------------------------------
 
 @router.get("/{department_id}/forecast", response_model=ForecastResponse)
-async def get_forecast(
+def get_forecast(
     department_id: str,
     from_date: date = Query(..., description="Start of the forecast period"),
     to_date: Optional[date] = Query(None, description="End of the period (default = from_date)"),
@@ -116,7 +116,7 @@ _VALID_GRADES = {"A", "B", "C", "D"}
 
 
 @router.get("/{department_id}/elasticity-signal", response_model=ElasticitySignalResponse)
-async def get_elasticity_signal(
+def get_elasticity_signal(
     department_id: str,
     grade: Optional[str] = Query(
         None, description="Comma-separated reliability grades to keep, e.g. 'A,B'"

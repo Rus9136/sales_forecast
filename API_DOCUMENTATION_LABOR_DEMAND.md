@@ -3,7 +3,7 @@
 Интеграционная документация по трём read-only эндпоинтам, которыми Sales Forecast
 снабжает ИИ-агентов TCO сигналом спроса по локации.
 
-- **Версия:** 1.1 (2026-06-10)
+- **Версия:** 1.2 (2026-06-10)
 - **Статус:** в проде на `https://aqniet.site`
 - **Архитектура:** [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md) §2
 - **Зона ответственности:** Sales Forecast — только поставщик сигнала. Солвер, `demand_by_role`
@@ -291,9 +291,27 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 | `product_id` | int | ID товара |
 | `product_name` | string\|null | Название |
 | `menu_role` | string\|null | Роль меню |
-| `elasticity_mean` | float | Точечная оценка ε (отрицательная; ближе к 0 = менее чувствителен к цене/качеству) |
+| `elasticity_mean` | float | Точечная оценка ε (отрицательная; ближе к 0 = менее чувствителен к цене) |
+| `elasticity_ci_lower` | float\|null | Нижняя граница 95% доверительного интервала ε |
+| `elasticity_ci_upper` | float\|null | Верхняя граница 95% CI ε |
+| `elasticity_se` | float\|null | Стандартная ошибка оценки |
+| `significant` | bool | `true`, если весь 95% CI < 0 (эффект цены статистически отличим от нуля) |
 | `reliability_grade` | string | `A` (≥5 ценовых событий и ≥90 дней) … `D` (fallback) |
 | `estimation_level` | string | Уровень оценки: `sku` / `group` / `global` |
+
+> **⚠️ Важно про near-zero ε и `significant` (v1.2).** `reliability_grade` отражает **количество
+> данных** (число ценовых событий + дней продаж), **не** значимость оценки. Поэтому даже у грейда
+> A/B `elasticity_mean` может быть ≈ 0 — это означает «**нет измеримого ценового сигнала**»
+> (оценщик прижал ε к 0, не выявив эффекта), а **не** реальную near-perfect неэластичность.
+> Такие позиции имеют `significant=false` и `elasticity_ci_upper = 0.0`.
+>
+> **Рекомендация:** при выводе «наименее эластичных позиций» (где нельзя экономить на людях)
+> **фильтруйте `significant=true`**, а уже потом сортируйте по `|elasticity_mean|`. Это надёжнее
+> плоского порога `|ε| < 0.05`: значимая позиция с малым ε (например `-0.03`, CI `[-0.05,-0.01]`)
+> — реальная, её порог по магнитуде ошибочно отсёк бы.
+>
+> Пример (Tary Astana, grade B): из 45 A/B-позиций 23 значимы. Шум: `ε=0.0000, CI=[-0.12, 0.0],
+> significant=false`. Реальная: `ε=-0.076, CI=[-0.15, -0.0008], significant=true`.
 
 ### Пример ответа
 ```json
@@ -306,6 +324,10 @@ curl -H "Authorization: Bearer $API_TOKEN" \
       "product_name": "Казан жаппа",
       "menu_role": "premium_anchor",
       "elasticity_mean": -0.31,
+      "elasticity_ci_lower": -0.42,
+      "elasticity_ci_upper": -0.20,
+      "elasticity_se": 0.056,
+      "significant": true,
       "reliability_grade": "B",
       "estimation_level": "sku"
     }
@@ -313,8 +335,9 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 }
 ```
 
-> **Замечание по данным:** часть позиций может иметь `elasticity_mean = 0.0` при недостатке
-> ценовых событий в истории. Фильтруйте по `reliability_grade` (`A`/`B` — наиболее надёжные).
+> **Замечание по данным:** часть позиций имеет `elasticity_mean ≈ 0` при `significant=false` —
+> это «нет измеримого сигнала», а не реальная неэластичность (см. блок выше). Берите
+> `significant=true` для надёжного сигнала.
 
 ---
 

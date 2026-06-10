@@ -242,7 +242,8 @@ class LaborDemandService:
         rows = self.db.execute(text(f"""
             SELECT se.product_id, p.name AS product_name,
                    mr.effective_role AS menu_role,
-                   se.elasticity_mean, se.reliability_grade, se.estimation_level
+                   se.elasticity_mean, se.elasticity_ci_lower, se.elasticity_ci_upper,
+                   se.elasticity_se, se.reliability_grade, se.estimation_level
             FROM sku_elasticity se
             LEFT JOIN product p ON p.id = se.product_id
             LEFT JOIN sku_menu_role mr
@@ -252,20 +253,29 @@ class LaborDemandService:
             ORDER BY ABS(se.elasticity_mean) ASC
         """), params).fetchall()
 
+        items = []
+        for r in rows:
+            ci_upper = float(r.elasticity_ci_upper) if r.elasticity_ci_upper is not None else None
+            # Significant = the whole 95% CI sits below zero (effect is real,
+            # not "near-zero because there's no measurable price signal").
+            significant = ci_upper is not None and ci_upper < 0
+            items.append({
+                "product_id": r.product_id,
+                "product_name": r.product_name,
+                "menu_role": r.menu_role,
+                "elasticity_mean": float(r.elasticity_mean),
+                "elasticity_ci_lower": float(r.elasticity_ci_lower) if r.elasticity_ci_lower is not None else None,
+                "elasticity_ci_upper": ci_upper,
+                "elasticity_se": float(r.elasticity_se) if r.elasticity_se is not None else None,
+                "significant": significant,
+                "reliability_grade": r.reliability_grade,
+                "estimation_level": r.estimation_level,
+            })
+
         return {
             "department_id": department_id,
             "global_prior": float(global_prior) if global_prior is not None else None,
-            "items": [
-                {
-                    "product_id": r.product_id,
-                    "product_name": r.product_name,
-                    "menu_role": r.menu_role,
-                    "elasticity_mean": float(r.elasticity_mean),
-                    "reliability_grade": r.reliability_grade,
-                    "estimation_level": r.estimation_level,
-                }
-                for r in rows
-            ],
+            "items": items,
         }
 
     # ------------------------------------------------------------------
