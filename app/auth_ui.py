@@ -210,6 +210,55 @@ DEFAULT_ROLES = [
         ],
         "is_system": True,
     },
+    # ── C5: доменные роли ценообразования (ТЗ п.9.2) ──────────────────
+    # Несистемные: засеваются как стартовая раскладка, но полностью
+    # редактируются/удаляются админом через /roles. Раздаём доступ на
+    # уровне секций — тонкая грануляция из ТЗ (read-only, «только маржа»,
+    # «только стоп-лист», отфильтрованный список) пока не выражается
+    # нашей section-моделью и реализуется визуально/процедурно.
+    {
+        "code": "restaurant_manager",
+        "name": "Управляющий рестораном",
+        "allowed_sections": [
+            "dashboard",
+            "pricing.dashboard", "pricing.recommendations",
+            "pricing.position_detail", "pricing.rules", "pricing.outcomes",
+        ],
+        "is_system": False,
+    },
+    {
+        "code": "commercial_director",
+        "name": "Коммерческий директор",
+        "allowed_sections": [
+            "dashboard",
+            "pricing.dashboard", "pricing.recommendations", "pricing.rules",
+            "pricing.position_detail", "pricing.outcomes", "pricing.reports",
+        ],
+        "is_system": False,
+    },
+    {
+        "code": "finance_director",
+        "name": "Финансовый директор",
+        "allowed_sections": [
+            "dashboard",
+            "pricing.dashboard", "pricing.recommendations",
+            "pricing.rules", "pricing.outcomes",
+        ],
+        "is_system": False,
+    },
+    {
+        "code": "pricing_analyst",
+        "name": "Аналитик",
+        "allowed_sections": [
+            "dashboard",
+            "pricing.dashboard", "pricing.recommendations", "pricing.rules",
+            "pricing.position_detail", "pricing.outcomes", "pricing.reports",
+            "forecast.branches", "forecast.comparison", "forecast.sku",
+            "menu.products", "menu.groups",
+            "receipts.list", "receipts.stats",
+        ],
+        "is_system": False,
+    },
 ]
 
 
