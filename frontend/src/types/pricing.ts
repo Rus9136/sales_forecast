@@ -226,3 +226,61 @@ export interface BaselineResponse {
   items: BaselineItem[]
   total: number
 }
+
+// ── Аналитика: эластичность / роли меню / аудит ────────────────────
+
+export interface SkuElasticityRow {
+  product_id: number
+  department_id: string
+  product_name: string | null
+  elasticity_mean: number
+  elasticity_ci_lower: number
+  elasticity_ci_upper: number
+  elasticity_se: number | null
+  n_price_events: number
+  n_observations: number | null
+  estimation_level: string
+  reliability_grade: ElasticityGrade | string
+  group_key: string | null
+  model_r_squared: number | null
+  model_version: string | null
+  updated_at: string
+}
+
+export interface SkuElasticityListResponse {
+  items: SkuElasticityRow[]
+  total: number
+}
+
+export interface ElasticitySummary {
+  by_grade: Record<string, number>
+  by_level: Record<string, number>
+  total: number
+  global_prior: number | null
+}
+
+export interface MenuRolesResponse {
+  items: SkuMenuRoleItem[]
+  total: number
+}
+
+export interface MenuRoleSummary {
+  distribution: Record<string, number>
+  total: number
+}
+
+export interface AuditLogItem {
+  id: number
+  entity_type: string
+  entity_id: string | null
+  action: string
+  actor: string | null
+  department_id: string | null
+  details: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface AuditLogResponse {
+  items: AuditLogItem[]
+  total: number
+}

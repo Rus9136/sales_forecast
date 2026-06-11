@@ -1,8 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type {
+  AuditLogResponse,
   BaselineResponse,
   DepartmentWeeklyResponse,
+  ElasticitySummary,
+  MenuRoleSummary,
+  MenuRolesResponse,
   OutcomeSummary,
   PriceHistoryResponse,
   PriceOutcomeResponse,
@@ -11,6 +15,7 @@ import type {
   PricingRule,
   RecommendationSummary,
   SkuElasticityDetail,
+  SkuElasticityListResponse,
   SkuMenuRoleItem,
   SkuWeeklyResponse,
 } from '@/types/pricing'
@@ -367,5 +372,110 @@ export function useGenerateExperiments() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['pricing', 'recommendations'] })
     },
+  })
+}
+
+// ── Аналитика: эластичность (B2) ───────────────────────────────────
+
+interface ElasticityFilters {
+  department_id?: string
+  reliability_grade?: string
+  estimation_level?: string
+  limit?: number
+  offset?: number
+}
+
+export function useElasticityList(filters: ElasticityFilters) {
+  return useQuery<SkuElasticityListResponse>({
+    queryKey: ['pricing', 'elasticity-list', filters],
+    queryFn: () =>
+      api.get<SkuElasticityListResponse>('/api/pricing-engine/elasticity', {
+        department_id: filters.department_id,
+        reliability_grade: filters.reliability_grade,
+        estimation_level: filters.estimation_level,
+        limit: String(filters.limit ?? 200),
+        offset: String(filters.offset ?? 0),
+      }),
+  })
+}
+
+export function useElasticitySummary() {
+  return useQuery<ElasticitySummary>({
+    queryKey: ['pricing', 'elasticity-summary'],
+    queryFn: () => api.get<ElasticitySummary>('/api/pricing-engine/elasticity/summary'),
+  })
+}
+
+// ── Аналитика: роли меню (B1) ──────────────────────────────────────
+
+interface MenuRolesFilters {
+  department_id?: string
+  effective_role?: string
+  limit?: number
+  offset?: number
+}
+
+export function useMenuRolesList(filters: MenuRolesFilters) {
+  return useQuery<MenuRolesResponse>({
+    queryKey: ['pricing', 'menu-roles-list', filters],
+    queryFn: () =>
+      api.get<MenuRolesResponse>('/api/pricing-analytics/menu-roles', {
+        department_id: filters.department_id,
+        effective_role: filters.effective_role,
+        limit: String(filters.limit ?? 200),
+        offset: String(filters.offset ?? 0),
+      }),
+  })
+}
+
+export function useMenuRolesSummary(departmentId?: string) {
+  return useQuery<MenuRoleSummary>({
+    queryKey: ['pricing', 'menu-roles-summary', departmentId],
+    queryFn: () =>
+      api.get<MenuRoleSummary>('/api/pricing-analytics/menu-roles/summary', {
+        department_id: departmentId,
+      }),
+  })
+}
+
+export function useClusterMenuRoles() {
+  const qc = useQueryClient()
+  return useMutation<
+    { status: string; skus_classified: number; silhouette_score: number; lookback_days: number },
+    Error,
+    { lookbackDays?: number }
+  >({
+    mutationFn: ({ lookbackDays }) =>
+      api.post('/api/pricing-analytics/menu-roles/cluster', undefined, {
+        lookback_days: lookbackDays != null ? String(lookbackDays) : undefined,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pricing', 'menu-roles-list'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'menu-roles-summary'] })
+    },
+  })
+}
+
+// ── Аналитика: аудит (AU) ──────────────────────────────────────────
+
+interface AuditFilters {
+  entity_type?: string
+  action?: string
+  department_id?: string
+  limit?: number
+  offset?: number
+}
+
+export function useAuditLog(filters: AuditFilters) {
+  return useQuery<AuditLogResponse>({
+    queryKey: ['pricing', 'audit-log', filters],
+    queryFn: () =>
+      api.get<AuditLogResponse>('/api/pricing-engine/audit-log', {
+        entity_type: filters.entity_type,
+        action: filters.action,
+        department_id: filters.department_id,
+        limit: String(filters.limit ?? 100),
+        offset: String(filters.offset ?? 0),
+      }),
   })
 }

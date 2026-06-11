@@ -23,6 +23,9 @@ import { PricingRecommendationsPage } from '@/pages/pricing/recommendations-page
 import { PricingPositionPage } from '@/pages/pricing/position-page'
 import { PricingRulesPage } from '@/pages/pricing/rules-page'
 import { PricingOutcomesPage } from '@/pages/pricing/outcomes-page'
+import { PricingElasticityPage } from '@/pages/pricing/elasticity-page'
+import { PricingMenuRolesPage } from '@/pages/pricing/menu-roles-page'
+import { PricingAuditPage } from '@/pages/pricing/audit-page'
 import { MenuProductsPage } from '@/pages/menu/products-page'
 import { MenuGroupsPage } from '@/pages/menu/groups-page'
 import { ReceiptsPage } from '@/pages/receipts/receipts-page'
@@ -99,6 +102,11 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="pricing.outcomes" />}>
                     <Route path="/pricing/outcomes" element={<PricingOutcomesPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="pricing.analytics" />}>
+                    <Route path="/pricing/elasticity" element={<PricingElasticityPage />} />
+                    <Route path="/pricing/menu-roles" element={<PricingMenuRolesPage />} />
+                    <Route path="/pricing/audit" element={<PricingAuditPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="menu.products" />}>
                     <Route path="/menu/products" element={<MenuProductsPage />} />

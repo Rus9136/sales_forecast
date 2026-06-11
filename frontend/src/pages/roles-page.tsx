@@ -29,6 +29,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   'pricing.rules': 'Ценообразование — правила',
   'pricing.position_detail': 'Ценообразование — карточка позиции',
   'pricing.outcomes': 'Ценообразование — результаты пилота',
+  'pricing.analytics': 'Ценообразование — аналитика',
   'pricing.reports': 'Ценообразование — отчёты',
   'sync': 'Синхронизация данных',
   'users': 'Управление пользователями',

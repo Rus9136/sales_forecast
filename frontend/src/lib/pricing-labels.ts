@@ -13,6 +13,20 @@ export function menuRoleLabel(role: string | null | undefined): string {
   return MENU_ROLE_LABELS[role as MenuRole] ?? role
 }
 
+/** Semantic token color per menu role (for badges/bars). */
+export const MENU_ROLE_COLOR: Record<MenuRole, string> = {
+  premium_anchor: 'var(--accent)',
+  margin_driver: 'var(--pos)',
+  traffic_driver: 'var(--info)',
+  image_rare: 'var(--warn)',
+  tail: 'var(--text-subtle)',
+}
+
+export function menuRoleColor(role: string | null | undefined): string {
+  if (!role) return 'var(--text-subtle)'
+  return MENU_ROLE_COLOR[role as MenuRole] ?? 'var(--text-subtle)'
+}
+
 export const STATUS_LABELS: Record<RecommendationStatus, string> = {
   new: 'Новая',
   approved: 'Утверждена',
