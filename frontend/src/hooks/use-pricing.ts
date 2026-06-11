@@ -12,8 +12,11 @@ import type {
   PriceOutcomeResponse,
   PriceRecommendation,
   PriceRecommendationResponse,
+  PricingReportDetail,
+  PricingReportListResponse,
   PricingRule,
   RecommendationSummary,
+  ReportType,
   SkuElasticityDetail,
   SkuElasticityListResponse,
   SkuMenuRoleItem,
@@ -477,5 +480,45 @@ export function useAuditLog(filters: AuditFilters) {
         limit: String(filters.limit ?? 100),
         offset: String(filters.offset ?? 0),
       }),
+  })
+}
+
+// ── C4: Отчёты по ценам ────────────────────────────────────────────
+
+export function usePricingReports(filters: { report_type?: string; department_id?: string }) {
+  return useQuery<PricingReportListResponse>({
+    queryKey: ['pricing', 'reports', filters],
+    queryFn: () =>
+      api.get<PricingReportListResponse>('/api/pricing-engine/reports', {
+        report_type: filters.report_type,
+        department_id: filters.department_id,
+        limit: '100',
+      }),
+  })
+}
+
+export function usePricingReport(id: number | null) {
+  return useQuery<PricingReportDetail>({
+    queryKey: ['pricing', 'report', id],
+    queryFn: () => api.get<PricingReportDetail>(`/api/pricing-engine/reports/${id}`),
+    enabled: id != null,
+  })
+}
+
+export function useGeneratePricingReport() {
+  const qc = useQueryClient()
+  return useMutation<
+    { id: number; status: string; has_narrative: boolean; period_start: string; period_end: string },
+    Error,
+    { reportType: ReportType; departmentId?: string }
+  >({
+    mutationFn: ({ reportType, departmentId }) =>
+      api.post('/api/pricing-engine/reports/generate', undefined, {
+        report_type: reportType,
+        department_id: departmentId,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pricing', 'reports'] })
+    },
   })
 }

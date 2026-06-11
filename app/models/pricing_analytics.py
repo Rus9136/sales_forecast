@@ -94,3 +94,28 @@ class SkuMenuRole(Base):
     features = Column(JSONB)
     cluster_meta = Column(JSONB)
     updated_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
+class PricingReport(Base):
+    """C4: сгенерированный LLM еженедельный/ежемесячный отчёт по ценообразованию.
+
+    `department_id IS NULL` → отчёт уровня сети (network); иначе — по точке.
+    `data` — снимок собранных метрик за период (для воспроизводимости),
+    `kpis` — заголовочные KPI, `narrative` — текст от LLM.
+    """
+
+    __tablename__ = "pricing_report"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    report_type = Column(Text, nullable=False)               # 'weekly' | 'monthly'
+    scope = Column(Text, nullable=False, default="network")  # 'network' | 'department'
+    department_id = Column(UUID(as_uuid=True), index=True)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    data = Column(JSONB, nullable=False)
+    kpis = Column(JSONB)
+    narrative = Column(Text)
+    provider = Column(Text, nullable=False, default="claude")
+    model = Column(Text)
+    status = Column(Text, nullable=False, default="ok")
+    created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)

@@ -782,3 +782,110 @@ async def recommendations_summary(
         "total": sum(by_status.values()),
         "total_delta_gp_new": float(total_delta_gp),
     }
+
+
+# ==================== C4: Pricing reports ====================
+
+def _report_row(r) -> dict:
+    return {
+        "id": r.id,
+        "report_type": r.report_type,
+        "scope": r.scope,
+        "department_id": str(r.department_id) if r.department_id else None,
+        "department_name": getattr(r, "department_name", None),
+        "period_start": str(r.period_start),
+        "period_end": str(r.period_end),
+        "kpis": r.kpis,
+        "provider": r.provider,
+        "model": r.model,
+        "status": r.status,
+        "created_at": str(r.created_at),
+    }
+
+
+@router.get("/reports")
+async def list_reports(
+    report_type: Optional[str] = None,
+    department_id: Optional[str] = None,
+    limit: int = Query(50, le=500),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    conditions = ["1=1"]
+    params: dict = {}
+    if report_type:
+        conditions.append("rp.report_type = :rt")
+        params["rt"] = report_type
+    if department_id:
+        conditions.append("rp.department_id = CAST(:dept AS uuid)")
+        params["dept"] = department_id
+    where = " AND ".join(conditions)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM pricing_report rp WHERE {where}"), params
+    ).scalar()
+    rows = db.execute(
+        text(f"""
+            SELECT rp.id, rp.report_type, rp.scope, rp.department_id,
+                   d.name AS department_name, rp.period_start, rp.period_end,
+                   rp.kpis, rp.provider, rp.model, rp.status, rp.created_at
+            FROM pricing_report rp
+            LEFT JOIN departments d ON d.id = rp.department_id
+            WHERE {where}
+            ORDER BY rp.created_at DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    ).fetchall()
+    return {"items": [_report_row(r) for r in rows], "total": total}
+
+
+@router.get("/reports/{report_id}")
+async def get_report(report_id: int, db: Session = Depends(get_db)):
+    r = db.execute(
+        text("""
+            SELECT rp.*, d.name AS department_name
+            FROM pricing_report rp
+            LEFT JOIN departments d ON d.id = rp.department_id
+            WHERE rp.id = :id
+        """),
+        {"id": report_id},
+    ).fetchone()
+    if not r:
+        raise HTTPException(404, "Report not found")
+    out = _report_row(r)
+    out["data"] = r.data
+    out["narrative"] = r.narrative
+    return out
+
+
+@router.post("/reports/generate")
+async def generate_report(
+    report_type: str = Query(..., description="weekly | monthly"),
+    department_id: Optional[str] = None,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    provider: str = "claude",
+    db: Session = Depends(get_db),
+):
+    if report_type not in ("weekly", "monthly"):
+        raise HTTPException(400, "report_type must be 'weekly' or 'monthly'")
+    from ..services.pricing_report_service import (
+        PricingReportService, last_full_week, last_full_month,
+    )
+    if period_start is None or period_end is None:
+        period_start, period_end = (
+            last_full_week(date.today()) if report_type == "weekly"
+            else last_full_month(date.today())
+        )
+    report = await PricingReportService(db).generate(
+        report_type, period_start, period_end, department_id, provider
+    )
+    return {
+        "id": report.id,
+        "report_type": report.report_type,
+        "status": report.status,
+        "period_start": str(report.period_start),
+        "period_end": str(report.period_end),
+        "has_narrative": report.narrative is not None,
+    }

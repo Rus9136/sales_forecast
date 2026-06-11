@@ -101,6 +101,54 @@ def run_elasticity_update():
         db.close()
 
 
+def run_pricing_weekly_report():
+    """Weekly pricing LLM report (network). Schedule: Monday 08:00."""
+    import asyncio
+    from datetime import date
+    logger.info("Starting weekly pricing report")
+    db = SessionLocal()
+    try:
+        from .pricing_report_service import PricingReportService, last_full_week
+        start, end = last_full_week(date.today())
+        report = asyncio.run(PricingReportService(db).generate("weekly", start, end))
+        result = {"status": report.status, "report_id": report.id, "period": f"{start}..{end}"}
+        logger.info("Weekly pricing report done: id=%s status=%s", report.id, report.status)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_report_weekly", result, records=1)
+        return result
+    except Exception as e:
+        logger.error("Weekly pricing report failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_report_weekly", {"status": "error", "message": str(e)})
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+def run_pricing_monthly_report():
+    """Monthly pricing LLM report (network). Schedule: 1st of month 08:00."""
+    import asyncio
+    from datetime import date
+    logger.info("Starting monthly pricing report")
+    db = SessionLocal()
+    try:
+        from .pricing_report_service import PricingReportService, last_full_month
+        start, end = last_full_month(date.today())
+        report = asyncio.run(PricingReportService(db).generate("monthly", start, end))
+        result = {"status": report.status, "report_id": report.id, "period": f"{start}..{end}"}
+        logger.info("Monthly pricing report done: id=%s status=%s", report.id, report.status)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_report_monthly", result, records=1)
+        return result
+    except Exception as e:
+        logger.error("Monthly pricing report failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_report_monthly", {"status": "error", "message": str(e)})
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
 def run_price_optimization():
     """Daily price recommendation generation. Schedule: daily 05:00."""
     logger.info("Starting daily price optimization")

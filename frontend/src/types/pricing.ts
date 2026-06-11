@@ -284,3 +284,44 @@ export interface AuditLogResponse {
   items: AuditLogItem[]
   total: number
 }
+
+// ── C4: Отчёты по ценам ────────────────────────────────────────────
+
+export type ReportType = 'weekly' | 'monthly'
+
+export interface PricingReportKpis {
+  gross_profit: number | null
+  gp_delta_pct: number | null
+  gp_margin: number | null
+  avg_receipt_sum: number | null
+  recs_approved: number
+  recs_applied: number
+  outcomes_evaluated: number
+  actual_delta_gp: number | null
+  hit_rate: number | null
+}
+
+export interface PricingReportListItem {
+  id: number
+  report_type: ReportType
+  scope: string
+  department_id: string | null
+  department_name: string | null
+  period_start: string
+  period_end: string
+  kpis: PricingReportKpis | null
+  provider: string
+  model: string | null
+  status: string
+  created_at: string
+}
+
+export interface PricingReportDetail extends PricingReportListItem {
+  data: Record<string, unknown>
+  narrative: string | null
+}
+
+export interface PricingReportListResponse {
+  items: PricingReportListItem[]
+  total: number
+}

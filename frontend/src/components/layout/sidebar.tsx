@@ -3,7 +3,7 @@ import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
   UserRound, Users, Sparkles, BookOpen, FolderTree, Receipt, BarChart3,
   Shield, UserCog, LogOut, Settings, LayoutDashboard, UtensilsCrossed,
-  BadgePercent, Tags, SlidersHorizontal, Target, Activity, Boxes, ScrollText,
+  BadgePercent, Tags, SlidersHorizontal, Target, Activity, Boxes, ScrollText, FileText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
@@ -61,6 +61,7 @@ export const navSections: NavSection[] = [
       { path: '/pricing/elasticity', label: 'Эластичность', icon: Activity, section: 'pricing.analytics' },
       { path: '/pricing/menu-roles', label: 'Роли меню', icon: Boxes, section: 'pricing.analytics' },
       { path: '/pricing/audit', label: 'Журнал действий', icon: ScrollText, section: 'pricing.analytics' },
+      { path: '/pricing/reports', label: 'Отчёты по ценам', icon: FileText, section: 'pricing.reports' },
     ],
   },
   {
