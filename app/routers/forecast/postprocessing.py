@@ -150,7 +150,10 @@ async def get_batch_forecasts_with_postprocessing(
             log_api_usage(api_key, "/forecast/batch_with_postprocessing", db=db)
 
         from .core import get_batch_forecasts
-        raw_forecasts = await get_batch_forecasts(from_date, to_date, department_id, db)
+        # Direct call (not via FastAPI): pass api_key=None explicitly, otherwise
+        # the param keeps its Depends(...) default and log_api_usage() blows up on
+        # `'Depends' object has no attribute 'key_id'`. Usage is already logged above.
+        raw_forecasts = await get_batch_forecasts(from_date, to_date, department_id, db, api_key=None)
 
         if not apply_postprocessing:
             return raw_forecasts

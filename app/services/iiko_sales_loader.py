@@ -1,5 +1,6 @@
 import httpx
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Dict, Any
 from datetime import datetime, date, timedelta
 from ..models.branch import SalesSummary, SalesByHour, Department
@@ -153,26 +154,47 @@ class IikoSalesLoaderService:
         return summary_records, hourly_records
     
     def sync_sales_summary(self, summary_records: List[dict]) -> int:
-        """Sync sales summary records to database"""
+        """Sync sales summary records to database.
+
+        IMPORTANT: `total_sales` is derived from the DB-accumulated `sales_by_hour`
+        rows for the (department, date), NOT from `record['total_sales']`. The
+        latter only reflects the current fetch — and a partial/re-sync (e.g. iiko
+        returns only some CloseTime buckets for a day) would otherwise blindly
+        overwrite a correct daily total with a fragment, while the per-hour table
+        keeps its older hours. That asymmetry silently desynced the two sources
+        (summary << Σ hourly). Rolling summary up from hourly keeps the invariant
+        `total_sales == SUM(sales_by_hour)` so /forecast/comparison and
+        /sales/hourly can never contradict. Call AFTER sync_sales_by_hour.
+        """
         new_count = 0
         updated_count = 0
-        
+
         for record in summary_records:
             # Check if department exists
             dept = self.db.query(Department).filter(Department.id == record['department_id']).first()
             if not dept:
                 logger.warning(f"Department {record['department_id']} not found, skipping sales record")
                 continue
-            
+
+            # Authoritative daily total = sum of the stored hourly buckets.
+            hourly_total = self.db.query(func.coalesce(func.sum(SalesByHour.sales_amount), 0)).filter(
+                SalesByHour.department_id == record['department_id'],
+                SalesByHour.date == record['date'],
+            ).scalar()
+            total_sales = float(hourly_total or 0.0)
+            # Fallback to the fetch value only if no hourly rows exist at all.
+            if total_sales == 0.0 and record.get('total_sales'):
+                total_sales = record['total_sales']
+
             # Check if record already exists
             existing_record = self.db.query(SalesSummary).filter(
                 SalesSummary.department_id == record['department_id'],
                 SalesSummary.date == record['date']
             ).first()
-            
+
             if existing_record:
                 # Update existing record
-                existing_record.total_sales = record['total_sales']
+                existing_record.total_sales = total_sales
                 existing_record.updated_at = datetime.utcnow()
                 existing_record.synced_at = datetime.utcnow()
                 updated_count += 1
@@ -181,12 +203,12 @@ class IikoSalesLoaderService:
                 new_record = SalesSummary(
                     department_id=record['department_id'],
                     date=record['date'],
-                    total_sales=record['total_sales'],
+                    total_sales=total_sales,
                     synced_at=datetime.utcnow()
                 )
                 self.db.add(new_record)
                 new_count += 1
-        
+
         self.db.commit()
         logger.info(f"Synced {new_count} new and {updated_count} updated sales summary records")
         return new_count + updated_count
@@ -309,10 +331,11 @@ class IikoSalesLoaderService:
                 error_details.append(error_msg)
                 raise Exception(error_msg)
             
-            # Sync to database
+            # Sync to database. Hourly FIRST — the daily summary is rolled up
+            # from the stored hourly rows (see sync_sales_summary docstring).
             try:
-                summary_count = self.sync_sales_summary(summary_records)
                 hourly_count = self.sync_sales_by_hour(hourly_records)
+                summary_count = self.sync_sales_summary(summary_records)
             except Exception as db_error:
                 error_msg = f"Database sync failed: {str(db_error)}"
                 logger.error(error_msg)
