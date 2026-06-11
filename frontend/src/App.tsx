@@ -20,6 +20,9 @@ import { SyncPage } from '@/pages/sync-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
 import { PricingDashboardPage } from '@/pages/pricing/dashboard-page'
 import { PricingRecommendationsPage } from '@/pages/pricing/recommendations-page'
+import { PricingPositionPage } from '@/pages/pricing/position-page'
+import { PricingRulesPage } from '@/pages/pricing/rules-page'
+import { PricingOutcomesPage } from '@/pages/pricing/outcomes-page'
 import { MenuProductsPage } from '@/pages/menu/products-page'
 import { MenuGroupsPage } from '@/pages/menu/groups-page'
 import { ReceiptsPage } from '@/pages/receipts/receipts-page'
@@ -87,6 +90,15 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="pricing.recommendations" />}>
                     <Route path="/pricing/recommendations" element={<PricingRecommendationsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="pricing.position_detail" />}>
+                    <Route path="/pricing/position/:productId/:departmentId" element={<PricingPositionPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="pricing.rules" />}>
+                    <Route path="/pricing/rules" element={<PricingRulesPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="pricing.outcomes" />}>
+                    <Route path="/pricing/outcomes" element={<PricingOutcomesPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="menu.products" />}>
                     <Route path="/menu/products" element={<MenuProductsPage />} />

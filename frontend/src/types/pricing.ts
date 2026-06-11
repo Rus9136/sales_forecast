@@ -103,3 +103,126 @@ export interface PricingRule {
   effective_from: string
   effective_to: string | null
 }
+
+// ── C3: Экран позиции ──────────────────────────────────────────────
+
+export interface PriceHistoryItem {
+  id: number
+  product_id: number
+  product_name: string | null
+  department_id: string
+  price: number
+  prev_price: number | null
+  change_pct: number | null
+  first_seen_date: string
+  last_seen_date: string
+}
+
+export interface PriceHistoryResponse {
+  items: PriceHistoryItem[]
+  total: number
+}
+
+export interface SkuWeeklyItem {
+  product_id: number
+  product_name: string | null
+  department_id: string
+  department_name: string | null
+  week_start: string
+  total_qty: number
+  total_revenue: number
+  total_cost: number
+  gross_profit: number
+  gp_margin: number | null
+  avg_price: number | null
+  avg_daily_qty: number | null
+  unique_receipts: number
+  days_with_sales: number
+  qty_cv: number | null
+  cost_coverage: number | null
+}
+
+export interface SkuWeeklyResponse {
+  items: SkuWeeklyItem[]
+  total: number
+}
+
+/** GET /elasticity/{product_id}/{department_id} — точечная оценка с диагностикой. */
+export interface SkuElasticityDetail {
+  product_id: number
+  department_id: string
+  product_name: string | null
+  elasticity_mean: number
+  elasticity_ci_lower: number
+  elasticity_ci_upper: number
+  n_price_events: number
+  estimation_level: string
+  reliability_grade: ElasticityGrade | string
+  group_key: string | null
+  diagnostics: Record<string, unknown> | null
+}
+
+export interface PriceOutcome {
+  id: number
+  recommendation_id: number
+  product_id: number
+  product_name: string | null
+  department_id: string
+  department_name: string | null
+  applied_at: string
+  eval_window_days: number | null
+  old_price: number
+  new_price: number
+  qty_before: number | null
+  qty_after: number | null
+  gp_before: number | null
+  gp_after: number | null
+  expected_delta_gp: number | null
+  actual_delta_gp: number | null
+  qty_change_pct: number | null
+  control_qty_change_pct: number | null
+  adj_qty_change_pct: number | null
+  realized_elasticity: number | null
+  n_control_skus: number | null
+}
+
+export interface PriceOutcomeResponse {
+  items: PriceOutcome[]
+  total: number
+}
+
+export interface OutcomeSummary {
+  total_evaluated: number
+  expected_delta_gp: number
+  actual_delta_gp: number
+  positive_outcomes: number
+  hit_rate: number | null
+  avg_realized_elasticity: number | null
+}
+
+export interface BaselineItem {
+  id: number
+  label: string
+  scope: string
+  department_id: string | null
+  department_name: string | null
+  baseline_from: string
+  baseline_to: string
+  weeks: number
+  total_revenue: number | null
+  total_cost: number | null
+  gross_profit: number | null
+  gp_margin: number | null
+  total_receipts: number | null
+  avg_receipt_sum: number | null
+  weekly_gp_avg: number | null
+  weekly_gp_stddev: number | null
+  active_skus: number | null
+  cost_coverage: number | null
+  created_at: string
+}
+
+export interface BaselineResponse {
+  items: BaselineItem[]
+  total: number
+}

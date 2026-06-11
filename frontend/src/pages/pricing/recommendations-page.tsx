@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ChevronDown, ChevronRight, Check, X, Search, Wand2, Download, ArrowUp, ArrowDown,
 } from 'lucide-react'
@@ -477,7 +478,13 @@ function RecRow({
           </button>
         </TableCell>
         <TableCell>
-          <div className="text-sm font-medium">{rec.product_name ?? `#${rec.product_id}`}</div>
+          <Link
+            to={`/pricing/position/${rec.product_id}/${rec.department_id}`}
+            className="text-sm font-medium hover:underline"
+            style={{ color: 'var(--accent)' }}
+          >
+            {rec.product_name ?? `#${rec.product_id}`}
+          </Link>
           {rec.department_name && (
             <div className="text-xs text-muted-foreground">{rec.department_name}</div>
           )}

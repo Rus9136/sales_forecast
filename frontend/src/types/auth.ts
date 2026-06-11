@@ -17,6 +17,7 @@ export type SectionKey =
   | 'pricing.recommendations'
   | 'pricing.rules'
   | 'pricing.position_detail'
+  | 'pricing.outcomes'
   | 'pricing.reports'
   | 'sync'
   | 'users'
