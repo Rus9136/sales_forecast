@@ -188,7 +188,7 @@ class LaborDemandService:
 
             pg_dow = (d.weekday() + 1) % 7
             if pg_dow not in hourly_cache:
-                hourly_cache[pg_dow] = self._hourly_profile(department_id, pg_dow)
+                hourly_cache[pg_dow] = self._intraday_profile(department_id, pg_dow)
 
             days.append({
                 "date": str(d),
@@ -196,6 +196,7 @@ class LaborDemandService:
                 "is_weekend": pg_dow in (0, 6),
                 "predicted_revenue": round(revenue, 2) if revenue else None,
                 "predicted_receipts": receipts,
+                "predicted_checks": receipts,
                 "predicted_total_qty": total_qty,
                 "confidence": "high" if (d - today).days <= 7 else "medium",
                 "hourly_profile": hourly_cache[pg_dow],
@@ -318,6 +319,110 @@ class LaborDemandService:
             {"hour": int(r.hour), "revenue_share": round(float(r.avg_amt or 0.0) / total, 4)}
             for r in rows
         ]
+
+    def _checks_share_map(self, department_id: str, pg_dow: int, lookback_weeks: int = 8) -> dict[int, float]:
+        """hour → historical share of daily closed checks for a weekday.
+
+        Counts come from `receipt` headers (close hour, local Almaty). Differs
+        from the revenue curve: cheap lunch checks skew checks earlier/heavier.
+        Empty dict when no receipt history exists for the weekday.
+        """
+        cutoff = date.today() - timedelta(weeks=lookback_weeks)
+        rows = self.db.execute(text("""
+            SELECT EXTRACT(HOUR FROM close_time)::int AS hour, COUNT(*) AS cnt
+            FROM receipt
+            WHERE department_id = CAST(:dept AS uuid)
+              AND open_date >= :cutoff
+              AND EXTRACT(DOW FROM open_date) = :pg_dow
+            GROUP BY EXTRACT(HOUR FROM close_time)
+        """), {"dept": department_id, "cutoff": cutoff, "pg_dow": pg_dow}).fetchall()
+        total = sum(int(r.cnt) for r in rows)
+        if total <= 0:
+            return {}
+        return {int(r.hour): round(int(r.cnt) / total, 4) for r in rows}
+
+    def _intraday_profile(self, department_id: str, pg_dow: int) -> list:
+        """Merge revenue_share (sales_by_hour) + checks_share (receipts) per hour.
+
+        Hours are the union of both sources so each share series sums to ~1.0.
+        `checks_share` is None when receipt history is missing for the weekday.
+        """
+        rev = {b["hour"]: b["revenue_share"] for b in self._hourly_profile(department_id, pg_dow)}
+        checks = self._checks_share_map(department_id, pg_dow)
+        return [
+            {
+                "hour": h,
+                "revenue_share": rev.get(h, 0.0),
+                "checks_share": checks.get(h) if checks else None,
+            }
+            for h in sorted(set(rev) | set(checks))
+        ]
+
+    # ------------------------------------------------------------------
+    # §2.4 category-load-hourly
+    # ------------------------------------------------------------------
+
+    def category_load_hourly(
+        self,
+        department_id: str,
+        from_date: date,
+        to_date: date,
+    ) -> dict:
+        """Historical per-category load by hour-of-day over the period.
+
+        Joins receipt_item → receipt to attach the close hour (items carry no
+        time of their own). `share_of_day` is each hour's fraction of the
+        category's period total (by line positions). Raises LookupError if the
+        department does not exist.
+        """
+        dept = self._department(department_id)
+        if dept is None:
+            raise LookupError("Department not found")
+
+        rows = self.db.execute(text("""
+            SELECT ri.dish_category AS category,
+                   EXTRACT(HOUR FROM r.close_time)::int AS hour,
+                   COUNT(*) AS items_count,
+                   COALESCE(SUM(ri.qty), 0) AS dish_qty
+            FROM receipt_item ri
+            JOIN receipt r
+              ON r.id = ri.receipt_id AND r.open_date = ri.open_date
+            WHERE r.department_id = CAST(:dept AS uuid)
+              AND r.open_date BETWEEN :from_date AND :to_date
+            GROUP BY ri.dish_category, EXTRACT(HOUR FROM r.close_time)
+            ORDER BY ri.dish_category, hour
+        """), {"dept": department_id, "from_date": from_date, "to_date": to_date}).fetchall()
+
+        cats: dict[Optional[str], dict] = {}
+        for r in rows:
+            c = cats.setdefault(r.category, {"items": 0, "qty": 0.0, "hourly": []})
+            c["items"] += int(r.items_count)
+            c["qty"] += float(r.dish_qty)
+            c["hourly"].append({
+                "hour": int(r.hour),
+                "items_count": int(r.items_count),
+                "dish_qty": round(float(r.dish_qty), 3),
+            })
+
+        categories = []
+        for name, c in sorted(cats.items(), key=lambda kv: kv[1]["items"], reverse=True):
+            cat_total = c["items"]
+            for h in c["hourly"]:
+                h["share_of_day"] = _share(h["items_count"], cat_total)
+            categories.append({
+                "category": name,
+                "items_count": c["items"],
+                "dish_qty": round(c["qty"], 3),
+                "hourly": c["hourly"],
+            })
+
+        return {
+            "department_id": department_id,
+            "department_name": dept.name,
+            "period": {"from": str(from_date), "to": str(to_date)},
+            "categories": categories,
+            "data_quality": {"has_receipts": bool(categories)},
+        }
 
     def _menu_roles(self, department_id: str) -> dict[int, dict]:
         """product_id → {role, gp_margin, demand_cv} from sku_menu_role.

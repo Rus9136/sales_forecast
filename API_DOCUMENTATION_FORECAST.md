@@ -16,10 +16,10 @@ Authorization: Bearer sf_your_key_id_your_secret
 #### Get Forecast for Date Range
 ```bash
 # Without authentication (development)
-curl "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07"
+curl "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
 
 # With API key (production)
-curl "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07" \
+curl "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
@@ -29,7 +29,7 @@ import requests
 
 response = requests.get(
     "https://aqniet.site/api/forecast/batch",
-    params={"from_date": "2025-07-01", "to_date": "2025-07-07"}
+    params={"from_date": "2026-05-04", "to_date": "2026-05-10"}
 )
 forecasts = response.json()
 ```
@@ -37,16 +37,22 @@ forecasts = response.json()
 #### JavaScript Quick Example
 ```javascript
 const response = await fetch(
-    'https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07'
+    'https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10'
 );
 const forecasts = await response.json();
 ```
 
-### Model Performance
+### Model Performance (ML v2.3)
 - **Accuracy:** 6.18% MAPE (Mean Absolute Percentage Error)
-- **Features:** 64 engineered features including momentum, lags, seasonality
-- **Update:** Automatically retrained weekly
-- **Coverage:** All restaurant branches in the system
+- **R²:** 0.9962+
+- **Features:** 64 engineered features (lags, weekend features, temporal smoothing, momentum, seasonality)
+- **Hybrid horizon:** short-term 1-7 дней (MAPE 5-15%) / long-term 8+ дней (MAPE 15-25%)
+- **Per-segment models:** на каждый `segment_type` подразделения тренируется отдельный LightGBM (`models/segments/<segment>.pkl`); для unknown / редких сегментов используется global fallback
+- **Update:** автоматическое переобучение по воскресеньям 03:00
+- **Coverage:** активные DEPARTMENT (с продажами за последние 30 дней)
+
+### Active department filter
+Endpoints `/forecast/batch` и `/forecast/comparison` **скрывают «мёртвые точки»** — DEPARTMENT-подразделения без записей в `sales_summary` за последние **30 дней** (`INACTIVE_THRESHOLD_DAYS` в `app/routers/department.py`). Чтобы посмотреть архивную точку, передайте `department_id` явно — фильтр пропускается.
 
 ### Response Times
 - Single forecast: ~100ms
@@ -172,6 +178,53 @@ curl -X GET "https://aqniet.site/api/sales/hourly?hour=14&from_date=2025-01-01&t
 ]
 ```
 
+### 2a. Get Checks (Receipts) Per Hour
+**Endpoint:** `GET /api/sales/checks-hourly`
+
+**Description:** Транзакционная нагрузка по часам — закрытые чеки, позиции, гости, средний чек.
+Создан для калибровки штата в TCO: выручка скрывает нагрузку (банкет на 200 000 ₸ — это один чек
+и одна касса, а 200 000 ₸ розницы — очередь). Данные — из заголовков чеков (`receipt`).
+
+**Query Parameters:**
+- `department_id` (**required**): UUID подразделения
+- `from_date` (**required**): начало периода (YYYY-MM-DD, включительно)
+- `to_date` (**required**): конец периода (YYYY-MM-DD, включительно). Макс. диапазон — 31 день
+
+**Семантика:**
+- `hour` — 0–23 в зоне **Asia/Almaty** (час закрытия `CloseTime`, хранится локально — тот же
+  источник, что и `sales_by_hour`). Чек попадает в час закрытия на своём учётном дне (`open_date`).
+- `items_count` — число позиций (строк чека, `receipt.items_count`), не сумма количеств.
+- `guests_count` — сумма гостей по чекам часа; `null`, если ни один чек часа не нёс данных о гостях.
+- `avg_check` — `AVG(total_sum)` в ₸; `null` при отсутствии чеков.
+- Часы без закрытых чеков **пропускаются** (без нулевого заполнения).
+
+**Example Request:**
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "https://aqniet.site/api/sales/checks-hourly?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2026-06-09&to_date=2026-06-09"
+```
+
+**Response:**
+```json
+[
+  {
+    "date": "2026-06-09",
+    "hour": 13,
+    "checks_count": 47,
+    "items_count": 132,
+    "guests_count": 81,
+    "avg_check": 4830.5
+  }
+]
+```
+
+**Errors:**
+- `400` — `department_id` не UUID; `to_date < from_date`; диапазон > 31 дня
+- `422` — отсутствует обязательный query-параметр
+
+> **Связанный эндпоинт:** разбивку позиций по часам **в разрезе категорий** (загрузка цехов)
+> отдаёт `GET /api/labor-demand/{department_id}/category-load-hourly` — см. `API_DOCUMENTATION_LABOR_DEMAND.md` §4.
+
 ### 3. Get Sales Statistics
 **Endpoint:** `GET /api/sales/stats`
 
@@ -221,39 +274,42 @@ curl -X POST "https://aqniet.site/api/sales/sync?from_date=2025-01-01&to_date=20
 ### 5. Get Batch Forecasts for Date Range
 **Endpoint:** `GET /api/forecast/batch`
 
-**Description:** Get forecasts for multiple dates and optionally filter by department.
+**Description:** Прогноз продаж по дням × подразделениям. Используется per-segment LightGBM (с fallback на global). `predicted_sales` будет `null`, если для подразделения недостаточно истории, чтобы посчитать признаки.
 
 **Query Parameters:**
 - `from_date` (required): Start date in ISO format (YYYY-MM-DD)
 - `to_date` (required): End date in ISO format (YYYY-MM-DD)
-- `department_id` (optional): UUID of specific department to filter
+- `department_id` (optional): UUID of specific department. Если не указан — отдаются ВСЕ активные подразделения. **DEPARTMENT-подразделения без продаж за последние 30 дней автоматически исключаются.** Чтобы получить архивную точку — передайте её UUID явно.
 
 **Example Requests:**
 ```bash
-# Get forecasts for all branches for a week
-curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07"
+# Get forecasts for all active branches for a week
+curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
 
 # Get forecasts for specific branch for a week
-curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
+curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
 ```
 
 **Response:**
 ```json
 [
   {
-    "date": "2025-07-01",
+    "date": "2026-05-04",
     "department_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
     "department_name": "Мадлен Plaza",
     "predicted_sales": 125000.50
   },
   {
-    "date": "2025-07-02",
+    "date": "2026-05-05",
     "department_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
     "department_name": "Мадлен Plaza",
-    "predicted_sales": 132000.75
+    "predicted_sales": null
   }
 ]
 ```
+
+**Errors:**
+- `404 Not Found` — `No departments found` (фильтр не вернул ни одного подразделения)
 
 ### 6. Get Batch Forecasts with Post-processing
 **Endpoint:** `GET /api/forecast/batch_with_postprocessing`
@@ -296,7 +352,7 @@ curl -X GET "https://aqniet.site/api/forecast/batch_with_postprocessing?from_dat
 ### 7. Compare Forecasts with Actual Sales
 **Endpoint:** `GET /api/forecast/comparison`
 
-**Description:** Compare forecasted values with actual sales to analyze model performance. **Note:** This endpoint returns actual sales data along with predictions.
+**Description:** Сравнение прогноза с фактом из `sales_summary`. Возвращает только те даты × подразделения, по которым **есть факт** — т.е. это retrospective comparison, не forward-looking. **Тот же фильтр «мёртвых точек»**, что и в `/batch` (DEPARTMENT без продаж за 30 дней скрываются, если `department_id` не задан).
 
 **Query Parameters:**
 - `from_date` (required): Start date (YYYY-MM-DD)
@@ -354,28 +410,20 @@ curl -X GET "https://aqniet.site/api/forecast/export/csv?from_date=2025-06-01&to
 
 **Description:** Apply advanced post-processing to a raw forecast value.
 
-**Request Body (JSON):**
-```json
-{
-  "branch_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
-  "forecast_date": "2025-07-01",
-  "raw_prediction": 125000.50,
-  "apply_smoothing": true,
-  "apply_business_rules": true,
-  "apply_anomaly_detection": true,
-  "calculate_confidence": true
-}
-```
+**⚠️ Параметры передаются как query string, НЕ в JSON body.**
+
+**Query Parameters:**
+- `branch_id` (required): UUID подразделения
+- `forecast_date` (required): дата прогноза (YYYY-MM-DD)
+- `raw_prediction` (required): сырое значение прогноза (float, тенге)
+- `apply_smoothing` (optional, default=true)
+- `apply_business_rules` (optional, default=true)
+- `apply_anomaly_detection` (optional, default=true)
+- `calculate_confidence` (optional, default=true)
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/postprocess" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "branch_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
-    "forecast_date": "2025-07-01",
-    "raw_prediction": 125000.50
-  }'
+curl -X POST "https://aqniet.site/api/forecast/postprocess?branch_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&forecast_date=2026-05-04&raw_prediction=125000.50"
 ```
 
 **Response:**
@@ -404,25 +452,43 @@ curl -X POST "https://aqniet.site/api/forecast/postprocess" \
 
 **Description:** Apply post-processing to multiple forecasts at once.
 
-**Request Body:**
+**⚠️ Body — это плоский JSON-массив прогнозов. Опции передаются как query string.**
+
+**Query Parameters (опции):**
+- `apply_smoothing` (default=true)
+- `apply_business_rules` (default=true)
+- `apply_anomaly_detection` (default=true)
+- `calculate_confidence` (default=true)
+
+**Request Body** (`List[Dict[str, Any]]`):
+```json
+[
+  {
+    "branch_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
+    "forecast_date": "2026-05-04",
+    "prediction": 125000.50
+  },
+  {
+    "branch_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
+    "forecast_date": "2026-05-05",
+    "prediction": 132000.75
+  }
+]
+```
+
+**Example:**
+```bash
+curl -X POST "https://aqniet.site/api/forecast/postprocess/batch?apply_smoothing=true&calculate_confidence=true" \
+  -H "Content-Type: application/json" \
+  -d '[{"branch_id":"0d30c200-...","forecast_date":"2026-05-04","prediction":125000.50}]'
+```
+
+**Response:**
 ```json
 {
-  "forecasts": [
-    {
-      "branch_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
-      "forecast_date": "2025-07-01",
-      "prediction": 125000.50
-    },
-    {
-      "branch_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
-      "forecast_date": "2025-07-02",
-      "prediction": 132000.75
-    }
-  ],
-  "apply_smoothing": true,
-  "apply_business_rules": true,
-  "apply_anomaly_detection": true,
-  "calculate_confidence": true
+  "status": "success",
+  "processed_count": 2,
+  "results": [ /* per-forecast processed objects */ ]
 }
 ```
 
@@ -435,6 +501,53 @@ curl -X POST "https://aqniet.site/api/forecast/postprocess" \
 ```bash
 curl -X GET "https://aqniet.site/api/forecast/postprocessing/settings"
 ```
+
+### 11a. Test Temporal Smoothing
+**Endpoint:** `POST /api/forecast/test_smoothing`
+
+**Description:** Прогоняет прогноз для одной даты × точки и применяет temporal smoothing (±50% от среднего по дню недели за 4 недели). Используется для отладки настроек сглаживания. Возвращает raw + smoothed prediction + историю последних 10 дней.
+
+**⚠️ `branch_id` и `forecast_date` — query params; параметры сглаживания — JSON body (опционально).**
+
+**Query Parameters:**
+- `branch_id` (required): UUID подразделения
+- `forecast_date` (required): дата прогноза (YYYY-MM-DD)
+
+**Request Body** (`TemporalSmoothingRequest`, опционально):
+```json
+{
+  "max_change_threshold": 0.5,
+  "lookback_weeks": 4,
+  "enable_smoothing": true
+}
+```
+
+**Example:**
+```bash
+curl -X POST "https://aqniet.site/api/forecast/test_smoothing?branch_id=0d30c200-...&forecast_date=2026-05-04" \
+  -H "Content-Type: application/json" \
+  -d '{"max_change_threshold": 0.3}'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "branch_id": "0d30c200-...",
+  "forecast_date": "2026-05-04",
+  "raw_prediction": 132500.00,
+  "smoothed_prediction": 121300.00,
+  "smoothing_applied": true,
+  "change_percent": -8.45,
+  "parameters": {"max_change_threshold": 0.3, "threshold_percent": "30.0%"},
+  "historical_context": [
+    {"date": "2026-04-27", "sales": 119500.00},
+    {"date": "2026-04-20", "sales": 122100.00}
+  ]
+}
+```
+
+---
 
 ### 12. Save Postprocessing Settings
 **Endpoint:** `POST /api/forecast/postprocessing/settings`
@@ -494,6 +607,44 @@ curl -X POST "https://aqniet.site/api/forecast/retrain" \
   "timestamp": "2025-07-01T10:30:00"
 }
 ```
+
+### 13a. Retrain Per-Segment Models
+**Endpoint:** `POST /api/forecast/retrain-segmented`
+
+**Description:** Тренирует отдельный LightGBM-агент на каждый `segment_type` подразделения (mall food court, street, в офисе и т.п.). Глобальная модель остаётся работать как fallback для подразделений с unknown сегментом или недостаточным числом сэмплов в сегменте.
+
+Файлы моделей складываются в `models/segments/<segment>.pkl`.
+
+**Request Body** (опционально, тот же формат, что и у `/retrain`):
+```json
+{
+  "handle_outliers": true,
+  "outlier_method": "winsorize",
+  "days": 365
+}
+```
+
+**Example:**
+```bash
+curl -X POST "https://aqniet.site/api/forecast/retrain-segmented" \
+  -H "Content-Type: application/json" \
+  -d '{"days": 365}'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Trained 4 per-segment models",
+  "per_segment_metrics": {
+    "mall_food_court": {"test_mape": 5.92, "r2_score": 0.997, "samples": 2103},
+    "street":          {"test_mape": 6.41, "r2_score": 0.994, "samples": 1840}
+  },
+  "timestamp": "2026-05-03T10:30:00"
+}
+```
+
+---
 
 ### 14. Get Model Information
 **Endpoint:** `GET /api/forecast/model/info`
@@ -1060,6 +1211,8 @@ The system runs the following automated tasks:
 For API support, issues, or feature requests:
 - GitHub: https://github.com/Rus9136/sales_forecast
 - Documentation: See CLAUDE.md in the repository
+
+**Документ актуализирован:** 2026-05-03 (синхронизирован с `app/routers/forecast/` — добавлены `/retrain-segmented`, `/test_smoothing`; исправлены сигнатуры `/postprocess` и `/postprocess/batch` — query params вместо JSON body; задокументирован фильтр неактивных подразделений на `/batch` и `/comparison`).
 
 ---
 

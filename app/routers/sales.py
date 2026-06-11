@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
-from sqlalchemy import func, Integer
+from sqlalchemy import func, Integer, text
 from typing import List, Optional
 from datetime import date, datetime, timedelta
+import uuid as uuidlib
 from ..db import get_db
 from ..models.branch import SalesSummary as SalesSummaryModel, SalesByHour as SalesByHourModel, AutoSyncLog
 from ..models.employee import SalesByWaiter as SalesByWaiterModel, Employee as EmployeeModel
@@ -148,6 +149,63 @@ def get_sales_hourly_heatmap(
         "department_id": department_id,
         "grid": grid,
     }
+
+
+@router.get("/checks-hourly")
+def get_checks_hourly(
+    department_id: str = Query(..., description="Department UUID"),
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD), inclusive"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD), inclusive"),
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass),
+):
+    """Transactional load per hour: closed checks, line positions, guests, avg check.
+
+    Built for TCO staffing calibration — revenue hides load (a 200k banquet is
+    one check, 200k of retail is a queue). Counts come from `receipt` headers.
+
+    - `hour` is 0-23 in Asia/Almaty (iiko `CloseTime`, stored local; same source
+      as `sales_by_hour`). The check is bucketed by its close hour, on its
+      accounting day (`open_date`).
+    - `items_count` = number of line positions (`receipt.items_count`), not unit qty.
+    - `guests_count` = sum of per-receipt guest counts; `null` when no receipt in
+      the hour carries guest data.
+    - Hours with no closed checks are omitted (no zero-fill).
+    """
+    try:
+        uuidlib.UUID(department_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="department_id must be a valid UUID")
+    if to_date < from_date:
+        raise HTTPException(status_code=400, detail="to_date must be >= from_date")
+    if (to_date - from_date).days > 31:
+        raise HTTPException(status_code=400, detail="Max range is 31 days")
+
+    rows = db.execute(text("""
+        SELECT open_date AS date,
+               EXTRACT(HOUR FROM close_time)::int AS hour,
+               COUNT(*) AS checks_count,
+               COALESCE(SUM(items_count), 0) AS items_count,
+               SUM(guest_num) AS guests_count,
+               AVG(total_sum) AS avg_check
+        FROM receipt
+        WHERE department_id = CAST(:dept AS uuid)
+          AND open_date BETWEEN :from_date AND :to_date
+        GROUP BY open_date, EXTRACT(HOUR FROM close_time)
+        ORDER BY open_date, hour
+    """), {"dept": department_id, "from_date": from_date, "to_date": to_date}).fetchall()
+
+    return [
+        {
+            "date": str(r.date),
+            "hour": int(r.hour),
+            "checks_count": int(r.checks_count),
+            "items_count": int(r.items_count),
+            "guests_count": int(r.guests_count) if r.guests_count is not None else None,
+            "avg_check": round(float(r.avg_check), 2) if r.avg_check is not None else None,
+        }
+        for r in rows
+    ]
 
 
 @router.post("/sync")

@@ -1,9 +1,9 @@
 # API: Labor Demand Signal (Sales Forecast → TCO)
 
-Интеграционная документация по трём read-only эндпоинтам, которыми Sales Forecast
+Интеграционная документация по read-only эндпоинтам, которыми Sales Forecast
 снабжает ИИ-агентов TCO сигналом спроса по локации.
 
-- **Версия:** 1.2 (2026-06-10)
+- **Версия:** 1.3 (2026-06-11)
 - **Статус:** в проде на `https://aqniet.site`
 - **Архитектура:** [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md) §2
 - **Зона ответственности:** Sales Forecast — только поставщик сигнала. Солвер, `demand_by_role`
@@ -217,6 +217,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 | `is_weekend` | bool | Суббота/воскресенье |
 | `predicted_revenue` | float\|null | Прогноз выручки (dept-level LightGBM). `null` если прогноз не удался |
 | `predicted_receipts` | int\|null | Оценка числа чеков = `revenue / avg_receipt_sum` |
+| `predicted_checks` | int\|null | **(v1.3)** Алиас `predicted_receipts` под именем, которое запросил TCO. Тот же вывод (нет отдельной модели чеков), `null` при отсутствии выручки или средн. чека |
 | `predicted_total_qty` | float\|null | Сумма прогнозного `predicted_qty` по всем SKU. `null` если SKU-модель не обучена |
 | `confidence` | string | `high` (≤7 дней вперёд) / `medium` (8+) |
 | `hourly_profile` | array | Внутридневная кривая (`HourlyBucket`) |
@@ -224,12 +225,17 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 **`HourlyBucket`**
 | Поле | Тип | Описание |
 |------|-----|----------|
-| `hour` | int | Час суток (0–23), только часы с продажами |
+| `hour` | int | Час суток (0–23), только часы с продажами/чеками |
 | `revenue_share` | float | Доля дневной выручки в этот час; сумма по дню ≈ 1.0 |
+| `checks_share` | float\|null | **(v1.3)** Доля дневных закрытых чеков в этот час; сумма по дню ≈ 1.0. `null`, если по дню недели нет истории чеков |
 
-> **Только `revenue_share`.** `sales_by_hour` хранит выручку, не количество, поэтому
-> почасового `qty_share` нет. Кривая — историческая средняя по дню недели за 8 недель.
-> Чтобы получить форвардную почасовую выручку: `revenue_share × predicted_revenue`.
+> **`revenue_share` vs `checks_share` (v1.3).** Обе доли — исторические средние по дню недели
+> за 8 недель, каждая суммируется в ≈ 1.0 по дню, но это **разные кривые**: в обеденный час
+> много дешёвых чеков (высокий `checks_share`, более низкий `revenue_share`). `revenue_share`
+> — из `sales_by_hour` (выручка), `checks_share` — из `receipt` (счёт закрытых чеков по часу
+> закрытия). Почасового `qty_share` нет — `sales_by_hour` хранит выручку, не количество.
+>
+> Форвардные кривые: `revenue_share × predicted_revenue`, `checks_share × predicted_checks`.
 
 ### Пример ответа
 ```json
@@ -245,13 +251,14 @@ curl -H "Authorization: Bearer $API_TOKEN" \
       "is_weekend": false,
       "predicted_revenue": 1878727.88,
       "predicted_receipts": 264,
+      "predicted_checks": 264,
       "predicted_total_qty": 5571.4,
       "confidence": "high",
       "hourly_profile": [
-        { "hour": 9,  "revenue_share": 0.0103 },
-        { "hour": 10, "revenue_share": 0.042 },
-        { "hour": 11, "revenue_share": 0.0581 },
-        { "hour": 12, "revenue_share": 0.11 }
+        { "hour": 9,  "revenue_share": 0.0103, "checks_share": 0.0011 },
+        { "hour": 10, "revenue_share": 0.042,  "checks_share": 0.0464 },
+        { "hour": 11, "revenue_share": 0.0581, "checks_share": 0.0539 },
+        { "hour": 12, "revenue_share": 0.11,   "checks_share": 0.0972 }
       ]
     }
   ]
@@ -341,12 +348,90 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 
 ---
 
+## 4. `GET /api/labor-demand/{department_id}/category-load-hourly`
+
+**(v1.3)** Историческая нагрузка цехов по часам суток, в разрезе категорий. `menu-mix` (§1)
+отдаёт `category_load` за период целиком — этот эндпоинт раскладывает её **по часам**, чтобы
+агенты TCO ставили нужную станцию в нужное время (горячий цех вечером, кондитерка утром).
+
+Агрегат за период из `receipt_item` (час закрытия чека, Asia/Almaty). Это **факт** (история),
+не прогноз — форвардную долю чеков по часам берите из §2 `hourly_profile.checks_share`.
+
+### Параметры
+| Параметр | Тип | Обяз. | По умолчанию | Описание |
+|----------|-----|:----:|--------------|----------|
+| `department_id` | UUID (path) | ✅ | — | Подразделение |
+| `from_date` | date (query) | ✅ | — | Начало периода |
+| `to_date` | date (query) | ❌ | = `from_date` | Конец периода (включительно). Макс. диапазон — 31 день |
+
+### Пример запроса
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "https://aqniet.site/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/category-load-hourly?from_date=2026-06-05&to_date=2026-06-11"
+```
+
+### Структура ответа
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `department_id` | string | UUID |
+| `department_name` | string\|null | Название |
+| `period` | object | `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` |
+| `categories` | array | Категории, сорт. по `items_count` убыв. (`CategoryHourlyLoad`) |
+| `data_quality` | object | `{ "has_receipts": bool }` — `false`, если за период нет чеков (деградируйте gracefully) |
+
+**`CategoryHourlyLoad`**
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `category` | string\|null | Категория iiko (→ цех на стороне TCO) |
+| `items_count` | int | Всего позиций (строк чека) по категории за период |
+| `dish_qty` | float | Всего проданных единиц (`SUM(qty)`) по категории за период |
+| `hourly` | array | По одному элементу на каждый час суток с продажами (`CategoryHourBucket`) |
+
+**`CategoryHourBucket`**
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `hour` | int | Час суток (0–23, Asia/Almaty), час закрытия чека |
+| `items_count` | int | Позиций (строк) этой категории в этот час |
+| `dish_qty` | float | Проданных единиц (`SUM(qty)`) — точнее отражает загрузку станции |
+| `share_of_day` | float | Доля часа в периодном итоге категории (по `items_count`); сумма по `hourly` ≈ 1.0 |
+
+> **`items_count` vs `dish_qty`.** `items_count` — число строк чека (как в §1 `/sales/checks-hourly`
+> и `Receipt.items_count`). `dish_qty` — сумма `qty` (одна строка «Латте ×3» = 3 единицы). Для
+> загрузки кухонной станции точнее `dish_qty`; для consistency с остальным API даём оба.
+>
+> **Сырой режим:** если удобнее агрегировать самим — те же данные в плоском виде доступны через
+> `GET /api/sales/checks-hourly` (чеки/позиции по часам без разбивки по категориям).
+
+### Пример ответа
+```json
+{
+  "department_id": "82e76bf2-903b-4ed9-9491-b875a33089ae",
+  "department_name": "Мадлен Палуба",
+  "period": { "from": "2026-06-05", "to": "2026-06-11" },
+  "categories": [
+    {
+      "category": "Горячие блюда",
+      "items_count": 1685,
+      "dish_qty": 2250.0,
+      "hourly": [
+        { "hour": 11, "items_count": 49,  "dish_qty": 69.0,  "share_of_day": 0.0291 },
+        { "hour": 12, "items_count": 142, "dish_qty": 188.0, "share_of_day": 0.0843 },
+        { "hour": 13, "items_count": 175, "dish_qty": 240.0, "share_of_day": 0.1039 }
+      ]
+    }
+  ],
+  "data_quality": { "has_receipts": true }
+}
+```
+
+---
+
 ## Привязка к агентам TCO
 
 | Агент TCO | Эндпоинт | Что извлекает |
 |-----------|----------|---------------|
-| Sales | §2 `/forecast` `hourly_profile` | форвардная почасовая кривая вместо `recent_30d` |
-| Schedule | §1 `/menu-mix` `category_load` | загрузка цехов → состав смены (повар горячего / кондитер / бариста) |
+| Sales | §2 `/forecast` `hourly_profile` (`revenue_share` + `checks_share`) + `predicted_checks` | форвардная почасовая кривая выручки/чеков вместо `recent_30d` |
+| Schedule | §1 `/menu-mix` `category_load` + §4 `/category-load-hourly` | загрузка цехов по часам → состав и тайминг смены (повар горячего / кондитер / бариста) |
 | Risks | §1 `top_dishes` + §3 `/elasticity-signal` | флагманы / низкая эластичность → где недокомплект дороже |
 | Orchestrator | все блоки сводно | финальная рекомендация |
 

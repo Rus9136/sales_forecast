@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from ..auth import get_api_key_or_bypass
 from ..db import get_db
 from ..schemas.labor_demand import (
+    CategoryLoadHourlyResponse,
     ElasticitySignalResponse,
     ForecastResponse,
     MenuMixResponse,
@@ -104,6 +105,40 @@ def get_forecast(
 
     try:
         return LaborDemandService(db).forecast_signal(department_id, from_date, to_date)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+
+# ------------------------------------------------------------------
+# §2.4 category-load-hourly
+# ------------------------------------------------------------------
+
+@router.get("/{department_id}/category-load-hourly", response_model=CategoryLoadHourlyResponse)
+def get_category_load_hourly(
+    department_id: str,
+    from_date: date = Query(..., description="Start of the period"),
+    to_date: Optional[date] = Query(None, description="End of the period (default = from_date)"),
+    db: Session = Depends(get_db),
+):
+    """Historical kitchen-station load by hour, per category.
+
+    `menu-mix` gives category load for the whole period; this breaks it down by
+    hour-of-day so TCO can staff the right station at the right time (hot kitchen
+    in the evening, pastry in the morning). Aggregated over the period from
+    `receipt_item` (close hour, Asia/Almaty). Per category: `items_count` (line
+    positions) and `dish_qty` (sold units) per hour, plus `share_of_day`.
+    """
+    _validate_uuid(department_id)
+
+    if to_date is None:
+        to_date = from_date
+    if to_date < from_date:
+        raise HTTPException(status_code=400, detail="to_date must be >= from_date")
+    if (to_date - from_date).days > 31:
+        raise HTTPException(status_code=400, detail="Max range is 31 days")
+
+    try:
+        return LaborDemandService(db).category_load_hourly(department_id, from_date, to_date)
     except LookupError:
         raise HTTPException(status_code=404, detail="Department not found")
 

@@ -64,12 +64,17 @@ class MenuMixResponse(BaseModel):
 # ---------- §2.2 forecast ----------
 
 class HourlyBucket(BaseModel):
-    """One hour of the intraday revenue curve.
+    """One hour of the intraday curve.
 
-    Only `revenue_share` is provided — `sales_by_hour` tracks revenue, not qty.
+    `revenue_share` is the historical share of daily revenue in this hour;
+    `checks_share` is the historical share of daily closed checks. Both are
+    weekday averages and each sums to ~1.0 across the day. They differ — a
+    lunch hour has many cheap checks (high checks_share, lower revenue_share).
+    `checks_share` is `null` when receipt history is missing for the weekday.
     """
     hour: int
     revenue_share: float
+    checks_share: Optional[float] = None
 
 
 class ForecastDay(BaseModel):
@@ -78,9 +83,39 @@ class ForecastDay(BaseModel):
     is_weekend: bool
     predicted_revenue: Optional[float] = None
     predicted_receipts: Optional[int] = None
+    # Alias of predicted_receipts under the name TCO requested. Derived as
+    # revenue / avg_receipt_sum (no dedicated checks model) — null when revenue
+    # or the average receipt is unavailable.
+    predicted_checks: Optional[int] = None
     predicted_total_qty: Optional[float] = None
     confidence: str
     hourly_profile: List[HourlyBucket]
+
+
+# ---------- §2.4 category-load-hourly ----------
+
+class CategoryHourBucket(BaseModel):
+    """One hour of a category's intraday load (period aggregate by hour-of-day)."""
+    hour: int
+    items_count: int          # line positions hitting the station in this hour
+    dish_qty: float           # sold units (SUM of qty) — truer station load
+    share_of_day: float       # this hour / the category's period total (by items_count)
+
+
+class CategoryHourlyLoad(BaseModel):
+    category: Optional[str] = None
+    items_count: int          # category total positions over the period
+    dish_qty: float           # category total units over the period
+    hourly: List[CategoryHourBucket]
+
+
+class CategoryLoadHourlyResponse(BaseModel):
+    """§2.4 — historical kitchen-station load by hour, per category."""
+    department_id: str
+    department_name: Optional[str] = None
+    period: Dict[str, str]
+    categories: List[CategoryHourlyLoad]
+    data_quality: Dict[str, object]
 
 
 class ForecastResponse(BaseModel):
