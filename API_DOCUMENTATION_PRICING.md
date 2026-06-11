@@ -3,7 +3,7 @@
 Справочник по REST API подсистемы ценообразования Sales Forecast: аналитические витрины,
 роли меню, эластичность, ценовые рекомендации и бизнес-правила.
 
-- **Версия:** 1.0 (2026-06-10)
+- **Версия:** 1.1 (2026-06-11)
 - **Статус:** в проде на `https://aqniet.site`
 - **Roadmap / дизайн:** [`docs/PRICING_SYSTEM_ROADMAP.md`](docs/PRICING_SYSTEM_ROADMAP.md)
 - **Слой данных:** [`docs/MENU_AND_RECEIPTS_ARCHITECTURE.md`](docs/MENU_AND_RECEIPTS_ARCHITECTURE.md)
@@ -55,7 +55,8 @@ Authorization: Bearer <API_TOKEN>
 | `sku_menu_role` | 11,495 |
 | `sku_elasticity` | 34,021 (A 137 / B 478 / C 6,422 / D 26,984) |
 | `price_recommendation` | 41,027 |
-| `pricing_rule` | 6 (дефолтные глобальные) |
+| `pricing_rule` | 7 (дефолтные глобальные) |
+| `pricing_report` | weekly/monthly LLM-сводки (по запросу + планировщик) |
 
 ---
 
@@ -324,6 +325,36 @@ Query: `entity_type?` (`recommendation`/`rule`/`menu_role`/`baseline`/`experimen
 
 ---
 
+## RP. Отчёты по ценам — `/api/pricing-engine/reports`
+
+C4: еженедельные/ежемесячные LLM-сводки по управлению ценами (`pricing_report`).
+Сервис собирает метрики за период прямым SQL (активность рекомендаций, outcomes,
+динамика KPI vs предыдущий период, baseline, топ-движения) и зовёт Claude-движок
+существующей AI-подсистемы. Числа подаются модели JSON-блоком — не выдумываются.
+Промпты `PricingWeeklyReportAgent` / `PricingMonthlyReportAgent` редактируются через
+`/api/ai-recommendations/prompts`.
+
+### RP.1 `GET /reports`
+Список отчётов. Query: `report_type?` (`weekly`/`monthly`), `department_id?`
+(NULL-скоуп = сеть), `limit` (50, ≤500) / `offset`.
+**Элемент:** `id, report_type, scope (network|department), department_id, department_name,
+period_start, period_end, kpis {gross_profit, gp_delta_pct, gp_margin, avg_receipt_sum,
+recs_approved, recs_applied, outcomes_evaluated, actual_delta_gp, hit_rate}, provider,
+model, status (ok|no_llm|error), created_at`. Без `data`/`narrative`.
+
+### RP.2 `GET /reports/{id}`
+Полный отчёт: поля как в списке + `data` (JSONB-снимок собранных метрик) + `narrative`
+(текст LLM, Markdown). `404` если нет.
+
+### RP.3 `POST /reports/generate`
+Сгенерировать отчёт сейчас (зовёт LLM, ~15–60с). Query: `report_type` (req,
+`weekly`/`monthly`), `department_id?` (без него — сеть), `period_start?`/`period_end?`
+(без них — прошлая полная неделя / прошлый календарный месяц), `provider` (`claude`).
+→ `{id, report_type, status, period_start, period_end, has_narrative}`.
+> Также планировщик: пн 08:00 (weekly) и 1-е число 08:00 (monthly), network-уровень.
+
+---
+
 ## Планировщик (автоматизация)
 
 | Время | Задача | Эффект |
@@ -334,6 +365,8 @@ Query: `entity_type?` (`recommendation`/`rule`/`menu_role`/`baseline`/`experimen
 | Ежедн. 04:30 | Агрегация витрин (A2) | `sku_price_history`, `*_weekly_summary` |
 | Ежедн. 05:00 | Генерация рекомендаций (B3) | `price_recommendation` |
 | Ежедн. 05:30 | Оценка результатов applied-рекомендаций (FB) | `price_recommendation_outcome` |
+| Пн 08:00 | Еженедельный LLM-отчёт (C4, network) | `pricing_report` |
+| 1-е число 08:00 | Ежемесячный LLM-отчёт (C4, network) | `pricing_report` |
 
 Ручные `POST`-эндпоинты (`/aggregate`, `/backfill`, `/elasticity/estimate`, `/recommendations/generate`,
 `/menu-roles/cluster`) — для отладки/первичного наполнения; в норме всё обновляется планировщиком.

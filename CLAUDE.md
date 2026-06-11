@@ -32,7 +32,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (18 задач: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, metrics, pricing analytics, gap checks ×3)
+- **Scheduler**: APScheduler (20 задач: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -121,7 +121,7 @@ sales_forecast/
 │   │   ├── employee.py            # Employee, SalesByWaiter
 │   │   ├── ai.py                  # AIRecommendation, AIPromptLog, AIPrompt
 │   │   ├── receipts.py            # Receipt, ReceiptItem (partitioned by open_date)
-│   │   ├── pricing_analytics.py   # SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole
+│   │   ├── pricing_analytics.py   # SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole, SkuCatalogPrice, PricingReport
 │   │   ├── sku_forecast.py        # SkuDailySales, SkuForecast (SKU-level forecasting)
 │   │   └── branch.py              # Branch, Sale (legacy) + backward-compat re-exports
 │   ├── schemas/
@@ -192,7 +192,7 @@ sales_forecast/
 - **Recharts 3** — графики (BarChart, LineChart)
 - **pnpm** — пакетный менеджер
 
-### Роутинг (13 страниц)
+### Роутинг (22 страницы)
 | Путь | Страница | API |
 |------|----------|-----|
 | `/departments` | Подразделения (CRUD + фильтры) | GET/POST/PUT/DELETE `/api/departments/` |
@@ -208,6 +208,15 @@ sales_forecast/
 | `/receipts/stats` | Продажи по блюдам (топ) | GET `/api/receipts/stats/by-product` |
 | `/sync` | Синхронизация данных | POST `/api/sales/sync`, GET `/api/sales/auto-sync/status` |
 | `/ai-recommendations` | Мультиагентный анализ (Sales/Optimization/Narrative) + редактор промптов + история | `/api/ai-recommendations/*` (8 endpoints) |
+| `/pricing/dashboard` | Дашборд ценообразования (KPI, динамика) | GET `/api/pricing-analytics/department-weekly`, `/api/pricing-engine/recommendations/summary` |
+| `/pricing/recommendations` | Рекомендации цен (approve/reject + XLSX) | `/api/pricing-engine/recommendations*` |
+| `/pricing/position/:productId/:departmentId` | Карточка позиции (C3) | price-history, sku-weekly, elasticity/{id}/{id}, menu-roles, recs/outcomes по SKU |
+| `/pricing/rules` | Правила цен (B4 UI) | `/api/pricing-engine/rules` CRUD |
+| `/pricing/outcomes` | Результаты пилота (FB) | `/api/pricing-engine/outcomes*`, `/baseline`, `/experiments/generate` |
+| `/pricing/elasticity` | Эластичность (B2 explorer) | `/api/pricing-engine/elasticity*` |
+| `/pricing/menu-roles` | Роли меню (B1 explorer + override) | `/api/pricing-analytics/menu-roles*` |
+| `/pricing/audit` | Журнал действий (AU) | `/api/pricing-engine/audit-log` |
+| `/pricing/reports` | Отчёты по ценам (C4 weekly/monthly LLM) | `/api/pricing-engine/reports*` |
 
 ### Auth-токен
 - **Production**: FastAPI (`_serve_spa()` в `main.py`) инжектирует `<script>window.__API_TOKEN__="..."</script>` в `index.html`
@@ -305,20 +314,30 @@ CLAUDE_MODEL=claude-sonnet-4-20250514
 ### Системные роли (засеяны при старте)
 | Code | Name | Дефолтные разделы |
 |------|------|-------------------|
-| `admin` | Администратор | все 11 секций (включая `users`, `roles`) |
-| `manager` | Менеджер | dashboard, departments, employees, sales.*, forecast.*, ai.recommendations, sync |
+| `admin` | Администратор | все 24 секции (включая `users`, `roles`) |
+| `manager` | Менеджер | dashboard, departments, employees, sales.*, forecast.*, ai.recommendations, pricing.*, sync |
 | `accountant` | Бухгалтер | dashboard, departments, employees, sales.daily, sales.waiters |
 | `viewer` | Наблюдатель | dashboard, sales.daily, sales.hourly, forecast.* |
 
+### Доменные роли ценообразования (C5, несистемные, засеяны при старте)
+| Code | Name | Доступ |
+|------|------|--------|
+| `restaurant_manager` | Управляющий рестораном | pricing.dashboard/recommendations/position_detail/rules/outcomes |
+| `commercial_director` | Коммерческий директор | все pricing.* |
+| `finance_director` | Финансовый директор | pricing.dashboard/recommendations/rules/outcomes |
+| `pricing_analyst` | Аналитик | все pricing.* + forecast.* + menu.* + receipts.* |
+
+Тонкая грануляция ТЗ (read-only / «только маржа» / стоп-лист) section-моделью не выражается.
+
 Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
 
-### Section keys (17 шт)
-`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `ai.recommendations`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + в `sidebar.tsx`. Системные роли автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`).
+### Section keys (24 шт)
+`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `ai.recommendations`, `pricing.dashboard`, `pricing.recommendations`, `pricing.rules`, `pricing.position_detail`, `pricing.outcomes`, `pricing.analytics`, `pricing.reports`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + `roles-page.tsx` (лейбл) + `home-redirect.tsx` (map+priority) + `App.tsx` (route) + `sidebar.tsx`. ⚠️ Системные роли (admin/manager) автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`); **несистемные роли** (pricing-роли C5) — НЕ мерджат, новый key им добавляется ручным SQL.
 
 ### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
 - `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
 - `require_admin` — guard для admin-эндпоинтов (роль `admin`)
-- `seed_default_roles(db)` — идемпотентно создаёт 4 системные роли при старте
+- `seed_default_roles(db)` — идемпотентно создаёт 4 системные + 4 доменные pricing-роли (C5) при старте; в системные до-мёрджит новые секции, несистемные не трогает
 - `bootstrap_admin(db, phone, name)` — если задан `BOOTSTRAP_ADMIN_PHONE` и нет ни одного admin, создаёт первого
 - Эндпоинты:
   - `POST /api/auth/login` — `{phone}` → `{session_token, expires_at, user}`
@@ -349,7 +368,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 
 ## Key Components
 
-### Database Models (27 моделей в `app/models/`)
+### Database Models (28 моделей в `app/models/`)
 | Файл | Модели | Описание |
 |------|--------|----------|
 | `department.py` | Department | Подразделения, организации, сегменты, iiko_source_domain |
@@ -361,7 +380,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 | `menu.py` | NomenclatureCategory, NomenclatureGroup, Product | Каталог номенклатуры iiko (категории, группы, товары) |
 | `receipts.py` | Receipt, ReceiptItem | Чеки + позиции (партиционировано по open_date) |
 | `sku_forecast.py` | SkuDailySales, SkuForecast | Агрегированные продажи по SKU + хранение прогнозов |
-| `pricing_analytics.py` | SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole | Ценовые события, недельные агрегаты, роли меню |
+| `pricing_analytics.py` | SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole, SkuCatalogPrice, PricingReport | Ценовые события, недельные агрегаты, роли меню, каталожные цены, LLM-отчёты (C4) |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -435,6 +454,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/pricing-engine/outcomes` — Пост-анализ applied-рекомендаций: факт vs ожидание, реализованная эластичность (GET, + /summary, + POST /evaluate)
 - `/api/pricing-engine/baseline` — KPI-база пилота (GET, + POST /freeze)
 - `/api/pricing-engine/audit-log` — Append-only журнал действий ценообразования (GET)
+- `/api/pricing-engine/reports` — Weekly/Monthly LLM-отчёты (C4): GET список, GET `/{id}` детали, POST `/generate` (report_type weekly/monthly, department_id?, period?)
 - `/api/pricing-engine/jobs/{id}` — Статус фоновых джобов (`?background=true` на estimate/backfill)
 - `/api/labor-demand/{department_id}/menu-mix` — Сигнал для TCO: роли меню, топ-блюда, загрузка цехов (GET, from_date, to_date, top_n)
 - `/api/labor-demand/{department_id}/forecast` — Сигнал для TCO: дневной спрос + почасовая кривая (GET, from_date, to_date)
@@ -458,6 +478,8 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **04:30** — Daily pricing analytics aggregation (price history + weekly summaries)
 - **05:00** — Daily price optimization (B3 → recommendations)
 - **05:30** — Daily recommendation outcome evaluation (applied recs, 14д окно → price_recommendation_outcome)
+- **08:00 Mon** — Weekly pricing LLM report (C4, network → pricing_report)
+- **08:00 1st** — Monthly pricing LLM report (C4, network → pricing_report)
 - **10:00** — Daily sales gap check
 - **11:00** — Daily waiter sales gap check
 - **11:30** — Daily receipts gap check

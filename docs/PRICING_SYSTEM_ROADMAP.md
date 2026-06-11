@@ -21,9 +21,12 @@
 | FB. Фидбек-loop (§7.4) | **✅ Готов** | 2026-06-10 | Детекция applied (ежедн. 03:20 после синка цен), пост-анализ 14д с контрольной группой и реализованной эластичностью (ежедн. 05:30, `price_recommendation_outcome`). Оптимизатор планирует grade C/D по консервативному краю CI |
 | C1. Дашборд KPI | **✅ Готов** | 2026-06 | `frontend/src/pages/pricing/dashboard-page.tsx` |
 | C2. Экран рекомендаций (approve/reject) | **✅ Готов** | 2026-06 | `frontend/src/pages/pricing/recommendations-page.tsx` + XLSX-экспорт |
-| C3. Экран позиции | Не начат | — | |
-| C4. LLM-обоснования цен | Не начат | — | Поле `llm_explanation` зарезервировано в `price_recommendation` |
-| C5. Ролевая модель по ТЗ | Не начат | — | |
+| C3. Экран позиции | **✅ Готов** | 2026-06-11 | `pricing/position-page.tsx` — KPI, dual-axis цена+объём, кривая спроса Q(P) с CI, рекомендации/outcomes по SKU, override роли, техкарта. Вход — клик в C2 |
+| FB. Экран результатов пилота | **✅ Готов** | 2026-06-11 | `pricing/outcomes-page.tsx` (section `pricing.outcomes`) — KPI из `/outcomes/summary`, baseline, таблица outcomes, генерация экспериментов |
+| Аналитика B1/B2/AU (экраны) | **✅ Готов** | 2026-06-11 | `pricing/{elasticity,menu-roles,audit}-page.tsx` (section `pricing.analytics`) — эластичность, роли меню+override+рекластеризация, аудит-лог |
+| C4. Weekly/Monthly LLM-отчёты | **✅ Готов** | 2026-06-11 | `pricing/reports-page.tsx` (section `pricing.reports`) + `pricing_report` (миграция 028) + 2 scheduler-джоба. См. §5.C4 |
+| C4'. LLM-обоснования отдельных рекомендаций | Не начат | — | Поле `llm_explanation` зарезервировано; отложено (джоба 05:30 нет) |
+| C5. Ролевая модель по ТЗ | **✅ Готов** | 2026-06-11 | 4 несистемные роли в `app_role` (`restaurant_manager`, `commercial_director`, `finance_director`, `pricing_analyst`) |
 | D1–D3 (конкуренты) | Не начат | — | |
 
 ---
@@ -57,9 +60,12 @@
 | Оптимизатор цен (max GP) | **✅ 100%** (grid-search, backend) | Генерация рекомендаций |
 | Бизнес-правила (8 ограничений) | **✅ 100%** (scope-каскад) | Оптимизатор цен |
 | UI рекомендаций (approve/reject) | **✅ 100%** (дашборд C1 + экран рекомендаций C2 + XLSX) | Пилот |
-| LLM-обоснования рекомендаций цен | 0% (C4, не блокирует пилот) | Пилот |
+| Экран позиции + аналитика (эластичность/роли/аудит) | **✅ 100%** (C3 + B1/B2/AU экраны) | — |
+| Экран результатов пилота (outcomes/baseline) | **✅ 100%** (FB) | — |
+| Еженедельные/ежемесячные LLM-отчёты | **✅ 100%** (C4, `pricing_report`) | — |
+| Ролевая модель по ТЗ | **✅ 100%** (C5, 4 роли) | — |
+| LLM-обоснования отдельных рекомендаций цен | 0% (C4', не блокирует пилот) | Пилот |
 | Конкурентный анализ | 0% | Не блокирует MVP |
-| Еженедельные/ежемесячные отчёты | 0% | Не блокирует MVP |
 | Погода / события / бронирования | 0% | Не блокирует MVP |
 
 ---
@@ -520,7 +526,9 @@ pricing_rule (
 
 **Важно:** все действия пользователя логируются (ТЗ п.9.3) — audit trail в таблице `pricing_audit_log`.
 
-### C3. Экран позиции (недели 8-10)
+### C3. Экран позиции (недели 8-10) — ✅ ВЫПОЛНЕНО (2026-06-11)
+
+**Реализация:** `frontend/src/pages/pricing/position-page.tsx`, роут `/pricing/position/:productId/:departmentId` (section `pricing.position_detail`), вход — клик по названию в C2. KPI (цена/COGS/маржа/эластичность), dual-axis график цена+объём (`sku-weekly`+`price-history`), кривая спроса Q(P)=Q₀·(P/P₀)^ε с CI-веером (`elasticity/{id}/{id}`), таблица рекомендаций + outcomes по SKU, inline-override роли, диалог техкарты. Конкуренты — заглушка (трек D).
 
 **Цель:** детальная страница SKU из ТЗ п.9.1 — «история цены, продаж, маржи, кривая спроса, конкуренты, LLM-обоснование».
 
@@ -533,7 +541,11 @@ pricing_rule (
 - Техкарта: уже реализована (кнопка ChefHat)
 - LLM-обоснование: развёрнутое, с блоками «резюме / факторы / эффект / риски / действия» (ТЗ п.4.8)
 
-### C4. LLM-агенты для ценообразования (недели 8-10)
+### C4. LLM-агенты для ценообразования (недели 8-10) — ⏳ ЧАСТИЧНО (2026-06-11)
+
+**Сделано:** `WeeklyReportAgent` / `MonthlyReportAgent` реализованы как `PricingWeeklyReportAgent` / `PricingMonthlyReportAgent` (промпты в `DEFAULT_PROMPTS`, редактируются через `ai_prompts`). Сервис `app/services/pricing_report_service.py` собирает метрики за период прямым SQL и зовёт существующий Claude-движок (`get_dispatcher().get_engine("claude")`); числа подаются JSON-блоком — модель их не выдумывает. Хранение — `pricing_report` (миграция 028). Scheduler: пн 08:00 (weekly) + 1-е число 08:00 (monthly), network-уровень. API: `GET /reports`, `GET /reports/{id}`, `POST /reports/generate`. UI — `pricing/reports-page.tsx`.
+
+**Отложено (C4'):** `PricingRecommendationAgent` — обоснование по отдельной рекомендации цены (`llm_explanation`), джоба 05:30. Ad-hoc chat — post-pilot.
 
 **Цель:** расширить мультиагентную систему агентами, специфичными для ценообразования.
 
@@ -570,9 +582,11 @@ pricing_rule (
 - Ответы с цитированием конкретных метрик через function calling
 - Это самая сложная часть LLM-трека, делать после пилота
 
-### C5. Ролевая модель по ТЗ (недели 9-10)
+### C5. Ролевая модель по ТЗ (недели 9-10) — ✅ ВЫПОЛНЕНО (2026-06-11)
 
-**Текущие роли:** admin, manager, accountant, viewer.
+**Реализация:** 4 несистемные роли засеяны в `DEFAULT_ROLES` (`app/auth_ui.py`): `restaurant_manager` (Управляющий), `commercial_director` (Коммерческий директор), `finance_director` (Финансовый директор), `pricing_analyst` (Аналитик). Раздача доступа на уровне pricing-секций; редактируются через `/roles`. Тонкая грануляция ТЗ (read-only / «только маржа» / «только стоп-лист» / отфильтрованный список) section-моделью не выражается — реализуется визуально/процедурно.
+
+**Текущие системные роли:** admin, manager, accountant, viewer.
 
 **Роли по ТЗ п.9.2 (дополнительные):**
 
@@ -736,18 +750,22 @@ product_competitor_mapping (
 | `department_weekly_summary` | A2 | **✅** | 019 | 2,970 |
 | `sku_menu_role` | B1 | **✅** | 020 | 11,065 |
 | `sku_catalog_price` | B2/Фаза4 | **✅** | 024 | 163,433 |
-| `pricing_baseline_kpi` | A3 | — | | |
+| `pricing_baseline_kpi` | A3 | **✅** | 026 | 44 (pre-pilot-2026-06) |
 | `sku_elasticity` | B2 | **✅** | 021 | 34,021 |
 | `price_recommendation` | B3 | **✅** | 023 | (по запросу) |
-| `pricing_rule` | B4 | **✅** | 022 | 6 (seed) |
-| `pricing_audit_log` | C2 | — | | |
+| `pricing_rule` | B4 | **✅** | 022 | 7 (seed) |
+| `price_recommendation_outcome` | FB | **✅** | 026 | (по мере оценки) |
+| `pricing_audit_log` | C2/AU | **✅** | 027 | (append-only) |
+| `pricing_report` | C4 | **✅** | 028 | (weekly/monthly LLM) |
 | `competitor` | D1 | — | | |
 | `competitor_price` | D1 | — | | |
 | `product_competitor_mapping` | D3 | — | | |
 
 ### 9.3 Новые section keys
 
-`pricing.dashboard`, `pricing.recommendations`, `pricing.rules`, `pricing.reports`, `pricing.position_detail`, `pricing.competitors`
+`pricing.dashboard`, `pricing.recommendations`, `pricing.rules`, `pricing.position_detail`, `pricing.outcomes` (FB), `pricing.analytics` (B1/B2/AU), `pricing.reports` (C4). Реализованы все, кроме `pricing.competitors` (трек D).
+
+**Доменные роли (C5, в `app_role`, несистемные):** `restaurant_manager`, `commercial_director`, `finance_director`, `pricing_analyst` — раздача доступа на уровне pricing-секций; тонкая грануляция ТЗ (read-only/«только маржа») вне section-модели. ⚠️ Новый section key для уже существующих несистемных ролей добавляется ручным SQL — `seed_default_roles` до-мёрджит секции только в системные роли (admin/manager).
 
 ### 9.4 Новые APScheduler задачи
 
@@ -758,9 +776,9 @@ product_competitor_mapping (
 | 03:20 (Sun) | Sync каталожных цен (`/resto/api/v2/price`) | B2/Фаза4 | **✅** |
 | 03:30 (Sun) | Обновление эластичности (на чистых ценах) | B2 | **✅** |
 | 05:00 | Генерация ценовых рекомендаций (batch) | B3 | **✅** |
-| 05:30 | LLM-обоснования для новых рекомендаций | C4 | — |
-| 08:00 (Mon) | Еженедельный отчёт (WeeklyReportAgent) | C4 | — |
-| 08:00 (1-е число) | Ежемесячный отчёт (MonthlyReportAgent) | C4 | — |
+| 08:00 (Mon) | Еженедельный LLM-отчёт (`run_pricing_weekly_report`, network) | C4 | **✅** |
+| 08:00 (1-е число) | Ежемесячный LLM-отчёт (`run_pricing_monthly_report`, network) | C4 | **✅** |
+| 05:30 | LLM-обоснования отдельных рекомендаций | C4' | — (отложено) |
 | 06:00 (Sun) | Парсинг цен конкурентов (если реализован) | D2 | — |
 
 ---
