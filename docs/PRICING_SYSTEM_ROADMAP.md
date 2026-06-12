@@ -25,7 +25,7 @@
 | FB. Экран результатов пилота | **✅ Готов** | 2026-06-11 | `pricing/outcomes-page.tsx` (section `pricing.outcomes`) — KPI из `/outcomes/summary`, baseline, таблица outcomes, генерация экспериментов |
 | Аналитика B1/B2/AU (экраны) | **✅ Готов** | 2026-06-11 | `pricing/{elasticity,menu-roles,audit}-page.tsx` (section `pricing.analytics`) — эластичность, роли меню+override+рекластеризация, аудит-лог |
 | C4. Weekly/Monthly LLM-отчёты | **✅ Готов** | 2026-06-11 | `pricing/reports-page.tsx` (section `pricing.reports`) + `pricing_report` (миграция 028) + 2 scheduler-джоба. См. §5.C4 |
-| C4'. LLM-обоснования отдельных рекомендаций | Не начат | — | Поле `llm_explanation` зарезервировано; отложено (джоба 05:30 нет) |
+| C4'. LLM-обоснования отдельных рекомендаций | **✅ Готов** | 2026-06-12 | `pricing_explanation_service.py` + `PricingRecommendationAgent`. Джоба ежедн. 05:45 (топ-N по ΔGP на подразделение, `PRICING_EXPLAIN_TOP_N=10`), on-demand из C2 (`POST /recommendations/{id}/explain`). Structured JSON по ТЗ п.4.8 |
 | C5. Ролевая модель по ТЗ | **✅ Готов** | 2026-06-11 | 4 несистемные роли в `app_role` (`restaurant_manager`, `commercial_director`, `finance_director`, `pricing_analyst`) |
 | D1–D3 (конкуренты) | Не начат | — | |
 
@@ -545,7 +545,7 @@ pricing_rule (
 
 **Сделано:** `WeeklyReportAgent` / `MonthlyReportAgent` реализованы как `PricingWeeklyReportAgent` / `PricingMonthlyReportAgent` (промпты в `DEFAULT_PROMPTS`, редактируются через `ai_prompts`). Сервис `app/services/pricing_report_service.py` собирает метрики за период прямым SQL и зовёт существующий Claude-движок (`get_dispatcher().get_engine("claude")`); числа подаются JSON-блоком — модель их не выдумывает. Хранение — `pricing_report` (миграция 028). Scheduler: пн 08:00 (weekly) + 1-е число 08:00 (monthly), network-уровень. API: `GET /reports`, `GET /reports/{id}`, `POST /reports/generate`. UI — `pricing/reports-page.tsx`.
 
-**Отложено (C4'):** `PricingRecommendationAgent` — обоснование по отдельной рекомендации цены (`llm_explanation`), джоба 05:30. Ad-hoc chat — post-pilot.
+**C4' (готово 2026-06-12):** `PricingRecommendationAgent` — обоснование по отдельной рекомендации (`app/services/pricing_explanation_service.py`). Контекст прямым SQL (экономика, эластичность с CI, роль меню, продажи 4 нед., дата последнего изменения цены), числа подаются JSON-блоком. Сохранение — structured JSON в `price_recommendation.llm_explanation`. Джоба ежедн. 05:45 (после оптимизатора 05:00): топ-N на подразделение по ΔGP (`PRICING_EXPLAIN_TOP_N`). Остальные — on-demand из C2: `POST /recommendations/{id}/explain` (кнопка «Сгенерировать обоснование») + `POST /recommendations/explain-batch`. UI-рендер — `frontend/src/components/shared/llm-explanation.tsx`. Ad-hoc chat — post-pilot.
 
 **Цель:** расширить мультиагентную систему агентами, специфичными для ценообразования.
 
@@ -778,7 +778,7 @@ product_competitor_mapping (
 | 05:00 | Генерация ценовых рекомендаций (batch) | B3 | **✅** |
 | 08:00 (Mon) | Еженедельный LLM-отчёт (`run_pricing_weekly_report`, network) | C4 | **✅** |
 | 08:00 (1-е число) | Ежемесячный LLM-отчёт (`run_pricing_monthly_report`, network) | C4 | **✅** |
-| 05:30 | LLM-обоснования отдельных рекомендаций | C4' | — (отложено) |
+| 05:45 | LLM-обоснования отдельных рекомендаций (`run_recommendation_explanations`, топ-N/dept) | C4' | **✅** |
 | 06:00 (Sun) | Парсинг цен конкурентов (если реализован) | D2 | — |
 
 ---

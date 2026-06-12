@@ -149,6 +149,41 @@ def run_pricing_monthly_report():
         db.close()
 
 
+def run_recommendation_explanations():
+    """C4': LLM-обоснования топ-N новых рекомендаций. Schedule: daily 05:45.
+
+    Идёт после генерации рекомендаций (05:00): дневной батч оптимизатора
+    замещает открытые рекомендации, поэтому обоснования генерируются заново.
+    Объясняем только топ-N на подразделение по ΔGP — остальные по запросу из UI.
+    """
+    import asyncio
+
+    from ..config import settings
+
+    logger.info("Starting recommendation LLM explanations")
+    db = SessionLocal()
+    try:
+        from .pricing_explanation_service import PricingExplanationService
+        svc = PricingExplanationService(db)
+        result = asyncio.run(
+            svc.explain_batch(top_n_per_department=settings.PRICING_EXPLAIN_TOP_N)
+        )
+        logger.info(
+            "Recommendation explanations complete: %s of %s explained",
+            result.get("explained"), result.get("total"),
+        )
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_explanations", result, records=result.get("explained", 0))
+        return result
+    except Exception as e:
+        logger.error("Recommendation explanations failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_explanations", {"status": "error", "message": str(e)})
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
 def run_price_optimization():
     """Daily price recommendation generation. Schedule: daily 05:00."""
     logger.info("Starting daily price optimization")

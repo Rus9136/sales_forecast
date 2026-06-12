@@ -32,7 +32,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (20 задач: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
+- **Scheduler**: APScheduler (21 задача: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, recommendation LLM explanations, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -478,6 +478,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **04:30** — Daily pricing analytics aggregation (price history + weekly summaries)
 - **05:00** — Daily price optimization (B3 → recommendations)
 - **05:30** — Daily recommendation outcome evaluation (applied recs, 14д окно → price_recommendation_outcome)
+- **05:45** — Daily recommendation LLM explanations (C4', топ-N по ΔGP на подразделение → `price_recommendation.llm_explanation`)
 - **08:00 Mon** — Weekly pricing LLM report (C4, network → pricing_report)
 - **08:00 1st** — Monthly pricing LLM report (C4, network → pricing_report)
 - **10:00** — Daily sales gap check

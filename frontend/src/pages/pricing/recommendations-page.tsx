@@ -23,6 +23,7 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
+import { LlmExplanation } from '@/components/shared/llm-explanation'
 import {
   useRecommendations, useRecommendationsSummary,
   useReviewRecommendation, useBatchReview, useGenerateRecommendations,
@@ -531,11 +532,7 @@ function RecRow({
             <div className="grid gap-4 p-2 md:grid-cols-2">
               <div>
                 <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">Обоснование (ИИ)</div>
-                {rec.llm_explanation ? (
-                  <p className="text-sm whitespace-pre-wrap">{rec.llm_explanation}</p>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Обоснование ещё не сгенерировано.</p>
-                )}
+                <LlmExplanation rec={rec} />
                 {rec.review_comment && (
                   <p className="text-xs mt-2"><span className="text-muted-foreground">Комментарий ревью:</span> {rec.review_comment}</p>
                 )}

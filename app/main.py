@@ -24,7 +24,7 @@ from .services.scheduled_waiter_loader import (
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregation, run_menu_clustering
-from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation, run_pricing_weekly_report, run_pricing_monthly_report
+from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation, run_pricing_weekly_report, run_pricing_monthly_report, run_recommendation_explanations
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.sku_model_retraining_service import run_sku_auto_retrain
@@ -173,6 +173,16 @@ async def lifespan(app: FastAPI):
             minute=0,
             id='daily_price_optimization',
             name='Daily Price Optimization',
+            replace_existing=True
+        )
+
+        scheduler.add_job(
+            func=run_recommendation_explanations,
+            trigger="cron",
+            hour=5,
+            minute=45,
+            id='daily_recommendation_explanations',
+            name='Daily Recommendation LLM Explanations (C4\')',
             replace_existing=True
         )
 

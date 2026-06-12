@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+    # C4': сколько новых рекомендаций на подразделение объясняем LLM за ночной прогон
+    PRICING_EXPLAIN_TOP_N: int = 10
 
     # UI auth bootstrap (creates first admin if none exists)
     BOOTSTRAP_ADMIN_PHONE: str = ""

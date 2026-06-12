@@ -370,6 +370,40 @@ async def list_recommendations(
     return {"items": items, "total": total}
 
 
+@router.post("/recommendations/{rec_id}/explain")
+def explain_recommendation(rec_id: int, db: Session = Depends(get_db)):
+    """C4': сгенерировать LLM-обоснование одной рекомендации (on-demand из UI).
+
+    Sync def → threadpool: вызов Claude занимает 5–15с и не должен блокировать
+    event loop; asyncio.run в воркер-треде — тот же паттерн, что в scheduler.
+    """
+    import asyncio
+
+    from ..services.pricing_explanation_service import PricingExplanationService
+    result = asyncio.run(PricingExplanationService(db).explain_one(rec_id))
+    if result["status"] == "not_found":
+        raise HTTPException(404, f"Recommendation {rec_id} not found")
+    if result["status"] == "no_llm":
+        raise HTTPException(503, "LLM provider is not configured (ANTHROPIC_API_KEY)")
+    if result["status"] == "error":
+        raise HTTPException(502, f"LLM call failed: {result.get('error')}")
+    return result
+
+
+@router.post("/recommendations/explain-batch")
+def explain_recommendations_batch(
+    department_id: Optional[str] = None,
+    top_n_per_department: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """C4': обоснования для топ-N новых рекомендаций по ΔGP (на подразделение)."""
+    import asyncio
+
+    from ..services.pricing_explanation_service import PricingExplanationService
+    svc = PricingExplanationService(db)
+    return asyncio.run(svc.explain_batch(department_id, top_n_per_department))
+
+
 @router.get("/recommendations/export")
 async def export_recommendations(
     department_id: Optional[str] = None,

@@ -132,6 +132,20 @@ export function useGenerateRecommendations() {
   })
 }
 
+/** C4': сгенерировать LLM-обоснование одной рекомендации (5–15 с). */
+export function useExplainRecommendation() {
+  const qc = useQueryClient()
+  return useMutation<
+    { status: string; recommendation_id: number; structured: boolean; explanation: string },
+    Error,
+    { id: number }
+  >({
+    mutationFn: ({ id }) =>
+      api.post(`/api/pricing-engine/recommendations/${id}/explain`, undefined),
+    onSuccess: () => invalidateRecommendations(qc),
+  })
+}
+
 // ── C3: Экран позиции ──────────────────────────────────────────────
 
 interface SkuKey {
