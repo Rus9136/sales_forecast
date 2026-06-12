@@ -2,14 +2,15 @@ import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { PhoneInput } from '@/components/ui/phone-input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useAuth } from '@/contexts/auth-context'
+import { isPhoneComplete, toBackendPhone } from '@/lib/phone'
 
 export function LoginPage() {
   const { login, status, error: ctxError } = useAuth()
-  const [phone, setPhone] = useState('')
+  const [digits, setDigits] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   const location = useLocation() as { state?: { from?: string } }
@@ -20,10 +21,14 @@ export function LoginPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (!isPhoneComplete(digits)) {
+      setLocalError('Введите полный номер телефона')
+      return
+    }
     setLocalError(null)
     setSubmitting(true)
     try {
-      await login(phone)
+      await login(toBackendPhone(digits))
     } catch (err) {
       setLocalError((err as { detail?: string })?.detail || 'Не удалось войти')
     } finally {
@@ -46,13 +51,10 @@ export function LoginPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="phone">Номер телефона</Label>
-              <Input
+              <PhoneInput
                 id="phone"
-                type="tel"
-                inputMode="tel"
-                placeholder="+7 (700) 123-45-67"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                value={digits}
+                onChange={setDigits}
                 autoFocus
                 required
               />
@@ -62,7 +64,11 @@ export function LoginPage() {
                 <AlertDescription>{errorMessage}</AlertDescription>
               </Alert>
             )}
-            <Button type="submit" className="w-full" disabled={submitting || !phone.trim()}>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={submitting || !isPhoneComplete(digits)}
+            >
               {submitting ? 'Входим...' : 'Войти'}
             </Button>
           </form>

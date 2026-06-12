@@ -2,7 +2,9 @@ import { useState, type FormEvent } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PhoneInput } from '@/components/ui/phone-input'
 import { Label } from '@/components/ui/label'
+import { extractDigits, formatPhone, isPhoneComplete, toBackendPhone } from '@/lib/phone'
 import { Badge } from '@/components/ui/badge'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -63,7 +65,7 @@ export function UsersPage() {
 
   function openEdit(u: AppUser) {
     setForm({
-      phone: u.phone,
+      phone: extractDigits(u.phone),
       full_name: u.full_name ?? '',
       role_code: u.role_code,
       is_active: u.is_active,
@@ -80,13 +82,18 @@ export function UsersPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (!isPhoneComplete(form.phone)) {
+      setFormError('Введите полный номер телефона')
+      return
+    }
     setFormError(null)
+    const phone = toBackendPhone(form.phone)
     try {
       if (editing) {
         await updateMutation.mutateAsync({
           id: editing.id,
           data: {
-            phone: form.phone,
+            phone,
             full_name: form.full_name || null,
             role_code: form.role_code,
             is_active: form.is_active,
@@ -94,7 +101,7 @@ export function UsersPage() {
         })
       } else {
         await createMutation.mutateAsync({
-          phone: form.phone,
+          phone,
           full_name: form.full_name || null,
           role_code: form.role_code,
           is_active: form.is_active,
@@ -158,7 +165,7 @@ export function UsersPage() {
                         <Badge variant="secondary" className="ml-2">вы</Badge>
                       )}
                     </TableCell>
-                    <TableCell>{u.phone}</TableCell>
+                    <TableCell className="font-mono text-sm">{formatPhone(extractDigits(u.phone))}</TableCell>
                     <TableCell>{u.role_name || u.role_code}</TableCell>
                     <TableCell>
                       {u.is_active ? (
@@ -202,12 +209,10 @@ export function UsersPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="phone">Телефон</Label>
-              <Input
+              <PhoneInput
                 id="phone"
-                type="tel"
-                placeholder="+7 (700) 123-45-67"
                 value={form.phone}
-                onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                onChange={(digits) => setForm((f) => ({ ...f, phone: digits }))}
                 required
               />
             </div>
