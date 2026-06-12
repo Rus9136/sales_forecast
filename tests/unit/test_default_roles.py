@@ -36,11 +36,15 @@ class TestDefaultRolesInvariants:
                 f"Add them to AVAILABLE_SECTIONS or remove from the role."
             )
 
-    def test_all_default_roles_marked_system(self):
+    def test_is_system_split_matches_c5_design(self):
+        # C5: базовые роли — системные (seed до-мёрджит им новые секции),
+        # доменные pricing-роли — несистемные (секции им добавляются ручным SQL)
+        system = {"admin", "manager", "accountant", "viewer"}
         for role in DEFAULT_ROLES:
-            assert role["is_system"] is True, (
-                f"Role '{role['code']}' must be is_system=True — "
-                "non-system roles should be created via the UI, not the seed."
+            expected = role["code"] in system
+            assert role["is_system"] is expected, (
+                f"Role '{role['code']}': expected is_system={expected}. "
+                "Системные роли фиксированы; новые доменные роли сейте с is_system=False."
             )
 
     def test_always_granted_sections_are_known(self):
