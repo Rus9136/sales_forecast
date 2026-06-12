@@ -369,7 +369,8 @@ class SalesForecasterAgent:
             # Make prediction (predict() applies inverse target transform)
             # Pass segment_type so the dispatcher picks the per-segment model
             # if one exists, otherwise falls back to the global model.
-            prediction = float(self.predict(X, segment_type=dept_info.get('segment_type'))[0])
+            segment_type = df.iloc[-1].get('segment_type')
+            prediction = float(self.predict(X, segment_type=segment_type)[0])
 
             # Применяем временное сглаживание
             prediction = self._apply_temporal_smoothing(branch_id, forecast_date, prediction, db)
