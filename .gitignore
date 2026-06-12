@@ -166,3 +166,6 @@ app/static/spa/
 # Override Python lib/ ignore for the frontend lib directory
 !frontend/src/lib/
 !frontend/src/lib/**
+# Local session artifacts
+.claude/projects/
+frontend/tsconfig.tsbuildinfo
