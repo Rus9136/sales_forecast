@@ -38,7 +38,7 @@ class ClaudeEngine(BaseEngine):
 
     def __init__(self) -> None:
         self.default_key = settings.ANTHROPIC_API_KEY or ""
-        self.model = settings.CLAUDE_MODEL or "claude-sonnet-4-20250514"
+        self.model = settings.CLAUDE_MODEL or "claude-sonnet-4-6"
         # Cache resolved keys per agent so logs print which key got picked.
         self._resolved_keys: dict[str, str] = {}
 

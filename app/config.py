@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY_REPUTATION: str = ""
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
-    CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+    CLAUDE_MODEL: str = "claude-sonnet-4-6"
     # C4': сколько новых рекомендаций на подразделение объясняем LLM за ночной прогон
     PRICING_EXPLAIN_TOP_N: int = 10
 
