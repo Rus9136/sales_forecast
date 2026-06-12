@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func, or_
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from ...db import get_db
 from ...agents.sales_forecaster_agent import get_forecaster_agent
 from ...models.branch import Department, SalesSummary
 from ...auth import get_api_key_or_bypass, ApiKey, log_api_usage
+from ..department import INACTIVE_THRESHOLD_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,16 @@ async def get_forecast_comparison(
         )
         if department_id:
             sales_query = sales_query.filter(SalesSummary.department_id == department_id)
+        else:
+            # Скрываем мёртвые точки: department без продаж за последние N дней (от текущей даты).
+            threshold_date = date.today() - timedelta(days=INACTIVE_THRESHOLD_DAYS)
+            active_subq = (
+                db.query(SalesSummary.department_id)
+                .filter(SalesSummary.date >= threshold_date)
+                .distinct()
+                .subquery()
+            )
+            sales_query = sales_query.filter(SalesSummary.department_id.in_(active_subq))
 
         sales_data = sales_query.all()
         forecaster = get_forecaster_agent()
@@ -230,6 +241,22 @@ async def get_batch_forecasts(
         departments_query = db.query(Department)
         if department_id:
             departments_query = departments_query.filter(Department.id == department_id)
+        else:
+            # Скрываем мёртвые точки: DEPARTMENT без продаж за последние N дней.
+            # Если department_id явно задан — пропускаем фильтр (вдруг хотят посмотреть архивную точку).
+            threshold_date = date.today() - timedelta(days=INACTIVE_THRESHOLD_DAYS)
+            active_subq = (
+                db.query(SalesSummary.department_id)
+                .filter(SalesSummary.date >= threshold_date)
+                .distinct()
+                .subquery()
+            )
+            departments_query = departments_query.filter(
+                or_(
+                    Department.type != "DEPARTMENT",
+                    Department.id.in_(active_subq),
+                )
+            )
 
         departments = departments_query.all()
         if not departments:

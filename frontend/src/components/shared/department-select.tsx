@@ -14,6 +14,8 @@ interface DepartmentSelectProps {
   label?: string
   showAll?: boolean
   filterType?: string
+  /** Показать в списке также неактивные (без продаж за последние 30 дней). */
+  includeInactive?: boolean
 }
 
 export function DepartmentSelect({
@@ -22,11 +24,13 @@ export function DepartmentSelect({
   label = 'Подразделение',
   showAll = true,
   filterType = 'DEPARTMENT',
+  includeInactive = false,
 }: DepartmentSelectProps) {
   const { data: departments = [] } = useDepartments(true)
 
   const filtered = departments
     .filter((d) => (filterType === 'ALL' ? true : d.type === filterType))
+    .filter((d) => includeInactive || d.is_active)
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return (

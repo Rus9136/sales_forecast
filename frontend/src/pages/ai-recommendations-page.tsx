@@ -67,7 +67,7 @@ export function AIRecommendationsPage() {
   const filteredDepartments = useMemo(
     () =>
       [...departments]
-        .filter((d) => d.type === 'DEPARTMENT')
+        .filter((d) => d.type === 'DEPARTMENT' && d.is_active)
         .sort((a, b) => a.name.localeCompare(b.name)),
     [departments],
   )
