@@ -2,7 +2,7 @@
 
 ## Quick Start
 
-**Base URL:** `https://aqniet.site/api/forecast`
+**Base URL:** `https://aqniet.space/api/forecast`
 
 ### Quick Authentication
 **API Key Required in Production:** Include in Authorization header
@@ -16,10 +16,10 @@ Authorization: Bearer sf_your_key_id_your_secret
 #### Get Forecast for Date Range
 ```bash
 # Without authentication (development)
-curl "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
+curl "https://aqniet.space/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
 
 # With API key (production)
-curl "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10" \
+curl "https://aqniet.space/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
@@ -28,7 +28,7 @@ curl "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-0
 import requests
 
 response = requests.get(
-    "https://aqniet.site/api/forecast/batch",
+    "https://aqniet.space/api/forecast/batch",
     params={"from_date": "2026-05-04", "to_date": "2026-05-10"}
 )
 forecasts = response.json()
@@ -37,7 +37,7 @@ forecasts = response.json()
 #### JavaScript Quick Example
 ```javascript
 const response = await fetch(
-    'https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10'
+    'https://aqniet.space/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10'
 );
 const forecasts = await response.json();
 ```
@@ -63,7 +63,7 @@ Endpoints `/forecast/batch` и `/forecast/comparison` **скрывают «мё�
 
 ## Base URL
 ```
-https://aqniet.site/api
+https://aqniet.space/api
 ```
 
 ## Authentication
@@ -106,22 +106,22 @@ In development mode (DEBUG=True), authentication is optional. In production, API
 **Example Requests:**
 ```bash
 # Get all sales for the last 1000 records
-curl -X GET "https://aqniet.site/api/sales/summary"
+curl -X GET "https://aqniet.space/api/sales/summary"
 
 # Get sales for specific department
-curl -X GET "https://aqniet.site/api/sales/summary?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
+curl -X GET "https://aqniet.space/api/sales/summary?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
 
 # Get sales for date range
-curl -X GET "https://aqniet.site/api/sales/summary?from_date=2025-01-01&to_date=2025-01-31"
+curl -X GET "https://aqniet.space/api/sales/summary?from_date=2025-01-01&to_date=2025-01-31"
 
 # Get sales for specific department and date range
-curl -X GET "https://aqniet.site/api/sales/summary?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2025-01-01&to_date=2025-01-31"
+curl -X GET "https://aqniet.space/api/sales/summary?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2025-01-01&to_date=2025-01-31"
 
 # With pagination
-curl -X GET "https://aqniet.site/api/sales/summary?skip=100&limit=50"
+curl -X GET "https://aqniet.space/api/sales/summary?skip=100&limit=50"
 
 # With API key authentication (production)
-curl -X GET "https://aqniet.site/api/sales/summary?from_date=2025-01-01&to_date=2025-01-31" \
+curl -X GET "https://aqniet.space/api/sales/summary?from_date=2025-01-01&to_date=2025-01-31" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
@@ -156,10 +156,10 @@ curl -X GET "https://aqniet.site/api/sales/summary?from_date=2025-01-01&to_date=
 **Example Requests:**
 ```bash
 # Get hourly sales for specific department
-curl -X GET "https://aqniet.site/api/sales/hourly?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2025-01-01&to_date=2025-01-31"
+curl -X GET "https://aqniet.space/api/sales/hourly?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2025-01-01&to_date=2025-01-31"
 
 # Get sales for specific hour (e.g., 14:00-15:00)
-curl -X GET "https://aqniet.site/api/sales/hourly?hour=14&from_date=2025-01-01&to_date=2025-01-31"
+curl -X GET "https://aqniet.space/api/sales/hourly?hour=14&from_date=2025-01-01&to_date=2025-01-31"
 ```
 
 **Response:**
@@ -201,7 +201,7 @@ curl -X GET "https://aqniet.site/api/sales/hourly?hour=14&from_date=2025-01-01&t
 **Example Request:**
 ```bash
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "https://aqniet.site/api/sales/checks-hourly?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2026-06-09&to_date=2026-06-09"
+  "https://aqniet.space/api/sales/checks-hourly?department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&from_date=2026-06-09&to_date=2026-06-09"
 ```
 
 **Response:**
@@ -237,7 +237,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/sales/stats?from_date=2025-01-01&to_date=2025-01-31"
+curl -X GET "https://aqniet.space/api/sales/stats?from_date=2025-01-01&to_date=2025-01-31"
 ```
 
 ### 4. Sync Sales Data from iiko API
@@ -251,7 +251,7 @@ curl -X GET "https://aqniet.site/api/sales/stats?from_date=2025-01-01&to_date=20
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/sales/sync?from_date=2025-01-01&to_date=2025-01-31"
+curl -X POST "https://aqniet.space/api/sales/sync?from_date=2025-01-01&to_date=2025-01-31"
 ```
 
 **Response:**
@@ -284,10 +284,10 @@ curl -X POST "https://aqniet.site/api/sales/sync?from_date=2025-01-01&to_date=20
 **Example Requests:**
 ```bash
 # Get forecasts for all active branches for a week
-curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
+curl -X GET "https://aqniet.space/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10"
 
 # Get forecasts for specific branch for a week
-curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
+curl -X GET "https://aqniet.space/api/forecast/batch?from_date=2026-05-04&to_date=2026-05-10&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
 ```
 
 **Response:**
@@ -324,7 +324,7 @@ curl -X GET "https://aqniet.site/api/forecast/batch?from_date=2026-05-04&to_date
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/batch_with_postprocessing?from_date=2025-07-01&to_date=2025-07-07&apply_postprocessing=true"
+curl -X GET "https://aqniet.space/api/forecast/batch_with_postprocessing?from_date=2025-07-01&to_date=2025-07-07&apply_postprocessing=true"
 ```
 
 **Response:**
@@ -361,7 +361,7 @@ curl -X GET "https://aqniet.site/api/forecast/batch_with_postprocessing?from_dat
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/comparison?from_date=2025-06-01&to_date=2025-06-30&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
+curl -X GET "https://aqniet.space/api/forecast/comparison?from_date=2025-06-01&to_date=2025-06-30&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a"
 ```
 
 **Response:**
@@ -393,10 +393,10 @@ curl -X GET "https://aqniet.site/api/forecast/comparison?from_date=2025-06-01&to
 **Example Requests:**
 ```bash
 # Export forecasts only
-curl -X GET "https://aqniet.site/api/forecast/export/csv?from_date=2025-07-01&to_date=2025-07-31" -o forecast_july.csv
+curl -X GET "https://aqniet.space/api/forecast/export/csv?from_date=2025-07-01&to_date=2025-07-31" -o forecast_july.csv
 
 # Export with actual sales comparison
-curl -X GET "https://aqniet.site/api/forecast/export/csv?from_date=2025-06-01&to_date=2025-06-30&include_actual=true" -o comparison_june.csv
+curl -X GET "https://aqniet.space/api/forecast/export/csv?from_date=2025-06-01&to_date=2025-06-30&include_actual=true" -o comparison_june.csv
 ```
 
 **Response:** CSV file download
@@ -423,7 +423,7 @@ curl -X GET "https://aqniet.site/api/forecast/export/csv?from_date=2025-06-01&to
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/postprocess?branch_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&forecast_date=2026-05-04&raw_prediction=125000.50"
+curl -X POST "https://aqniet.space/api/forecast/postprocess?branch_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a&forecast_date=2026-05-04&raw_prediction=125000.50"
 ```
 
 **Response:**
@@ -478,7 +478,7 @@ curl -X POST "https://aqniet.site/api/forecast/postprocess?branch_id=0d30c200-87
 
 **Example:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/postprocess/batch?apply_smoothing=true&calculate_confidence=true" \
+curl -X POST "https://aqniet.space/api/forecast/postprocess/batch?apply_smoothing=true&calculate_confidence=true" \
   -H "Content-Type: application/json" \
   -d '[{"branch_id":"0d30c200-...","forecast_date":"2026-05-04","prediction":125000.50}]'
 ```
@@ -499,7 +499,7 @@ curl -X POST "https://aqniet.site/api/forecast/postprocess/batch?apply_smoothing
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/postprocessing/settings"
+curl -X GET "https://aqniet.space/api/forecast/postprocessing/settings"
 ```
 
 ### 11a. Test Temporal Smoothing
@@ -524,7 +524,7 @@ curl -X GET "https://aqniet.site/api/forecast/postprocessing/settings"
 
 **Example:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/test_smoothing?branch_id=0d30c200-...&forecast_date=2026-05-04" \
+curl -X POST "https://aqniet.space/api/forecast/test_smoothing?branch_id=0d30c200-...&forecast_date=2026-05-04" \
   -H "Content-Type: application/json" \
   -d '{"max_change_threshold": 0.3}'
 ```
@@ -589,7 +589,7 @@ curl -X POST "https://aqniet.site/api/forecast/test_smoothing?branch_id=0d30c200
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/retrain" \
+curl -X POST "https://aqniet.space/api/forecast/retrain" \
   -H "Content-Type: application/json" \
   -d '{"handle_outliers": true, "days": 365}'
 ```
@@ -626,7 +626,7 @@ curl -X POST "https://aqniet.site/api/forecast/retrain" \
 
 **Example:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/retrain-segmented" \
+curl -X POST "https://aqniet.space/api/forecast/retrain-segmented" \
   -H "Content-Type: application/json" \
   -d '{"days": 365}'
 ```
@@ -653,7 +653,7 @@ curl -X POST "https://aqniet.site/api/forecast/retrain-segmented" \
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/model/info"
+curl -X GET "https://aqniet.space/api/forecast/model/info"
 ```
 
 **Response:**
@@ -695,7 +695,7 @@ curl -X GET "https://aqniet.site/api/forecast/model/info"
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/optimize" \
+curl -X POST "https://aqniet.space/api/forecast/optimize" \
   -H "Content-Type: application/json" \
   -d '{"n_trials": 50, "timeout": 1800}'
 ```
@@ -714,7 +714,7 @@ curl -X POST "https://aqniet.site/api/forecast/optimize" \
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/forecast/compare_models" \
+curl -X POST "https://aqniet.space/api/forecast/compare_models" \
   -H "Content-Type: application/json" \
   -d '{"days": 365}'
 ```
@@ -733,7 +733,7 @@ curl -X POST "https://aqniet.site/api/forecast/compare_models" \
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/error-analysis/errors_by_segment?from_date=2025-06-01&to_date=2025-06-30&segment_type=department"
+curl -X GET "https://aqniet.space/api/forecast/error-analysis/errors_by_segment?from_date=2025-06-01&to_date=2025-06-30&segment_type=department"
 ```
 
 ### 18. Identify Problematic Branches
@@ -747,7 +747,7 @@ curl -X GET "https://aqniet.site/api/forecast/error-analysis/errors_by_segment?f
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/error-analysis/problematic_branches?from_date=2025-06-01&to_date=2025-06-30&mape_threshold=10.0"
+curl -X GET "https://aqniet.space/api/forecast/error-analysis/problematic_branches?from_date=2025-06-01&to_date=2025-06-30&mape_threshold=10.0"
 ```
 
 ### 19. Analyze Temporal Errors
@@ -759,7 +759,7 @@ curl -X GET "https://aqniet.site/api/forecast/error-analysis/problematic_branche
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/error-analysis/temporal_errors?from_date=2025-06-01&to_date=2025-06-30"
+curl -X GET "https://aqniet.space/api/forecast/error-analysis/temporal_errors?from_date=2025-06-01&to_date=2025-06-30"
 ```
 
 ### 20. Get Error Distribution
@@ -772,7 +772,7 @@ curl -X GET "https://aqniet.site/api/forecast/error-analysis/temporal_errors?fro
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/error-analysis/error_distribution?from_date=2025-06-01&to_date=2025-06-30"
+curl -X GET "https://aqniet.space/api/forecast/error-analysis/error_distribution?from_date=2025-06-01&to_date=2025-06-30"
 ```
 
 ---
@@ -786,7 +786,7 @@ curl -X GET "https://aqniet.site/api/forecast/error-analysis/error_distribution?
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/monitoring/health"
+curl -X GET "https://aqniet.space/api/monitoring/health"
 ```
 
 **Response:**
@@ -815,7 +815,7 @@ curl -X GET "https://aqniet.site/api/monitoring/health"
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/monitoring/performance/summary?days=30"
+curl -X GET "https://aqniet.space/api/monitoring/performance/summary?days=30"
 ```
 
 **Response:**
@@ -845,7 +845,7 @@ curl -X GET "https://aqniet.site/api/monitoring/performance/summary?days=30"
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/monitoring/performance/calculate-daily?target_date=2025-06-30"
+curl -X POST "https://aqniet.space/api/monitoring/performance/calculate-daily?target_date=2025-06-30"
 ```
 
 ### 24. Get Retrain Status
@@ -855,7 +855,7 @@ curl -X POST "https://aqniet.site/api/monitoring/performance/calculate-daily?tar
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/monitoring/retrain/status"
+curl -X GET "https://aqniet.space/api/monitoring/retrain/status"
 ```
 
 ### 25. Manual Model Retraining
@@ -874,7 +874,7 @@ curl -X GET "https://aqniet.site/api/monitoring/retrain/status"
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/monitoring/retrain/manual" \
+curl -X POST "https://aqniet.space/api/monitoring/retrain/manual" \
   -H "Content-Type: application/json" \
   -d '{
     "reason": "Manual retraining",
@@ -891,7 +891,7 @@ curl -X POST "https://aqniet.site/api/monitoring/retrain/manual" \
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/monitoring/alerts/recent?days=7"
+curl -X GET "https://aqniet.space/api/monitoring/alerts/recent?days=7"
 ```
 
 ---
@@ -941,7 +941,7 @@ curl -X GET "https://aqniet.site/api/monitoring/alerts/recent?days=7"
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/auth/keys"
+curl -X GET "https://aqniet.space/api/auth/keys"
 ```
 
 ### 29. Get API Key Details
@@ -949,7 +949,7 @@ curl -X GET "https://aqniet.site/api/auth/keys"
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ"
+curl -X GET "https://aqniet.space/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ"
 ```
 
 ### 30. Get API Key Usage Stats
@@ -957,7 +957,7 @@ curl -X GET "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ"
 
 **Example Request:**
 ```bash
-curl -X GET "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/usage"
+curl -X GET "https://aqniet.space/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/usage"
 ```
 
 **Response:**
@@ -988,7 +988,7 @@ curl -X GET "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/usage"
 
 **Example Request:**
 ```bash
-curl -X DELETE "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ"
+curl -X DELETE "https://aqniet.space/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ"
 ```
 
 ### 32. Activate API Key
@@ -996,7 +996,7 @@ curl -X DELETE "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ"
 
 **Example Request:**
 ```bash
-curl -X POST "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/activate"
+curl -X POST "https://aqniet.space/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/activate"
 ```
 
 ### 33. Test API Key
@@ -1004,7 +1004,7 @@ curl -X POST "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/activate"
 
 **Example:**
 ```bash
-curl -X POST "https://aqniet.site/api/auth/test" \
+curl -X POST "https://aqniet.space/api/auth/test" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
@@ -1027,7 +1027,7 @@ import requests
 from datetime import date, timedelta
 
 # Base URL
-BASE_URL = "https://aqniet.site/api"
+BASE_URL = "https://aqniet.space/api"
 API_KEY = "sf_your_key_id_your_secret"
 
 # Headers with authentication
@@ -1070,7 +1070,7 @@ for forecast in forecasts:
 
 ### JavaScript Example
 ```javascript
-const BASE_URL = 'https://aqniet.site/api';
+const BASE_URL = 'https://aqniet.space/api';
 const API_KEY = 'sf_your_key_id_your_secret';
 
 // Example 1: Get sales data
@@ -1127,26 +1127,26 @@ getForecastWithPostProcessing('2025-07-01', '2025-07-07', '0d30c200-87b5-45a5-89
 #### Get today's sales for all branches
 ```bash
 TODAY=$(date +%Y-%m-%d)
-curl -X GET "https://aqniet.site/api/sales/summary?from_date=$TODAY&to_date=$TODAY" \
+curl -X GET "https://aqniet.space/api/sales/summary?from_date=$TODAY&to_date=$TODAY" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
 #### Get tomorrow's forecast for all branches
 ```bash
 TOMORROW=$(date -d "tomorrow" +%Y-%m-%d)
-curl -X GET "https://aqniet.site/api/forecast/batch?from_date=$TOMORROW&to_date=$TOMORROW" \
+curl -X GET "https://aqniet.space/api/forecast/batch?from_date=$TOMORROW&to_date=$TOMORROW" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
 #### Get weekly forecast for specific branch with post-processing
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/batch_with_postprocessing?from_date=2025-07-01&to_date=2025-07-07&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a" \
+curl -X GET "https://aqniet.space/api/forecast/batch_with_postprocessing?from_date=2025-07-01&to_date=2025-07-07&department_id=0d30c200-87b5-45a5-89f0-eb76e2892b4a" \
   -H "Authorization: Bearer sf_your_key_id_your_secret"
 ```
 
 #### Export monthly forecast to CSV
 ```bash
-curl -X GET "https://aqniet.site/api/forecast/export/csv?from_date=2025-07-01&to_date=2025-07-31" \
+curl -X GET "https://aqniet.space/api/forecast/export/csv?from_date=2025-07-01&to_date=2025-07-31" \
   -H "Authorization: Bearer sf_your_key_id_your_secret" \
   -o july_forecast.csv
 ```

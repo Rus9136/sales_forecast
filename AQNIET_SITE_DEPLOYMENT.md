@@ -2,7 +2,7 @@
 
 ## 📋 Обзор системы
 
-**Домен**: https://aqniet.site/
+**Домен**: https://aqniet.space/
 **Назначение**: Sales Forecast управление + 1C Exchange Service API
 **Дата развертывания**: 2025-06-23
 **Последнее обновление**: 2025-07-02 (Исправление Docker networking)
@@ -25,7 +25,7 @@
 ```
 NGINX Container (hr-nginx) - мульти-сетевой режим
 ├── hr-miniapp_hr-network → для madlen.space, n8n.sandyq.space
-└── sales_forecast_default → для aqniet.site
+└── sales_forecast_default → для aqniet.space
     ├── /api/exchange/ → 127.0.0.1:8000 (1C Exchange Service) ✅
     ├── /docs, /openapi.json → 127.0.0.1:8000 (1C Exchange Docs) ✅
     ├── /api/ → sales-forecast-app:8000 (Sales Forecast API) ✅
@@ -50,7 +50,7 @@ NGINX Container (hr-nginx) - мульти-сетевой режим
 #### 3. HR System + Nginx
 - **Контейнер**: `hr-nginx` (порты 80, 443)
 - **Основная сеть**: `hr-miniapp_hr-network`
-- **Дополнительная сеть**: `sales_forecast_default` (для доступа к aqniet.site)
+- **Дополнительная сеть**: `sales_forecast_default` (для доступа к aqniet.space)
 - **Docker Compose**: `/root/projects/hr-miniapp/docker-compose.yml`
 
 ## 🔧 Конфигурация NGINX
@@ -58,16 +58,16 @@ NGINX Container (hr-nginx) - мульти-сетевой режим
 ### Основной файл
 **Путь**: `/root/projects/hr-miniapp/nginx.conf`
 
-### ✅ ПРАВИЛЬНАЯ конфигурация для aqniet.site (исправлено 2025-07-02)
+### ✅ ПРАВИЛЬНАЯ конфигурация для aqniet.space (исправлено 2025-07-02)
 ```nginx
-# HTTPS server for aqniet.site
+# HTTPS server for aqniet.space
 server {
     listen 443 ssl http2;
-    server_name aqniet.site www.aqniet.site;
+    server_name aqniet.space www.aqniet.space;
 
     # SSL configuration
-    ssl_certificate /etc/letsencrypt/live/aqniet.site/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/aqniet.site/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/aqniet.space/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/aqniet.space/privkey.pem;
     
     # 1C Exchange Service API (высокий приоритет)
     location /api/exchange/ {
@@ -179,11 +179,11 @@ docker-compose -f /root/projects/hr-miniapp/docker-compose.yml restart nginx
 #### 5. Финальная проверка
 ```bash
 # Проверить сайт
-curl -I https://aqniet.site/ --insecure
+curl -I https://aqniet.space/ --insecure
 # Должно вернуть: HTTP/2 200 или HTTP/2 405 (не 502!)
 
 # Проверить API
-curl -s "https://aqniet.site/api/departments/" --insecure | head -c 50
+curl -s "https://aqniet.space/api/departments/" --insecure | head -c 50
 # Должно вернуть JSON или {"detail":"Not authenticated"} (не HTML ошибки!)
 ```
 
@@ -284,13 +284,13 @@ docker run --rm --name certbot \
   -v "/root/projects/infra/infra/certbot/conf:/etc/letsencrypt" \
   -v "/root/projects/infra/infra/certbot/www:/var/www/certbot" \
   certbot/certbot certonly --webroot -w /var/www/certbot \
-  --email admin@aqniet.site --agree-tos --no-eff-email \
-  -d aqniet.site -d www.aqniet.site
+  --email admin@aqniet.space --agree-tos --no-eff-email \
+  -d aqniet.space -d www.aqniet.space
 ```
 
 ### Расположение сертификатов
-- **Сертификат**: `/root/projects/infra/infra/certbot/conf/live/aqniet.site/fullchain.pem`
-- **Приватный ключ**: `/root/projects/infra/infra/certbot/conf/live/aqniet.site/privkey.pem`
+- **Сертификат**: `/root/projects/infra/infra/certbot/conf/live/aqniet.space/fullchain.pem`
+- **Приватный ключ**: `/root/projects/infra/infra/certbot/conf/live/aqniet.space/privkey.pem`
 - **Срок действия**: до 30 сентября 2025 (обновлено 2025-07-02)
 
 ## 🧪 Тестирование
@@ -298,19 +298,19 @@ docker run --rm --name certbot \
 ### Основные эндпоинты
 ```bash
 # Главная страница (Sales Forecast Admin)
-curl -I https://aqniet.site/
+curl -I https://aqniet.space/
 
 # Sales Forecast API
-curl https://aqniet.site/api/branches/
+curl https://aqniet.space/api/branches/
 
 # 1C Exchange Documentation
-curl -I https://aqniet.site/docs
+curl -I https://aqniet.space/docs
 
 # 1C Exchange API
-curl https://aqniet.site/api/exchange/
+curl https://aqniet.space/api/exchange/
 
 # OpenAPI Schema
-curl https://aqniet.site/openapi.json
+curl https://aqniet.space/openapi.json
 ```
 
 ### Проверка сервисов напрямую
@@ -341,10 +341,10 @@ curl http://127.0.0.1:8000/docs
 ## 🔧 1C Exchange Service - Функции
 
 ### API эндпоинты
-Полная документация доступна по адресу: https://aqniet.site/docs
+Полная документация доступна по адресу: https://aqniet.space/docs
 
 ### Swagger UI
-- **URL**: https://aqniet.site/docs
+- **URL**: https://aqniet.space/docs
 - **Интерактивная документация** с возможностью тестирования
 - **OpenAPI 3.0** схема
 
@@ -450,7 +450,7 @@ networks:
 **Решение (обновлено 2025-07-02)**:
 ```bash
 # Проверить статус всех сертификатов
-openssl x509 -in /root/projects/infra/infra/certbot/conf/live/aqniet.site/fullchain.pem -dates -noout
+openssl x509 -in /root/projects/infra/infra/certbot/conf/live/aqniet.space/fullchain.pem -dates -noout
 openssl x509 -in /root/projects/infra/infra/certbot/conf/live/madlen.space/fullchain.pem -dates -noout
 openssl x509 -in /root/projects/infra/infra/certbot/conf/live/n8n.sandyq.space/fullchain.pem -dates -noout
 
@@ -461,7 +461,7 @@ docker run --rm -v "/root/projects/infra/infra/certbot/conf:/etc/letsencrypt" -v
 docker exec hr-nginx nginx -s reload
 
 # Проверить успешность обновления
-curl -I https://aqniet.site/
+curl -I https://aqniet.space/
 curl -I https://madlen.space/
 curl -I https://n8n.sandyq.space/
 ```

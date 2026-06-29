@@ -4,7 +4,7 @@
 снабжает ИИ-агентов TCO сигналом спроса по локации.
 
 - **Версия:** 1.3 (2026-06-11)
-- **Статус:** в проде на `https://aqniet.site`
+- **Статус:** в проде на `https://aqniet.space`
 - **Архитектура:** [`docs/LABOR_OPTIMIZATION_ARCHITECTURE.md`](docs/LABOR_OPTIMIZATION_ARCHITECTURE.md) §2
 - **Зона ответственности:** Sales Forecast — только поставщик сигнала. Солвер, `demand_by_role`
   и LLM-агенты — на стороне TCO.
@@ -15,7 +15,7 @@
 
 ### Base URL
 ```
-https://aqniet.site
+https://aqniet.space
 ```
 
 ### Аутентификация
@@ -71,7 +71,7 @@ Authorization: Bearer <API_TOKEN>
 ### Пример запроса
 ```bash
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "https://aqniet.site/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/menu-mix?from_date=2026-06-12&to_date=2026-06-18&top_n=25"
+  "https://aqniet.space/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/menu-mix?from_date=2026-06-12&to_date=2026-06-18&top_n=25"
 ```
 
 ### Структура ответа
@@ -197,7 +197,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 ### Пример запроса
 ```bash
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "https://aqniet.site/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/forecast?from_date=2026-06-12&to_date=2026-06-14"
+  "https://aqniet.space/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/forecast?from_date=2026-06-12&to_date=2026-06-14"
 ```
 
 ### Структура ответа
@@ -282,7 +282,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 ### Пример запроса
 ```bash
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "https://aqniet.site/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/elasticity-signal?grade=A,B"
+  "https://aqniet.space/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/elasticity-signal?grade=A,B"
 ```
 
 ### Структура ответа
@@ -367,7 +367,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 ### Пример запроса
 ```bash
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "https://aqniet.site/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/category-load-hourly?from_date=2026-06-05&to_date=2026-06-11"
+  "https://aqniet.space/api/labor-demand/82e76bf2-903b-4ed9-9491-b875a33089ae/category-load-hourly?from_date=2026-06-05&to_date=2026-06-11"
 ```
 
 ### Структура ответа

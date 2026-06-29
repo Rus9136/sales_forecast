@@ -4,7 +4,7 @@
 роли меню, эластичность, ценовые рекомендации и бизнес-правила.
 
 - **Версия:** 1.1 (2026-06-11)
-- **Статус:** в проде на `https://aqniet.site`
+- **Статус:** в проде на `https://aqniet.space`
 - **Roadmap / дизайн:** [`docs/PRICING_SYSTEM_ROADMAP.md`](docs/PRICING_SYSTEM_ROADMAP.md)
 - **Слой данных:** [`docs/MENU_AND_RECEIPTS_ARCHITECTURE.md`](docs/MENU_AND_RECEIPTS_ARCHITECTURE.md)
 
@@ -18,7 +18,7 @@
 
 ### Base URL и аутентификация
 ```
-https://aqniet.site
+https://aqniet.space
 Authorization: Bearer <API_TOKEN>
 ```
 Все эндпоинты требуют общий `API_TOKEN` (тот же, что и остальной API).

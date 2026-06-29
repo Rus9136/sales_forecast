@@ -144,7 +144,7 @@ GET /api/forecast/export/csv               # ✅ Auth-enabled
 
 ### 1. Create API Key
 ```bash
-curl -X POST "https://aqniet.site/api/auth/keys" \
+curl -X POST "https://aqniet.space/api/auth/keys" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Mobile App Integration", 
@@ -173,13 +173,13 @@ curl -X POST "https://aqniet.site/api/auth/keys" \
 
 ### 2. Use API Key for Forecasts
 ```bash
-curl "https://aqniet.site/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07" \
+curl "https://aqniet.space/api/forecast/batch?from_date=2025-07-01&to_date=2025-07-07" \
   -H "Authorization: Bearer sf_dGVzdF9rZXlfZXhhbXBsZQ_YWN0dWFsX3NlY3JldF9rZXk"
 ```
 
 ### 3. Check Usage Statistics
 ```bash
-curl "https://aqniet.site/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/usage" \
+curl "https://aqniet.space/api/auth/keys/dGVzdF9rZXlfZXhhbXBsZQ/usage" \
   -H "Authorization: Bearer sf_dGVzdF9rZXlfZXhhbXBsZQ_YWN0dWFsX3NlY3JldF9rZXk"
 ```
 
@@ -239,12 +239,12 @@ docker-compose -f docker-compose.prod.yml restart sales-forecast-app
 ### Verify Installation
 ```bash
 # Test API key creation
-curl -X POST "https://aqniet.site/api/auth/keys" \
+curl -X POST "https://aqniet.space/api/auth/keys" \
   -H "Content-Type: application/json" \
   -d '{"name": "Test Key", "description": "Verification test"}'
 
 # Test authentication endpoint
-curl -X POST "https://aqniet.site/api/auth/test"
+curl -X POST "https://aqniet.space/api/auth/test"
 ```
 
 ## 🔧 Administration

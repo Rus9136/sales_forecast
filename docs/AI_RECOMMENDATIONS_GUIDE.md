@@ -2,7 +2,7 @@
 
 Подсистема мультиагентного AI-анализа работы подразделения. Портирована из `hr-miniapp` (Node.js) в SalesForecast (FastAPI). MCP-зависимость убрана: данные читаются прямыми SQL-запросами к локальной PostgreSQL.
 
-**Последний деплой**: 2026-04-30, коммит `19406cc`. Endpoint доступен на `https://aqniet.site/ai-recommendations`.
+**Последний деплой**: 2026-04-30, коммит `19406cc`. Endpoint доступен на `https://aqniet.space/ai-recommendations`.
 
 ---
 
@@ -223,7 +223,7 @@ docker exec -i sales-forecast-db psql -U sales_user -d sales_forecast \
 ```bash
 # Запуск анализа
 curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
-  https://aqniet.site/api/ai-recommendations/analyze \
+  https://aqniet.space/api/ai-recommendations/analyze \
   -d '{
     "department_id": "0d30c200-87b5-45a5-89f0-eb76e2892b4a",
     "date_start": "2026-03-01",
@@ -233,7 +233,7 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application
 
 # Перезапуск агента с новым промптом
 curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
-  https://aqniet.site/api/ai-recommendations/rerun-agent \
+  https://aqniet.space/api/ai-recommendations/rerun-agent \
   -d '{
     "analysis_id": 2,
     "agent_name": "SalesAnalysisAgent",
@@ -488,4 +488,4 @@ ALTER TABLE ai_recommendations RENAME COLUMN mcp_response TO input_data;
 - **Session log**: `SESSION_LOG_AI_RECOMMENDATIONS_MIGRATION_20260430_091808.md`
 - **Migration plan**: `AI_RECOMMENDATIONS_MIGRATION_PLAN.md`
 - **Commit**: `19406cc feat(ai): add multi-agent recommendations powered by Claude`
-- **Live**: https://aqniet.site/ai-recommendations
+- **Live**: https://aqniet.space/ai-recommendations

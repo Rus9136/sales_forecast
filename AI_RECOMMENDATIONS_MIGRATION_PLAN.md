@@ -221,12 +221,12 @@ docker-compose -f docker-compose.prod.yml build sales-forecast-app
 docker-compose -f docker-compose.prod.yml up -d sales-forecast-app
 
 # 4. Проверка:
-curl -s https://aqniet.site/health
+curl -s https://aqniet.space/health
 curl -s -H "Authorization: Bearer $API_TOKEN" \
-    https://aqniet.site/api/ai-recommendations/providers
+    https://aqniet.space/api/ai-recommendations/providers
 ```
 
-**Критерий завершения**: Анализ запускается с прода (https://aqniet.site/ai-recommendations) и сохраняется в БД.
+**Критерий завершения**: Анализ запускается с прода (https://aqniet.space/ai-recommendations) и сохраняется в БД.
 
 ---
 

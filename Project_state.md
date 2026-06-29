@@ -3,7 +3,7 @@
 ## Current Status: PRODUCTION READY v2.3
 
 **Last Updated**: 2025-07-03
-**Environment**: Production (https://aqniet.site/)
+**Environment**: Production (https://aqniet.space/)
 **Deployment**: Docker-based
 
 ## System Overview
@@ -45,7 +45,7 @@ Environment Variables:
 ```
 
 ### Network Configuration
-- **Domain**: https://aqniet.site/
+- **Domain**: https://aqniet.space/
 - **Nginx**: Configured to proxy to Docker containers
 
 ## Automation & Monitoring

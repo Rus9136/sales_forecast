@@ -5,10 +5,10 @@ Sales Forecast API — система прогнозирования прода�
 
 ## Production Server
 
-**Этот проект расположен на production-сервере (aqniet.site).** Все изменения в коде напрямую влияют на боевой сервис.
+**Этот проект расположен на production-сервере (aqniet.space).** Все изменения в коде напрямую влияют на боевой сервис.
 
-- **Сервер**: aqniet.site (VPS, Linux)
-- **Домен**: https://aqniet.site/
+- **Сервер**: aqniet.space (VPS, Linux)
+- **Домен**: https://aqniet.space/
 - **Проект на диске**: `/root/projects/SalesForecast/sales_forecast/`
 - **Docker Compose**: `docker-compose.prod.yml` — основной файл для запуска
 - **Nginx**: reverse proxy → Docker containers
@@ -268,7 +268,7 @@ IIKO_PASSWORD=<password-hash>
 IIKO_DOMAINS=https://sandy-co-co.iiko.it,https://madlen-group-so.iiko.it
 
 # CORS
-ALLOWED_ORIGINS=https://aqniet.site
+ALLOWED_ORIGINS=https://aqniet.space
 
 # UI auth bootstrap (создаёт первого admin при старте, если admin отсутствует)
 BOOTSTRAP_ADMIN_PHONE=                       # Любой формат, нормализуется до digits-only
@@ -745,8 +745,8 @@ Sales Forecast участвует только в шаге 2.
 ## Deployment (Production)
 
 ### Инфраструктура
-- **Сервер**: aqniet.site (VPS)
-- **Домен**: https://aqniet.site/
+- **Сервер**: aqniet.space (VPS)
+- **Домен**: https://aqniet.space/
 - **Nginx**: reverse proxy → `localhost:8002`
 - **Docker Compose**: `docker-compose.prod.yml`
 - **Контейнеры**:
@@ -774,7 +774,7 @@ docker-compose -f docker-compose.prod.yml up -d sales-forecast-app
 # 4. Проверить что запустился
 docker-compose -f docker-compose.prod.yml ps
 curl -s http://localhost:8002/health
-curl -s https://aqniet.site/health
+curl -s https://aqniet.space/health
 
 # 5. Посмотреть логи (если что-то не так)
 docker-compose -f docker-compose.prod.yml logs -f --tail=50 sales-forecast-app
