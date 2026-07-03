@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import {
   ArrowLeft, ChefHat, TrendingUp, AlertTriangle,
 } from 'lucide-react'
@@ -24,8 +24,10 @@ import { EmptyState } from '@/components/shared/empty-state'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import {
   useSkuPriceHistory, useSkuWeekly, useSkuElasticity, useSkuMenuRole,
-  useOverrideMenuRole, useSkuRecommendations, useSkuOutcomes,
+  useOverrideMenuRole, useSkuRecommendations, useSkuOutcomes, usePricingRules,
 } from '@/hooks/use-pricing'
+import { Term, GLOSSARY } from '@/components/shared/term'
+import { gradeWord } from '@/lib/pricing-labels'
 import { useProduct, useProductRecipe } from '@/hooks/use-menu'
 import { apiErrorMessage } from '@/lib/api-client'
 import {
@@ -65,10 +67,21 @@ function fmtRatioPct(value: number | null | undefined): string {
   return (value * 100).toFixed(1) + '%'
 }
 
+const LEVEL_LABELS: Record<string, string> = {
+  sku: 'по самому блюду',
+  group: 'по группе блюд',
+  global: 'по всему меню',
+}
+
 export function PricingPositionPage() {
   const params = useParams<{ productId: string; departmentId: string }>()
+  const location = useLocation()
   const productId = Number(params.productId)
   const departmentId = params.departmentId ?? ''
+
+  // Возврат туда, откуда пришли (рекомендации / аналитика / результаты)
+  const backPath =
+    (location.state as { fromPath?: string } | null)?.fromPath ?? '/pricing/recommendations'
 
   const [period, setPeriod] = useState<PeriodKey>('52')
   const [recipeOpen, setRecipeOpen] = useState(false)
@@ -89,6 +102,16 @@ export function PricingPositionPage() {
   const outcomes = useSkuOutcomes({ productId, departmentId })
   const recipe = useProductRecipe(recipeOpen ? productId : null)
   const overrideRole = useOverrideMenuRole()
+  const rules = usePricingRules()
+
+  // Реальный порог маржи из правила min_margin (fail-safe дефолт 60%)
+  const minMargin = useMemo(() => {
+    const rule = (rules.data?.items ?? []).find(
+      (r) => r.rule_type === 'min_margin' && r.scope_type === 'global' && !r.scope_id && r.is_active,
+    )
+    const v = rule?.params && typeof rule.params.value === 'number' ? rule.params.value : null
+    return v ?? 0.6
+  }, [rules.data])
 
   const weeklyRows = useMemo<SkuWeeklyItem[]>(
     () => [...(weekly.data?.items ?? [])].sort((a, b) => a.week_start.localeCompare(b.week_start)),
@@ -209,7 +232,7 @@ export function PricingPositionPage() {
       <div className="page__header">
         <div className="page__title">
           <div className="flex items-center gap-2">
-            <Link to="/pricing/recommendations" className="btn-ghost btn-icon-sm" title="К рекомендациям">
+            <Link to={backPath} className="btn-ghost btn-icon-sm" title="Назад">
               <ArrowLeft size={16} />
             </Link>
             <h1>{productName}</h1>
@@ -300,23 +323,29 @@ export function PricingPositionPage() {
               </div>
             </div>
             <div className="kpi">
-              <div className="kpi__label">GP-маржа</div>
+              <div className="kpi__label">
+                <Term tip={GLOSSARY.margin}>Маржа</Term>
+              </div>
               <div className="kpi__value">{fmtRatioPct(gpMargin)}</div>
               <div className="kpi__foot">
                 <span style={{ fontSize: 11 }}>
-                  {gpMargin != null && gpMargin < 0.6 ? 'ниже порога 60%' : 'валовая маржа'}
+                  {gpMargin != null && gpMargin < minMargin
+                    ? `ниже порога ${(minMargin * 100).toFixed(0)}% из правила «Минимальная маржа»`
+                    : 'валовая маржа'}
                 </span>
               </div>
             </div>
             <div className="kpi">
-              <div className="kpi__label">Эластичность ε</div>
+              <div className="kpi__label">
+                <Term tip={GLOSSARY.elasticity}>Чувствительность спроса</Term>
+              </div>
               <div className="kpi__value" style={{ color: gradeColor(grade) }}>
                 {elasticity.data ? elasticity.data.elasticity_mean.toFixed(2) : '—'}
               </div>
               <div className="kpi__foot">
                 <span style={{ fontSize: 11 }}>
                   {elasticity.data
-                    ? `grade ${grade} · ${elasticity.data.estimation_level} · ${avgQtyWeek != null ? fmtNum(avgQtyWeek) + ' шт/нед' : ''}`
+                    ? `${gradeWord(grade)} надёжность · оценка ${LEVEL_LABELS[elasticity.data.estimation_level] ?? elasticity.data.estimation_level}${avgQtyWeek != null ? ` · ${fmtNum(avgQtyWeek)} шт/нед` : ''}`
                     : 'нет оценки'}
                 </span>
               </div>
@@ -408,16 +437,27 @@ export function PricingPositionPage() {
               <div style={{ padding: '14px 16px' }} className="space-y-3 text-sm">
                 {elasticity.data ? (
                   <>
-                    <Detail label="Точечная оценка ε" value={elasticity.data.elasticity_mean.toFixed(3)} />
-                    <Detail
-                      label="95% CI"
-                      value={`[${elasticity.data.elasticity_ci_lower.toFixed(2)}; ${elasticity.data.elasticity_ci_upper.toFixed(2)}]`}
-                    />
-                    <Detail label="Уровень оценки" value={elasticity.data.estimation_level} />
-                    <Detail label="Ценовых событий" value={fmtNum(elasticity.data.n_price_events)} />
+                    <Detail label="Оценка ε" value={elasticity.data.elasticity_mean.toFixed(3)} />
                     <div className="flex items-center justify-between gap-4">
-                      <span className="text-muted-foreground">Надёжность</span>
-                      <span style={{ color: gradeColor(grade), fontWeight: 600 }}>grade {grade}</span>
+                      <span className="text-muted-foreground">
+                        <Term tip={GLOSSARY.ci}>95% интервал</Term>
+                      </span>
+                      <span className="tabular">
+                        [{elasticity.data.elasticity_ci_lower.toFixed(2)}; {elasticity.data.elasticity_ci_upper.toFixed(2)}]
+                      </span>
+                    </div>
+                    <Detail
+                      label="Уровень оценки"
+                      value={LEVEL_LABELS[elasticity.data.estimation_level] ?? elasticity.data.estimation_level}
+                    />
+                    <Detail label="Изменений цены в истории" value={fmtNum(elasticity.data.n_price_events)} />
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-muted-foreground">
+                        <Term tip={GLOSSARY.grade}>Надёжность</Term>
+                      </span>
+                      <span style={{ color: gradeColor(grade), fontWeight: 600 }}>
+                        {gradeWord(grade)} · {grade}
+                      </span>
                     </div>
                     <div
                       className="text-xs rounded-md p-2"
@@ -448,7 +488,8 @@ export function PricingPositionPage() {
                 <div>
                   <div className="card__title">Кривая спроса</div>
                   <div className="card__sub">
-                    Q(P) = Q₀·(P/P₀)^ε · веер — 95% CI · база {fmtNum(avgQtyWeek)} шт/нед при {formatCurrency(currentPrice)}
+                    Сколько порций в неделю купят при другой цене. Сейчас — {fmtNum(avgQtyWeek)} шт/нед
+                    при {formatCurrency(currentPrice)}; светлый веер — <Term tip={GLOSSARY.ci}>коридор неопределённости</Term>
                   </div>
                 </div>
               </div>
@@ -608,10 +649,14 @@ export function PricingPositionPage() {
                   <TableRow>
                     <TableHead>Применено</TableHead>
                     <TableHead className="text-right">Цена</TableHead>
-                    <TableHead className="text-right">Ожид. ΔGP</TableHead>
-                    <TableHead className="text-right">Факт. ΔGP</TableHead>
-                    <TableHead className="text-right">Δ qty (скорр.)</TableHead>
-                    <TableHead className="text-right">Реализ. ε</TableHead>
+                    <TableHead className="text-right">Ожидание, ₸/нед</TableHead>
+                    <TableHead className="text-right">Факт, ₸/нед</TableHead>
+                    <TableHead className="text-right">
+                      <Term tip={GLOSSARY.controlGroup}>Δ продаж (скорр.)</Term>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <Term tip={GLOSSARY.realizedElasticity}>Факт. ε</Term>
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

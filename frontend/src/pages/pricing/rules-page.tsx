@@ -16,12 +16,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { DepartmentSelect } from '@/components/shared/department-select'
+import { ProductSearch } from '@/components/shared/product-search'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import {
   usePricingRules, useCreatePricingRule, useUpdatePricingRule, useDeletePricingRule,
 } from '@/hooks/use-pricing'
+import { useDepartments } from '@/hooks/use-departments'
+import { useProduct } from '@/hooks/use-menu'
+import type { Product } from '@/types/menu'
 import type { PricingRule } from '@/types/pricing'
 
 type RuleKind = 'percent' | 'days' | 'toggle' | 'rounding' | 'portfolio' | 'competitive'
@@ -78,9 +82,36 @@ const RULE_META: Record<string, RuleMeta> = {
   },
   min_competitive_idx: {
     label: 'Мин. конкурентный индекс',
-    description: 'Цена не ниже k×медианы рынка. Трек D — не применяется в Phase 1.',
+    description: 'Цена не ниже k×медианы рынка. Заработает, когда появятся данные о ценах конкурентов — пока не используется.',
     owner: 'Коммерческий директор', kind: 'competitive', defaults: { value: 1.0 },
   },
+}
+
+/** Правило одной человеческой фразой — с текущими параметрами. */
+function humanSummary(ruleType: string, p: Record<string, unknown>): string {
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  switch (ruleType) {
+    case 'min_margin':
+      return `Не предлагать цены, при которых маржа блюда падает ниже ${(num(p.value, 0.6) * 100).toFixed(0)}%.`
+    case 'max_step':
+      return `Цена меняется не больше чем на ${(num(p.value, 0.05) * 100).toFixed(0)}% за один раз (и не больше +15% суммарно за 90 дней).`
+    case 'min_frequency':
+      return `Цена одного блюда меняется не чаще, чем раз в ${num(p.days, 14)} дней.`
+    case 'no_decrease_anchor':
+      return 'Цены премиум-якорей не снижаются — только рост или без изменений.'
+    case 'rounding':
+      return `Обычные блюда округляются до ${num(p.step, 50)} ₸, якоря и имиджевые — до ${num(p.flagship_step, 100)} ₸.`
+    case 'no_psychological':
+      return 'На флагманах запрещены «психологические» окончания цен (…9, …99).'
+    case 'stop_list':
+      return 'Цена не меняется вообще — блюдо или точка исключены из оптимизации.'
+    case 'max_changes_per_cycle':
+      return `Не больше ${num(p.value, 15)} изменений цен на точку за ${num(p.window_days, 14)} дней.`
+    case 'min_competitive_idx':
+      return `Цена не ниже ${num(p.value, 1)}× медианы рынка (ждёт данных о конкурентах).`
+    default:
+      return ''
+  }
 }
 
 const GLOBAL_ORDER = [
@@ -252,6 +283,9 @@ function GlobalRuleCard({ ruleType, rule }: { ruleType: string; rule: PricingRul
         )}
       </div>
       <div style={{ padding: '14px 16px' }} className="space-y-3">
+        <p className="text-sm" style={{ margin: 0, color: 'var(--text-muted)' }}>
+          {humanSummary(ruleType, draft)}
+        </p>
         <div style={{ opacity: rule && !rule.is_active ? 0.5 : 1 }}>
           <ParamsEditor ruleType={ruleType} value={draft} onChange={setDraft} />
         </div>
@@ -280,7 +314,7 @@ function CreateOverrideDialog({ open, onOpenChange }: { open: boolean; onOpenCha
   const [ruleType, setRuleType] = useState('stop_list')
   const [scopeType, setScopeType] = useState('department')
   const [departmentId, setDepartmentId] = useState(ALL)
-  const [productId, setProductId] = useState('')
+  const [product, setProduct] = useState<Product | null>(null)
   const [params, setParams] = useState<Record<string, unknown>>({ ...RULE_META.stop_list.defaults })
   const [error, setError] = useState<string | null>(null)
 
@@ -291,12 +325,12 @@ function CreateOverrideDialog({ open, onOpenChange }: { open: boolean; onOpenCha
 
   const scopeId = scopeType === 'department'
     ? (departmentId === ALL ? '' : departmentId)
-    : scopeType === 'product' ? productId.trim() : ''
+    : scopeType === 'product' ? (product ? String(product.id) : '') : ''
 
   const onCreate = () => {
     setError(null)
     if ((scopeType === 'department' || scopeType === 'product') && !scopeId) {
-      setError(scopeType === 'department' ? 'Выберите подразделение' : 'Укажите ID позиции')
+      setError(scopeType === 'department' ? 'Выберите подразделение' : 'Найдите и выберите блюдо')
       return
     }
     create.mutate(
@@ -343,8 +377,8 @@ function CreateOverrideDialog({ open, onOpenChange }: { open: boolean; onOpenCha
           )}
           {scopeType === 'product' && (
             <div className="space-y-1">
-              <Label className="text-xs">ID позиции (product_id)</Label>
-              <Input value={productId} onChange={(e) => setProductId(e.target.value)} placeholder="напр. 18238" />
+              <Label className="text-xs">Блюдо</Label>
+              <ProductSearch value={product} onChange={setProduct} />
             </div>
           )}
           <div className="space-y-1">
@@ -388,18 +422,17 @@ export function PricingRulesPage() {
   if (rulesQuery.error) return <ErrorAlert message={(rulesQuery.error as Error).message} />
 
   return (
-    <div className="page">
-      <div className="page__header">
-        <div className="page__title">
-          <h1>Правила ценообразования</h1>
-          <span className="sub">Ограничения оптимизатора · каскад «позиция → подразделение → сегмент → глобально»</span>
-        </div>
-        <div className="page__actions">
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span className="pricing-hint">
+          Правила — рамки, за которые система никогда не выходит, даже если это выгодно.
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <Button variant="outline" onClick={() => rulesQuery.refetch()}>
             <RotateCcw className="h-4 w-4 mr-2" /> Обновить
           </Button>
           <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4 mr-2" /> Переопределение
+            <Plus className="h-4 w-4 mr-2" /> Исключение для блюда / точки
           </Button>
         </div>
       </div>
@@ -410,8 +443,10 @@ export function PricingRulesPage() {
       >
         <Info size={15} className="mt-0.5 shrink-0" />
         <span>
-          Глобальные правила применяются ко всем позициям. Более узкий уровень (подразделение / позиция)
-          переопределяет глобальный. Изменения подхватываются ночной генерацией рекомендаций (05:00).
+          Правила ниже действуют для всего меню. Для отдельного блюда или точки можно завести
+          исключение — оно сильнее общего правила. Изменения вступают в силу при следующем
+          пересчёте предложений (каждую ночь в 05:00). Даже если правило выключить, система
+          сохраняет базовые защитные пороги.
         </span>
       </div>
 
@@ -434,13 +469,13 @@ export function PricingRulesPage() {
           <div className="card">
             <div className="card__header">
               <div>
-                <div className="card__title">Переопределения по scope</div>
-                <div className="card__sub">Правила уровня подразделения и позиции</div>
+                <div className="card__title">Исключения</div>
+                <div className="card__sub">Правила для отдельных точек и блюд — сильнее общих</div>
               </div>
             </div>
             {overrides.length === 0 ? (
               <div className="p-4 text-sm text-muted-foreground">
-                Переопределений нет — действуют только глобальные правила.
+                Исключений нет — для всех блюд действуют общие правила выше.
               </div>
             ) : (
               <Table>
@@ -448,7 +483,7 @@ export function PricingRulesPage() {
                   <TableRow>
                     <TableHead>Правило</TableHead>
                     <TableHead>Уровень</TableHead>
-                    <TableHead>Scope ID</TableHead>
+                    <TableHead>Для кого</TableHead>
                     <TableHead>Параметры</TableHead>
                     <TableHead className="text-center">Активно</TableHead>
                     <TableHead className="text-right">Действия</TableHead>
@@ -461,8 +496,8 @@ export function PricingRulesPage() {
                       <TableCell>
                         <Badge variant="outline">{SCOPE_LABELS[r.scope_type] ?? r.scope_type}</Badge>
                       </TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
-                        {r.scope_id ? r.scope_id.slice(0, 12) : '—'}
+                      <TableCell className="text-sm">
+                        <ScopeName scopeType={r.scope_type} scopeId={r.scope_id} />
                       </TableCell>
                       <TableCell className="text-sm tabular">{paramsSummary(r)}</TableCell>
                       <TableCell className="text-center">
@@ -502,6 +537,32 @@ export function PricingRulesPage() {
           if (deleteTarget) del.mutate(deleteTarget.id, { onSuccess: () => setDeleteTarget(null) })
         }}
       />
-    </div>
+    </>
   )
+}
+
+/** Человекочитаемое имя объекта исключения: точка — по справочнику, блюдо — по каталогу. */
+function ScopeName({ scopeType, scopeId }: { scopeType: string; scopeId: string | null }) {
+  const { data: departments = [] } = useDepartments(true)
+  const isProduct = scopeType === 'product'
+  const numericId = isProduct && scopeId ? Number(scopeId) : null
+  const product = useProduct(numericId != null && Number.isFinite(numericId) ? numericId : null)
+
+  if (!scopeId) return <span className="text-muted-foreground">—</span>
+  if (scopeType === 'department') {
+    const dept = departments.find((d) => d.id === scopeId)
+    return (
+      <span title={scopeId}>
+        {dept?.name ?? <span className="font-mono text-xs text-muted-foreground">{scopeId.slice(0, 12)}…</span>}
+      </span>
+    )
+  }
+  if (isProduct) {
+    return (
+      <span title={`product_id ${scopeId}`}>
+        {product.data?.name ?? `Блюдо #${scopeId}`}
+      </span>
+    )
+  }
+  return <span className="font-mono text-xs text-muted-foreground">{scopeId.slice(0, 12)}</span>
 }

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
-import { navSections } from './sidebar'
+import { navSections, canSeeNavItem } from './sidebar'
+import { PRICING_NAV_ITEMS } from '@/pages/pricing/pricing-layout'
 
 interface CmdKProps {
   open: boolean
@@ -20,11 +21,18 @@ export function CmdK({ open, onClose }: CmdKProps) {
     const norm = q.trim().toLowerCase()
     const flat = navSections.flatMap((g) =>
       g.items
-        .filter((it) => hasSection(it.section))
-        .map((it) => ({ ...it, group: g.label })),
+        .filter((it) => canSeeNavItem(it, hasSection))
+        .map((it) => ({ path: it.path, label: it.label, group: g.label })),
     )
-    if (!norm) return flat
-    return flat.filter(
+    // Вкладки ценообразования — тоже находимы через поиск
+    const pricing = PRICING_NAV_ITEMS.filter((it) => hasSection(it.section)).map((it) => ({
+      path: it.path,
+      label: it.label,
+      group: 'Ценообразование',
+    }))
+    const all = [...flat, ...pricing]
+    if (!norm) return all
+    return all.filter(
       (it) =>
         it.label.toLowerCase().includes(norm) || it.group.toLowerCase().includes(norm),
     )

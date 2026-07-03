@@ -3,10 +3,11 @@ import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
   UserRound, Users, Sparkles, BookOpen, FolderTree, Receipt, BarChart3,
   Shield, UserCog, LogOut, Settings, LayoutDashboard, UtensilsCrossed,
-  BadgePercent, Tags, SlidersHorizontal, Target, Activity, Boxes, ScrollText, FileText,
+  BadgePercent,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
+import { useRecommendationsSummary } from '@/hooks/use-pricing'
 import type { SectionKey } from '@/types/auth'
 
 export interface NavItem {
@@ -14,6 +15,8 @@ export interface NavItem {
   label: string
   icon: React.ComponentType<{ className?: string }>
   section: SectionKey
+  /** Пункт виден, если доступна ЛЮБАЯ из секций (для workspace с вкладками). */
+  anySections?: SectionKey[]
   count?: number
 }
 
@@ -52,16 +55,18 @@ export const navSections: NavSection[] = [
     ],
   },
   {
-    label: 'Ценообразование',
+    label: 'Управление ценами',
     items: [
-      { path: '/pricing/dashboard', label: 'Дашборд цен', icon: BadgePercent, section: 'pricing.dashboard' },
-      { path: '/pricing/recommendations', label: 'Рекомендации цен', icon: Tags, section: 'pricing.recommendations' },
-      { path: '/pricing/rules', label: 'Правила цен', icon: SlidersHorizontal, section: 'pricing.rules' },
-      { path: '/pricing/outcomes', label: 'Результаты пилота', icon: Target, section: 'pricing.outcomes' },
-      { path: '/pricing/elasticity', label: 'Эластичность', icon: Activity, section: 'pricing.analytics' },
-      { path: '/pricing/menu-roles', label: 'Роли меню', icon: Boxes, section: 'pricing.analytics' },
-      { path: '/pricing/audit', label: 'Журнал действий', icon: ScrollText, section: 'pricing.analytics' },
-      { path: '/pricing/reports', label: 'Отчёты по ценам', icon: FileText, section: 'pricing.reports' },
+      {
+        path: '/pricing',
+        label: 'Ценообразование',
+        icon: BadgePercent,
+        section: 'pricing.dashboard',
+        anySections: [
+          'pricing.dashboard', 'pricing.recommendations', 'pricing.outcomes',
+          'pricing.reports', 'pricing.analytics', 'pricing.rules',
+        ],
+      },
     ],
   },
   {
@@ -110,8 +115,22 @@ function initials(name: string | null | undefined, phone: string | undefined): s
   return phone ? phone.slice(-2) : '—'
 }
 
+/** Пункт виден, если доступна его секция или любая из anySections. */
+export function canSeeNavItem(
+  item: NavItem,
+  hasSection: (s: SectionKey) => boolean,
+): boolean {
+  if (item.anySections) return item.anySections.some(hasSection)
+  return hasSection(item.section)
+}
+
 export function Sidebar() {
   const { user, hasSection, logout } = useAuth()
+
+  // Бейдж новых ценовых рекомендаций у пункта «Ценообразование»
+  const canPricing = hasSection('pricing.recommendations')
+  const recSummary = useRecommendationsSummary(undefined, { enabled: canPricing })
+  const newRecs = canPricing ? (recSummary.data?.by_status?.new ?? 0) : 0
 
   return (
     <aside className="sidebar">
@@ -125,25 +144,29 @@ export function Sidebar() {
 
       <nav style={{ flex: 1, overflowY: 'auto', padding: '0 0 8px' }}>
         {navSections.map((section) => {
-          const visibleItems = section.items.filter((i) => hasSection(i.section))
+          const visibleItems = section.items.filter((i) => canSeeNavItem(i, hasSection))
           if (visibleItems.length === 0) return null
           return (
             <div key={section.label} className="sidebar__group">
               <div className="sidebar__group-title">{section.label}</div>
-              {visibleItems.map((item) => (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  title={item.label}
-                  className={({ isActive }) => cn('nav-item', isActive && 'active')}
-                >
-                  <item.icon className="icon" />
-                  <span className="label">{item.label}</span>
-                  {item.count != null && (
-                    <span className="count">{item.count.toLocaleString('ru-RU')}</span>
-                  )}
-                </NavLink>
-              ))}
+              {visibleItems.map((item) => {
+                const count =
+                  item.path === '/pricing' && newRecs > 0 ? newRecs : item.count
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    title={item.label}
+                    className={({ isActive }) => cn('nav-item', isActive && 'active')}
+                  >
+                    <item.icon className="icon" />
+                    <span className="label">{item.label}</span>
+                    {count != null && (
+                      <span className="count">{count.toLocaleString('ru-RU')}</span>
+                    )}
+                  </NavLink>
+                )
+              })}
             </div>
           )
         })}

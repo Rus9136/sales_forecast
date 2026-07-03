@@ -63,3 +63,84 @@ export function gradeColor(grade: string | null | undefined): string {
   if (!grade) return 'var(--text-subtle)'
   return GRADE_COLOR[grade] ?? 'var(--text-subtle)'
 }
+
+/** Надёжность оценки спроса словами — грейд остаётся рядом («Высокая · A»). */
+export const GRADE_WORDS: Record<string, string> = {
+  A: 'Высокая',
+  B: 'Хорошая',
+  C: 'Низкая',
+  D: 'Минимальная',
+}
+
+export function gradeWord(grade: string | null | undefined): string {
+  if (!grade) return 'Нет оценки'
+  return GRADE_WORDS[grade] ?? grade
+}
+
+/** Одно предложение смысла каждой роли меню — показывается прямо в карточках. */
+export const MENU_ROLE_DESCRIPTIONS: Record<MenuRole, string> = {
+  premium_anchor: 'Дорогие статусные блюда. Задают планку цен, меняем осторожно.',
+  margin_driver: 'Главный источник прибыли. Основная зона работы оптимизатора.',
+  traffic_driver: 'Ходовые блюда, ради которых приходят. Цену почти не трогаем.',
+  image_rare: 'Редкие продажи, важны для образа меню. Округление до 100 ₸.',
+  tail: 'Мало продаж и прибыли. Кандидаты на пересмотр или вывод из меню.',
+}
+
+/** Человекочитаемые названия ограничений оптимизатора (constraints_applied). */
+export const CONSTRAINT_LABELS: Record<string, string> = {
+  min_margin: 'мин. маржа',
+  max_step: 'шаг ≤ лимита',
+  min_frequency: 'частота изменений',
+  rounding: 'округление',
+  no_decrease_anchor: 'якорь: только вверх',
+  no_psychological: 'без «…9» окончаний',
+  stop_list: 'стоп-лист',
+  max_changes_per_cycle: 'лимит за цикл',
+  cumulative_cap: 'потолок за 90 дней',
+  min_competitive_idx: 'конкурентный индекс',
+}
+
+export function constraintLabel(code: string): string {
+  return CONSTRAINT_LABELS[code] ?? code
+}
+
+/** Локализация действий журнала аудита. */
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
+  approved: 'Утверждена',
+  rejected: 'Отклонена',
+  applied: 'Применена',
+  expired: 'Истекла',
+  superseded: 'Заменена новой',
+  create: 'Создание',
+  update: 'Изменение',
+  delete: 'Удаление',
+  generate: 'Генерация',
+  freeze: 'Фиксация базы',
+  override: 'Смена роли',
+}
+
+export function auditActionLabel(action: string): string {
+  return AUDIT_ACTION_LABELS[action] ?? action
+}
+
+/** Человекочитаемые ключи details в журнале аудита. */
+export const AUDIT_DETAIL_LABELS: Record<string, string> = {
+  comment: 'комментарий',
+  reason: 'причина',
+  batch: 'массовое действие',
+  manual_role: 'роль вручную',
+  effective_role: 'действующая роль',
+  rule_type: 'правило',
+  scope_type: 'уровень',
+  scope_id: 'объект',
+  params: 'параметры',
+  weeks: 'недель',
+  departments: 'точек',
+  force: 'перезапись',
+  baseline_from: 'с',
+  baseline_to: 'по',
+  n_requested: 'запрошено',
+  n_created: 'создано',
+  delta_pct: 'Δ цены %',
+  status: 'статус',
+}

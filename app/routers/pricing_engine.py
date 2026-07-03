@@ -334,12 +334,26 @@ def generate_recommendations(
     return svc.generate_recommendations(department_id, min_gp_threshold)
 
 
+#: Белый список серверных сортировок инбокса рекомендаций (UI: sort=)
+_REC_SORT_SQL = {
+    "delta_gp": "pr.delta_gp DESC NULLS LAST",
+    "delta_pct": "ABS(pr.delta_pct) DESC NULLS LAST",
+    "grade": ("CASE pr.elasticity_grade WHEN 'A' THEN 4 WHEN 'B' THEN 3 "
+              "WHEN 'C' THEN 2 WHEN 'D' THEN 1 ELSE 0 END DESC, "
+              "pr.delta_gp DESC NULLS LAST"),
+}
+
+
 @router.get("/recommendations")
 async def list_recommendations(
     department_id: Optional[str] = None,
     status: Optional[str] = None,
     batch_id: Optional[str] = None,
     rec_type: Optional[str] = Query(None, description="optimizer | experiment"),
+    search: Optional[str] = Query(None, description="ILIKE-поиск по названию блюда"),
+    menu_role: Optional[str] = None,
+    elasticity_grade: Optional[str] = Query(None, description="A | B | C | D"),
+    sort: Optional[str] = Query(None, description="delta_gp | delta_pct | grade"),
     limit: int = Query(100, le=1000),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -358,11 +372,27 @@ async def list_recommendations(
     if rec_type:
         conditions.append("pr.rec_type = :rec_type")
         params["rec_type"] = rec_type
+    if search and search.strip():
+        conditions.append("p.name ILIKE :search")
+        params["search"] = f"%{search.strip()}%"
+    if menu_role:
+        conditions.append("pr.menu_role = :menu_role")
+        params["menu_role"] = menu_role
+    if elasticity_grade:
+        conditions.append("pr.elasticity_grade = :egrade")
+        params["egrade"] = elasticity_grade
 
     where = " AND ".join(conditions)
+    order_by = _REC_SORT_SQL.get(sort or "delta_gp", _REC_SORT_SQL["delta_gp"])
 
     total = db.execute(
-        text(f"SELECT COUNT(*) FROM price_recommendation pr WHERE {where}"), params
+        text(f"""
+            SELECT COUNT(*)
+            FROM price_recommendation pr
+            JOIN product p ON p.id = pr.product_id
+            WHERE {where}
+        """),
+        params,
     ).scalar()
 
     rows = db.execute(
@@ -372,7 +402,7 @@ async def list_recommendations(
             JOIN product p ON p.id = pr.product_id
             JOIN departments d ON d.id = pr.department_id
             WHERE {where}
-            ORDER BY pr.delta_gp DESC NULLS LAST
+            ORDER BY {order_by}
             LIMIT :limit OFFSET :offset
         """),
         {**params, "limit": limit, "offset": offset},

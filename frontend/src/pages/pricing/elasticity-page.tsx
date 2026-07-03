@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { RotateCcw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -11,18 +11,19 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Card } from '@/components/ui/card'
-import { DepartmentSelect } from '@/components/shared/department-select'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ErrorAlert } from '@/components/shared/error-alert'
+import { Term, GLOSSARY } from '@/components/shared/term'
 import { useElasticityList, useElasticitySummary } from '@/hooks/use-pricing'
-import { gradeColor } from '@/lib/pricing-labels'
+import { usePricingScope } from '@/contexts/pricing-context'
+import { gradeColor, gradeWord } from '@/lib/pricing-labels'
 
 const ALL = '__all__'
 const PAGE_SIZE = 200
 
 const LEVEL_LABELS: Record<string, string> = {
-  sku: 'SKU', group: 'Группа', global: 'Глобально',
+  sku: 'По самому блюду', group: 'По группе блюд', global: 'По всему меню',
 }
 
 function fmtNum(v: number | null | undefined): string {
@@ -31,15 +32,15 @@ function fmtNum(v: number | null | undefined): string {
 }
 
 export function PricingElasticityPage() {
-  const [deptId, setDeptId] = useState(ALL)
+  const location = useLocation()
+  const { effectiveDepartmentId } = usePricingScope()
   const [grade, setGrade] = useState(ALL)
   const [level, setLevel] = useState(ALL)
   const [page, setPage] = useState(0)
 
-  const effectiveDept = deptId === ALL ? undefined : deptId
   const summary = useElasticitySummary()
   const list = useElasticityList({
-    department_id: effectiveDept,
+    department_id: effectiveDepartmentId,
     reliability_grade: grade === ALL ? undefined : grade,
     estimation_level: level === ALL ? undefined : level,
     limit: PAGE_SIZE,
@@ -56,18 +57,18 @@ export function PricingElasticityPage() {
 
   if (list.error) return <ErrorAlert message={(list.error as Error).message} />
 
+  const fromPath = { fromPath: location.pathname + location.search }
+
   return (
-    <div className="page">
-      <div className="page__header">
-        <div className="page__title">
-          <h1>Эластичность спроса</h1>
-          <span className="sub">Оценки ε по чистым каталожным ценам · иерархия SKU → группа → глобально</span>
-        </div>
-        <div className="page__actions">
-          <Button variant="outline" onClick={() => list.refetch()}>
-            <RotateCcw className="h-4 w-4 mr-2" /> Обновить
-          </Button>
-        </div>
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span className="pricing-hint">
+          <Term tip={GLOSSARY.elasticity}>Чувствительность спроса (ε)</Term> показывает, на
+          сколько упадут продажи при росте цены. Пересчитывается каждое воскресенье ночью.
+        </span>
+        <Button variant="outline" style={{ marginLeft: 'auto' }} onClick={() => list.refetch()}>
+          <RotateCcw className="h-4 w-4 mr-2" /> Обновить
+        </Button>
       </div>
 
       {/* Summary KPIs */}
@@ -75,26 +76,38 @@ export function PricingElasticityPage() {
         <div className="kpi">
           <div className="kpi__label">Всего оценок</div>
           <div className="kpi__value">{fmtNum(s?.total)}</div>
-          <div className="kpi__foot"><span style={{ fontSize: 11 }}>SKU × подразделение</span></div>
+          <div className="kpi__foot"><span style={{ fontSize: 11 }}>пара блюдо × точка</span></div>
         </div>
         <div className="kpi">
-          <div className="kpi__label">Надёжные (A+B)</div>
+          <div className="kpi__label">
+            <Term tip={GLOSSARY.grade}>Надёжные оценки</Term>
+          </div>
           <div className="kpi__value">{fmtNum(reliable)}</div>
           <div className="kpi__foot">
             <span style={{ fontSize: 11 }}>
-              {s && reliable != null && s.total ? `${((reliable / s.total) * 100).toFixed(1)}% от всех` : 'грейды A и B'}
+              {s && reliable != null && s.total
+                ? `${((reliable / s.total) * 100).toFixed(1)}% от всех (высокая + хорошая)`
+                : 'высокая + хорошая (A и B)'}
             </span>
           </div>
         </div>
         <div className="kpi">
-          <div className="kpi__label">На уровне SKU</div>
+          <div className="kpi__label">Оценено по самому блюду</div>
           <div className="kpi__value">{fmtNum(skuLevel)}</div>
-          <div className="kpi__foot"><span style={{ fontSize: 11 }}>собственная оценка</span></div>
+          <div className="kpi__foot">
+            <span style={{ fontSize: 11 }}>
+              у остальных — оценка по группе или по всему меню
+            </span>
+          </div>
         </div>
         <div className="kpi">
-          <div className="kpi__label">Global prior ε</div>
+          <div className="kpi__label">Базовая чувствительность</div>
           <div className="kpi__value">{s?.global_prior != null ? s.global_prior.toFixed(3) : '—'}</div>
-          <div className="kpi__foot"><span style={{ fontSize: 11 }}>fallback по всему пулу</span></div>
+          <div className="kpi__foot">
+            <span style={{ fontSize: 11 }}>
+              используется, когда у блюда нет своей истории
+            </span>
+          </div>
         </div>
       </div>
 
@@ -104,13 +117,17 @@ export function PricingElasticityPage() {
           <div className="card__header">
             <div>
               <div className="card__title">Распределение по надёжности</div>
-              <div className="card__sub">Грейд = число реальных ценовых событий, не значимость</div>
+              <div className="card__sub">
+                Надёжность растёт с числом реальных изменений цены в истории блюда
+              </div>
             </div>
           </div>
           <div style={{ padding: '14px 16px', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
             {(['A', 'B', 'C', 'D'] as const).map((g) => (
               <div key={g} className="flex items-center gap-2">
-                <span style={{ color: gradeColor(g), fontWeight: 700, fontSize: 18 }}>{g}</span>
+                <span style={{ color: gradeColor(g), fontWeight: 700, fontSize: 15 }}>
+                  {gradeWord(g)} · {g}
+                </span>
                 <span className="tabular text-sm">{fmtNum(s.by_grade[g] ?? 0)}</span>
               </div>
             ))}
@@ -128,21 +145,22 @@ export function PricingElasticityPage() {
       {/* Filters */}
       <Card>
         <div className="p-4 flex flex-wrap items-end gap-3">
-          <DepartmentSelect value={deptId} onChange={(v) => onFilter(() => setDeptId(v))} includeInactive />
           <div className="space-y-1">
             <Label className="text-xs">Надёжность</Label>
             <Select value={grade} onValueChange={(v) => onFilter(() => setGrade(v))}>
-              <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>Любая</SelectItem>
-                {['A', 'B', 'C', 'D'].map((g) => <SelectItem key={g} value={g}>{g}</SelectItem>)}
+                {(['A', 'B', 'C', 'D'] as const).map((g) => (
+                  <SelectItem key={g} value={g}>{gradeWord(g)} · {g}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">Уровень</Label>
+            <Label className="text-xs">Уровень оценки</Label>
             <Select value={level} onValueChange={(v) => onFilter(() => setLevel(v))}>
-              <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>Любой</SelectItem>
                 {Object.entries(LEVEL_LABELS).map(([k, lbl]) => <SelectItem key={k} value={k}>{lbl}</SelectItem>)}
@@ -162,12 +180,15 @@ export function PricingElasticityPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Позиция</TableHead>
-                <TableHead className="text-right">ε</TableHead>
-                <TableHead className="text-right">95% CI</TableHead>
-                <TableHead className="text-center">Надёжн.</TableHead>
+                <TableHead className="text-right">
+                  <Term tip={GLOSSARY.elasticity}>ε</Term>
+                </TableHead>
+                <TableHead className="text-right">
+                  <Term tip={GLOSSARY.ci}>95% интервал</Term>
+                </TableHead>
+                <TableHead className="text-center">Надёжность</TableHead>
                 <TableHead className="text-center">Уровень</TableHead>
-                <TableHead className="text-right">Событий</TableHead>
-                <TableHead className="text-right">R²</TableHead>
+                <TableHead className="text-right">Изменений цены</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -176,6 +197,7 @@ export function PricingElasticityPage() {
                   <TableCell>
                     <Link
                       to={`/pricing/position/${r.product_id}/${r.department_id}`}
+                      state={fromPath}
                       className="text-sm font-medium hover:underline"
                       style={{ color: 'var(--accent)' }}
                     >
@@ -186,31 +208,28 @@ export function PricingElasticityPage() {
                   <TableCell className="text-right tabular text-muted-foreground">
                     [{r.elasticity_ci_lower.toFixed(2)}; {r.elasticity_ci_upper.toFixed(2)}]
                   </TableCell>
-                  <TableCell className="text-center" style={{ color: gradeColor(r.reliability_grade), fontWeight: 600 }}>
-                    {r.reliability_grade}
+                  <TableCell className="text-center text-sm" style={{ color: gradeColor(r.reliability_grade), fontWeight: 600 }}>
+                    {gradeWord(r.reliability_grade)} · {r.reliability_grade}
                   </TableCell>
                   <TableCell className="text-center text-sm text-muted-foreground">
                     {LEVEL_LABELS[r.estimation_level] ?? r.estimation_level}
                   </TableCell>
                   <TableCell className="text-right tabular">{r.n_price_events}</TableCell>
-                  <TableCell className="text-right tabular text-muted-foreground">
-                    {r.model_r_squared != null ? r.model_r_squared.toFixed(2) : '—'}
-                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
           <div className="flex items-center justify-between p-3 text-sm border-t">
             <span className="text-muted-foreground">
-              Показано {items.length} из {total.toLocaleString('ru-RU')} · стр. {page + 1}
+              Всего: {total.toLocaleString('ru-RU')} · стр. {page + 1} из {Math.max(1, Math.ceil(total / PAGE_SIZE))}
             </span>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>←</Button>
-              <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={items.length < PAGE_SIZE}>→</Button>
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={(page + 1) * PAGE_SIZE >= total}>→</Button>
             </div>
           </div>
         </Card>
       )}
-    </div>
+    </>
   )
 }

@@ -22,7 +22,7 @@ const SECTION_TO_PATH: Record<SectionKey, string> = {
   'pricing.rules': '/pricing/rules',
   'pricing.position_detail': '/pricing/dashboard',
   'pricing.outcomes': '/pricing/outcomes',
-  'pricing.analytics': '/pricing/elasticity',
+  'pricing.analytics': '/pricing/menu-roles',
   'pricing.reports': '/pricing/reports',
   'sync': '/sync',
   'users': '/users',

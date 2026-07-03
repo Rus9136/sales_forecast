@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import {
-  ChevronDown, ChevronRight, Check, X, Search, Wand2, Download, ArrowUp, ArrowDown,
+  ChevronDown, ChevronRight, Check, X, Search, Wand2, Download, ArrowUp, ArrowDown, Sparkles,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -18,36 +18,40 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { DepartmentSelect } from '@/components/shared/department-select'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { LlmExplanation } from '@/components/shared/llm-explanation'
+import { Term, GLOSSARY } from '@/components/shared/term'
 import {
   useRecommendations, useRecommendationsSummary,
   useReviewRecommendation, useBatchReview, useGenerateRecommendations,
 } from '@/hooks/use-pricing'
+import { usePricingScope } from '@/contexts/pricing-context'
 import { useAuth } from '@/contexts/auth-context'
 import { apiDownload, apiErrorMessage } from '@/lib/api-client'
 import { formatCurrency } from '@/lib/formatters'
-import { menuRoleLabel, statusLabel, statusBadgeVariant, gradeColor, MENU_ROLE_LABELS } from '@/lib/pricing-labels'
+import {
+  menuRoleLabel, statusLabel, statusBadgeVariant, gradeColor, gradeWord,
+  constraintLabel, MENU_ROLE_LABELS,
+} from '@/lib/pricing-labels'
 import type { PriceRecommendation } from '@/types/pricing'
 
 const ALL = '__all__'
 const PAGE_SIZE = 200
 
-const STATUS_TABS: { key: string; label: string }[] = [
+/** Чипы статусов = воронка цикла (те же слова, что на «Обзоре»). */
+const STATUS_CHIPS: { key: string; label: string }[] = [
   { key: 'new', label: 'Новые' },
-  { key: 'approved', label: 'Утверждённые' },
-  { key: 'applied', label: 'Применённые' },
-  { key: 'rejected', label: 'Отклонённые' },
+  { key: 'approved', label: 'Утверждены' },
+  { key: 'applied', label: 'Применены' },
+  { key: 'rejected', label: 'Отклонены' },
+  { key: 'expired', label: 'Истекли' },
   { key: '', label: 'Все' },
 ]
 
-const GRADE_RANK: Record<string, number> = { A: 4, B: 3, C: 2, D: 1 }
-
-type SortKey = 'gp' | 'pct' | 'grade'
+type SortKey = 'delta_gp' | 'delta_pct' | 'grade'
 
 function fmtPctSigned(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
@@ -55,16 +59,32 @@ function fmtPctSigned(value: number | null | undefined): string {
   return `${sign}${value.toFixed(1)}%`
 }
 
+function fmtCompact(value: number): string {
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000) return (value / 1_000_000).toFixed(1) + ' млн'
+  if (abs >= 1_000) return (value / 1_000).toFixed(0) + ' тыс'
+  return Math.round(value).toString()
+}
+
 export function PricingRecommendationsPage() {
   const { user } = useAuth()
   const reviewerId = user?.id
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  const [departmentId, setDepartmentId] = useState(ALL)
-  const [status, setStatus] = useState('new')
+  const { effectiveDepartmentId } = usePricingScope()
+
+  // Статус — в URL, чтобы работали переходы с «Обзора» (?status=new)
+  const status = searchParams.get('status') ?? 'new'
+  const setStatus = (s: string) => {
+    setSearchParams(s ? { status: s } : {}, { replace: true })
+  }
+
   const [roleFilter, setRoleFilter] = useState(ALL)
   const [gradeFilter, setGradeFilter] = useState(ALL)
   const [search, setSearch] = useState('')
-  const [sortKey, setSortKey] = useState<SortKey>('gp')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('delta_gp')
   const [page, setPage] = useState(0)
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -78,15 +98,32 @@ export function PricingRecommendationsPage() {
   const [genResult, setGenResult] = useState<string | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
 
-  const effectiveDept = departmentId === ALL ? undefined : departmentId
+  // Поиск — серверный, с дебаунсом 350 мс
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setDebouncedSearch(search.trim())
+      setPage(0)
+    }, 350)
+    return () => clearTimeout(id)
+  }, [search])
+
+  // Сброс выделения/страницы при смене контекста
+  useEffect(() => {
+    setSelected(new Set())
+    setPage(0)
+  }, [effectiveDepartmentId, status])
 
   const recsQuery = useRecommendations({
-    department_id: effectiveDept,
+    department_id: effectiveDepartmentId,
     status: status || undefined,
+    search: debouncedSearch || undefined,
+    menu_role: roleFilter === ALL ? undefined : roleFilter,
+    elasticity_grade: gradeFilter === ALL ? undefined : gradeFilter,
+    sort: sortKey,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   })
-  const summary = useRecommendationsSummary(effectiveDept)
+  const summary = useRecommendationsSummary(effectiveDepartmentId)
   const reviewMut = useReviewRecommendation()
   const batchMut = useBatchReview()
   const generateMut = useGenerateRecommendations()
@@ -94,29 +131,38 @@ export function PricingRecommendationsPage() {
   const items = recsQuery.data?.items ?? []
   const total = recsQuery.data?.total ?? 0
 
-  const filtered = useMemo(() => {
-    let rows = items
-    if (roleFilter !== ALL) rows = rows.filter((r) => r.menu_role === roleFilter)
-    if (gradeFilter !== ALL) rows = rows.filter((r) => r.elasticity_grade === gradeFilter)
-    const q = search.trim().toLowerCase()
-    if (q) rows = rows.filter((r) => (r.product_name ?? '').toLowerCase().includes(q))
-    const sorted = [...rows]
-    sorted.sort((a, b) => {
-      if (sortKey === 'gp') return (b.delta_gp ?? 0) - (a.delta_gp ?? 0)
-      if (sortKey === 'pct') return Math.abs(b.delta_pct ?? 0) - Math.abs(a.delta_pct ?? 0)
-      return (GRADE_RANK[b.elasticity_grade ?? ''] ?? 0) - (GRADE_RANK[a.elasticity_grade ?? ''] ?? 0)
-    })
-    return sorted
-  }, [items, roleFilter, gradeFilter, search, sortKey])
+  const byStatus = summary.data?.by_status ?? {}
+  const potentialGp = summary.data?.total_delta_gp_new ?? null
+
+  // «Уверенные ходы»: новые A/B с положительным эффектом на текущей странице
+  const sureMoves = useMemo(
+    () =>
+      status === 'new'
+        ? items.filter(
+            (r) =>
+              r.status === 'new' &&
+              (r.elasticity_grade === 'A' || r.elasticity_grade === 'B') &&
+              (r.delta_gp ?? 0) > 0 &&
+              r.rec_type !== 'experiment',
+          )
+        : [],
+    [items, status],
+  )
+  const sureMovesGp = sureMoves.reduce((acc, r) => acc + (r.delta_gp ?? 0), 0)
 
   const reviewableOnPage = useMemo(
-    () => filtered.filter((r) => r.status === 'new').map((r) => r.id),
-    [filtered],
+    () => items.filter((r) => r.status === 'new').map((r) => r.id),
+    [items],
   )
   const allSelected = reviewableOnPage.length > 0 && reviewableOnPage.every((id) => selected.has(id))
 
-  const byStatus = summary.data?.by_status ?? {}
-  const potentialGp = summary.data?.total_delta_gp_new ?? null
+  const selectedGp = useMemo(
+    () =>
+      items
+        .filter((r) => selected.has(r.id))
+        .reduce((acc, r) => acc + (r.delta_gp ?? 0), 0),
+    [items, selected],
+  )
 
   const resetSelection = () => setSelected(new Set())
 
@@ -136,8 +182,8 @@ export function PricingRecommendationsPage() {
     })
   }
 
-  const selectByGrade = (grade: string) => {
-    setSelected(new Set(filtered.filter((r) => r.status === 'new' && r.elasticity_grade === grade).map((r) => r.id)))
+  const selectSureMoves = () => {
+    setSelected(new Set(sureMoves.map((r) => r.id)))
   }
 
   const approveOne = (id: number) =>
@@ -161,28 +207,31 @@ export function PricingRecommendationsPage() {
   }
 
   const runGenerate = () => {
-    if (!effectiveDept) return
+    if (!effectiveDepartmentId) return
     generateMut.mutate(
-      { departmentId: effectiveDept },
+      { departmentId: effectiveDepartmentId },
       {
         onSuccess: (res) => {
-          setGenResult(`Создано ${res.recommendations_created} рекомендаций из ${res.skus_processed} SKU`)
+          setGenResult(`Создано ${res.recommendations_created} предложений из ${res.skus_processed} позиций`)
           setGenerateConfirm(false)
         },
       },
     )
   }
 
+  const exportStatus = status || 'approved'
+  const exportLabel = `Экспорт XLSX (${statusLabel(exportStatus).toLowerCase()})`
+
   const handleExport = async () => {
     setExportError(null)
     try {
-      const params = new URLSearchParams({ status: status || 'approved' })
-      if (effectiveDept) params.set('department_id', effectiveDept)
+      const params = new URLSearchParams({ status: exportStatus })
+      if (effectiveDepartmentId) params.set('department_id', effectiveDepartmentId)
       const blob = await apiDownload(`/api/pricing-engine/recommendations/export?${params}`)
       const href = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = href
-      a.download = `price_recommendations_${status || 'approved'}.xlsx`
+      a.download = `price_recommendations_${exportStatus}.xlsx`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -196,58 +245,108 @@ export function PricingRecommendationsPage() {
 
   if (recsQuery.error) return <ErrorAlert message={(recsQuery.error as Error).message} />
 
+  const fromPath = { fromPath: location.pathname + location.search }
+
   return (
-    <div className="page">
-      <div className="page__header">
-        <div className="page__title">
-          <h1>Рекомендации цен</h1>
-          <span className="sub">Утверждение и отклонение ценовых предложений оптимизатора</span>
+    <>
+      {/* Верхняя строка: чипы статусов + действия */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div className="pricing-chips">
+          {STATUS_CHIPS.map((t) => {
+            const count = t.key ? byStatus[t.key as keyof typeof byStatus] : summary.data?.total
+            return (
+              <button
+                key={t.key}
+                type="button"
+                className={'pricing-chip' + (status === t.key ? ' active' : '')}
+                onClick={() => onFilterChange(() => setStatus(t.key))}
+              >
+                {t.label}
+                {count != null && <span className="c">{count.toLocaleString('ru-RU')}</span>}
+              </button>
+            )
+          })}
         </div>
-        <div className="page__actions">
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Button variant="outline" onClick={handleExport} title="Скачать таблицу для загрузки цен в iiko">
+            <Download className="h-4 w-4 mr-2" /> {exportLabel}
+          </Button>
           <Button
-            variant="outline"
             onClick={() => setGenerateConfirm(true)}
-            disabled={!effectiveDept || generateMut.isPending}
-            title={effectiveDept ? 'Сгенерировать рекомендации для подразделения' : 'Выберите подразделение'}
+            disabled={!effectiveDepartmentId || generateMut.isPending}
           >
             <Wand2 className={`h-4 w-4 mr-2 ${generateMut.isPending ? 'animate-spin' : ''}`} />
-            {generateMut.isPending ? 'Генерация…' : 'Сгенерировать'}
-          </Button>
-          <Button variant="outline" onClick={handleExport}>
-            <Download className="h-4 w-4 mr-2" /> Экспорт XLSX
+            {generateMut.isPending ? 'Пересчёт…' : 'Пересчитать предложения'}
           </Button>
         </div>
       </div>
 
+      {/* Причина недоступности — на экране, не в тултипе */}
+      {!effectiveDepartmentId && (
+        <span className="pricing-hint">
+          Чтобы пересчитать предложения вручную, выберите точку в шапке раздела. Ночной
+          пересчёт (05:00) идёт по всем точкам автоматически.
+        </span>
+      )}
+
+      {status === 'new' && potentialGp != null && potentialGp > 0 && (
+        <span className="pricing-hint">
+          Потенциал всех новых предложений:{' '}
+          <b style={{ color: 'var(--pos)' }}>
+            +{fmtCompact(potentialGp)} ₸/нед{' '}
+            <Term tip={GLOSSARY.deltaGp}>прибыли</Term>
+          </b>
+        </span>
+      )}
+
       {genResult && (
-        <Card><CardContent className="p-3 text-sm"><span className="font-medium">Результат:</span> {genResult}</CardContent></Card>
+        <Card><CardContent className="p-3 text-sm"><span className="font-medium">Готово:</span> {genResult}</CardContent></Card>
       )}
       {exportError && <ErrorAlert message={`Экспорт не удался: ${exportError}`} />}
-      {reviewMut.error && <ErrorAlert message={apiErrorMessage(reviewMut.error)} title="Ревью не выполнено" />}
-      {batchMut.error && <ErrorAlert message={apiErrorMessage(batchMut.error)} title="Массовое ревью не выполнено" />}
-      {generateMut.error && <ErrorAlert message={apiErrorMessage(generateMut.error)} title="Генерация не выполнена" />}
+      {reviewMut.error && <ErrorAlert message={apiErrorMessage(reviewMut.error)} title="Действие не выполнено" />}
+      {batchMut.error && <ErrorAlert message={apiErrorMessage(batchMut.error)} title="Массовое действие не выполнено" />}
+      {generateMut.error && <ErrorAlert message={apiErrorMessage(generateMut.error)} title="Пересчёт не выполнен" />}
 
+      {/* «Уверенные ходы» */}
+      {sureMoves.length > 0 && (
+        <div className="pricing-sure">
+          <div>
+            <b>
+              Уверенные ходы: {sureMoves.length}{' '}
+              <span style={{ color: 'var(--pos)', fontFamily: 'var(--font-mono)' }}>
+                +{fmtCompact(sureMovesGp)} ₸/нед
+              </span>
+            </b>
+            <div className="ds">
+              <Term tip={GLOSSARY.grade}>Высокая и хорошая надёжность (A/B)</Term> — у этих блюд
+              достаточно истории, чтобы доверять прогнозу.
+            </div>
+          </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <Button size="sm" onClick={() => { selectSureMoves(); setBatchConfirm('approve') }} disabled={batchMut.isPending}>
+              <Sparkles className="h-4 w-4 mr-1" /> Утвердить все {sureMoves.length}
+            </Button>
+            <Button size="sm" variant="outline" onClick={selectSureMoves}>
+              Выбрать в списке
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Фильтры (серверные — по всей базе) */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap items-end gap-3">
-            <DepartmentSelect
-              value={departmentId}
-              onChange={(v) => onFilterChange(() => setDepartmentId(v))}
-              includeInactive
-            />
             <div className="space-y-1">
-              <Label className="text-xs">Статус</Label>
-              <div className="seg">
-                {STATUS_TABS.map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    className={status === t.key ? 'active' : ''}
-                    onClick={() => onFilterChange(() => setStatus(t.key))}
-                  >
-                    {t.label}
-                  </button>
-                ))}
+              <Label className="text-xs">Поиск по блюду</Label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Название…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9 w-56"
+                />
               </div>
             </div>
             <div className="space-y-1">
@@ -263,67 +362,44 @@ export function PricingRecommendationsPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Надёжность ε</Label>
+              <Label className="text-xs">Надёжность оценки</Label>
               <Select value={gradeFilter} onValueChange={(v) => onFilterChange(() => setGradeFilter(v))}>
-                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value={ALL}>Любая</SelectItem>
-                  {['A', 'B', 'C', 'D'].map((g) => <SelectItem key={g} value={g}>{g}</SelectItem>)}
+                  {(['A', 'B', 'C', 'D'] as const).map((g) => (
+                    <SelectItem key={g} value={g}>{gradeWord(g)} · {g}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Сортировка</Label>
-              <Select value={sortKey} onValueChange={(v) => setSortKey(v as SortKey)}>
-                <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+              <Select value={sortKey} onValueChange={(v) => onFilterChange(() => setSortKey(v as SortKey))}>
+                <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="gp">По ΔGP</SelectItem>
-                  <SelectItem value="pct">По |Δ%|</SelectItem>
+                  <SelectItem value="delta_gp">По приросту прибыли</SelectItem>
+                  <SelectItem value="delta_pct">По размеру изменения</SelectItem>
                   <SelectItem value="grade">По надёжности</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Поиск</Label>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Название позиции"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9 w-56"
-                />
-              </div>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        <div className="kpi">
-          <span className="kpi__label">Потенциал ΔGP (новые)</span>
-          <span className="kpi__value">{potentialGp != null ? formatCurrency(potentialGp) : '—'}</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi__label">Новые</span>
-          <span className="kpi__value">{(byStatus.new ?? 0).toLocaleString('ru-RU')}</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi__label">Утверждено</span>
-          <span className="kpi__value">{(byStatus.approved ?? 0).toLocaleString('ru-RU')}</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi__label">Отклонено</span>
-          <span className="kpi__value">{(byStatus.rejected ?? 0).toLocaleString('ru-RU')}</span>
-        </div>
-      </div>
-
-      {/* Bulk action bar */}
+      {/* Панель массовых действий */}
       {selected.size > 0 && (
         <Card>
           <CardContent className="p-3 flex flex-wrap items-center gap-2 text-sm">
-            <span className="font-medium">Выбрано: {selected.size}</span>
+            <span className="font-medium">
+              Выбрано: {selected.size}
+              {selectedGp > 0 && (
+                <span style={{ color: 'var(--pos)', fontFamily: 'var(--font-mono)', marginLeft: 8 }}>
+                  +{fmtCompact(selectedGp)} ₸/нед
+                </span>
+              )}
+            </span>
             <div className="flex-1" />
             <Button size="sm" onClick={() => setBatchConfirm('approve')} disabled={batchMut.isPending}>
               <Check className="h-4 w-4 mr-1" /> Утвердить выбранные
@@ -338,20 +414,16 @@ export function PricingRecommendationsPage() {
 
       {recsQuery.isLoading ? (
         <LoadingSpinner />
-      ) : filtered.length === 0 ? (
-        <EmptyState text="Нет рекомендаций под выбранные фильтры" />
+      ) : items.length === 0 ? (
+        <EmptyState
+          text={
+            status === 'new'
+              ? 'Новых предложений нет. Они появляются после ночного пересчёта (05:00); можно пересчитать вручную кнопкой выше, выбрав точку.'
+              : 'Ничего не найдено под выбранные фильтры.'
+          }
+        />
       ) : (
         <Card>
-          {status === 'new' && (
-            <div className="flex items-center gap-2 px-3 pt-3 text-xs text-muted-foreground">
-              <span>Быстрый выбор:</span>
-              {['A', 'B'].map((g) => (
-                <button key={g} type="button" className="underline" onClick={() => selectByGrade(g)}>
-                  все {g}-grade
-                </button>
-              ))}
-            </div>
-          )}
           <Table>
             <TableHeader>
               <TableRow>
@@ -362,24 +434,26 @@ export function PricingRecommendationsPage() {
                 </TableHead>
                 <TableHead className="w-[28px]" />
                 <TableHead>Позиция</TableHead>
-                <TableHead>Роль</TableHead>
-                <TableHead className="text-right">Тек. цена</TableHead>
-                <TableHead className="text-right">Реком.</TableHead>
-                <TableHead className="text-right">Δ%</TableHead>
-                <TableHead className="text-right">Ожид. ΔGP</TableHead>
-                <TableHead className="text-center">ε</TableHead>
+                <TableHead>Изменение цены</TableHead>
+                <TableHead className="text-right">
+                  <Term tip={GLOSSARY.deltaGp}>Прибыль/нед</Term>
+                </TableHead>
+                <TableHead className="text-center">
+                  <Term tip={GLOSSARY.grade}>Надёжность</Term>
+                </TableHead>
                 <TableHead className="text-center">Статус</TableHead>
                 <TableHead className="text-right">Действия</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((r) => (
+              {items.map((r) => (
                 <RecRow
                   key={r.id}
                   rec={r}
+                  fromPath={fromPath}
                   expanded={expanded === r.id}
                   onToggleExpand={() => setExpanded((p) => (p === r.id ? null : r.id))}
-                  selectable={status === 'new' && r.status === 'new'}
+                  selectable={r.status === 'new'}
                   checked={selected.has(r.id)}
                   onToggleCheck={() => toggleOne(r.id)}
                   onApprove={() => approveOne(r.id)}
@@ -391,11 +465,11 @@ export function PricingRecommendationsPage() {
           </Table>
           <div className="flex items-center justify-between p-3 text-sm border-t">
             <span className="text-muted-foreground">
-              Показано {filtered.length} из {total.toLocaleString('ru-RU')} · стр. {page + 1}
+              Всего: {total.toLocaleString('ru-RU')} · стр. {page + 1} из {Math.max(1, Math.ceil(total / PAGE_SIZE))}
             </span>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => { setPage((p) => Math.max(0, p - 1)); resetSelection() }} disabled={page === 0}>←</Button>
-              <Button variant="outline" size="sm" onClick={() => { setPage((p) => p + 1); resetSelection() }} disabled={items.length < PAGE_SIZE}>→</Button>
+              <Button variant="outline" size="sm" onClick={() => { setPage((p) => p + 1); resetSelection() }} disabled={(page + 1) * PAGE_SIZE >= total}>→</Button>
             </div>
           </div>
         </Card>
@@ -404,13 +478,13 @@ export function PricingRecommendationsPage() {
       {/* Reject single dialog */}
       <Dialog open={rejectTarget != null} onOpenChange={(o) => { if (!o) { setRejectTarget(null); setRejectComment('') } }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Отклонить рекомендацию</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Отклонить предложение</DialogTitle></DialogHeader>
           <div className="space-y-2">
             <Label className="text-xs">Комментарий (необязательно)</Label>
             <Textarea
               value={rejectComment}
               onChange={(e) => setRejectComment(e.target.value)}
-              placeholder="Причина отклонения…"
+              placeholder="Почему отклоняете — попадёт в журнал действий…"
               rows={3}
             />
           </div>
@@ -426,7 +500,12 @@ export function PricingRecommendationsPage() {
         open={batchConfirm != null}
         onOpenChange={(o) => { if (!o) setBatchConfirm(null) }}
         title={batchConfirm === 'approve' ? 'Утвердить выбранные?' : 'Отклонить выбранные?'}
-        description={`Действие будет применено к ${selected.size} рекомендациям.`}
+        description={
+          `Действие будет применено к ${selected.size} предложениям` +
+          (batchConfirm === 'approve' && selectedGp > 0
+            ? ` (ожидаемый эффект +${fmtCompact(selectedGp)} ₸/нед). После утверждения скачайте XLSX и загрузите цены в iiko.`
+            : '.')
+        }
         confirmText={batchConfirm === 'approve' ? 'Утвердить' : 'Отклонить'}
         destructive={batchConfirm === 'reject'}
         onConfirm={runBatch}
@@ -436,17 +515,18 @@ export function PricingRecommendationsPage() {
       <ConfirmDialog
         open={generateConfirm}
         onOpenChange={setGenerateConfirm}
-        title="Сгенерировать рекомендации?"
-        description="Оптимизатор пересчитает рекомендации для выбранного подразделения. Старые «новые» рекомендации старше 14 дней будут помечены как истёкшие."
-        confirmText="Сгенерировать"
+        title="Пересчитать предложения?"
+        description="Оптимизатор заново рассчитает выгодные изменения цен для выбранной точки. Прежние непросмотренные предложения будут заменены свежими."
+        confirmText="Пересчитать"
         onConfirm={runGenerate}
       />
-    </div>
+    </>
   )
 }
 
 interface RecRowProps {
   rec: PriceRecommendation
+  fromPath: { fromPath: string }
   expanded: boolean
   onToggleExpand: () => void
   selectable: boolean
@@ -458,7 +538,7 @@ interface RecRowProps {
 }
 
 function RecRow({
-  rec, expanded, onToggleExpand, selectable, checked, onToggleCheck, onApprove, onReject, busy,
+  rec, fromPath, expanded, onToggleExpand, selectable, checked, onToggleCheck, onApprove, onReject, busy,
 }: RecRowProps) {
   const up = (rec.delta_pct ?? 0) >= 0
   const gpUp = (rec.delta_gp ?? 0) >= 0
@@ -471,13 +551,14 @@ function RecRow({
           )}
         </TableCell>
         <TableCell>
-          <button type="button" onClick={onToggleExpand} className="text-muted-foreground">
+          <button type="button" onClick={onToggleExpand} className="text-muted-foreground" title="Почему такая цена">
             {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </button>
         </TableCell>
         <TableCell>
           <Link
             to={`/pricing/position/${rec.product_id}/${rec.department_id}`}
+            state={fromPath}
             className="text-sm font-medium hover:underline"
             style={{ color: 'var(--accent)' }}
           >
@@ -488,31 +569,47 @@ function RecRow({
               variant="outline"
               className="ml-2 align-middle text-[10px]"
               style={{ color: 'var(--info)', borderColor: 'var(--info)' }}
-              title="Контролируемый замер эластичности"
             >
-              Эксперимент
+              <Term tip={GLOSSARY.experiment}>Эксперимент</Term>
             </Badge>
           )}
-          {rec.department_name && (
-            <div className="text-xs text-muted-foreground">{rec.department_name}</div>
-          )}
+          <div className="text-xs text-muted-foreground">
+            {menuRoleLabel(rec.menu_role)}
+            {rec.department_name ? ` · ${rec.department_name}` : ''}
+          </div>
         </TableCell>
-        <TableCell>
-          <Badge variant="outline">{menuRoleLabel(rec.menu_role)}</Badge>
-        </TableCell>
-        <TableCell className="text-right tabular">{formatCurrency(rec.current_price)}</TableCell>
-        <TableCell className="text-right tabular font-medium">{formatCurrency(rec.recommended_price)}</TableCell>
-        <TableCell className="text-right tabular">
-          <span className="inline-flex items-center gap-0.5" style={{ color: up ? 'var(--pos)' : 'var(--neg)' }}>
+        <TableCell className="whitespace-nowrap">
+          <span className="tabular text-sm">
+            <span style={{ color: 'var(--text-subtle)', textDecoration: 'line-through' }}>
+              {formatCurrency(rec.current_price)}
+            </span>
+            <span style={{ color: 'var(--text-subtle)', margin: '0 6px' }}>→</span>
+            <span style={{ fontWeight: 650 }}>{formatCurrency(rec.recommended_price)}</span>
+          </span>
+          <span
+            className="inline-flex items-center gap-0.5 tabular text-xs ml-2"
+            style={{ color: up ? 'var(--pos)' : 'var(--neg)' }}
+          >
             {up ? <ArrowUp size={11} /> : <ArrowDown size={11} />}{fmtPctSigned(rec.delta_pct)}
           </span>
         </TableCell>
-        <TableCell className="text-right tabular" style={{ color: gpUp ? 'var(--pos)' : 'var(--neg)' }}>
-          {rec.delta_gp != null ? formatCurrency(rec.delta_gp) : '—'}
+        <TableCell className="text-right tabular" style={{ color: gpUp ? 'var(--pos)' : 'var(--neg)', fontWeight: 600 }}>
+          {rec.rec_type === 'experiment'
+            ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>замер спроса</span>
+            : rec.delta_gp != null ? `${rec.delta_gp > 0 ? '+' : ''}${formatCurrency(rec.delta_gp)}` : '—'}
         </TableCell>
         <TableCell className="text-center">
-          <span style={{ color: gradeColor(rec.elasticity_grade), fontWeight: 600 }} title={`ε = ${rec.elasticity_used ?? '—'}`}>
-            {rec.elasticity_grade ?? '—'}
+          <span className="inline-flex items-center gap-1.5 text-xs" style={{ fontWeight: 600 }}>
+            <span
+              style={{
+                width: 7, height: 7, borderRadius: 999,
+                background: gradeColor(rec.elasticity_grade), display: 'inline-block',
+              }}
+            />
+            {gradeWord(rec.elasticity_grade)}
+            {rec.elasticity_grade && (
+              <span style={{ color: 'var(--text-subtle)', fontWeight: 500 }}>· {rec.elasticity_grade}</span>
+            )}
           </span>
         </TableCell>
         <TableCell className="text-center">
@@ -535,45 +632,51 @@ function RecRow({
       </TableRow>
       {expanded && (
         <TableRow>
-          <TableCell colSpan={11} className="bg-muted/30">
-            <div className="grid gap-4 p-2 md:grid-cols-2">
+          <TableCell colSpan={8} className="bg-muted/30">
+            <div className="p-2 space-y-3">
               <div>
-                <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">Обоснование (ИИ)</div>
+                <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">
+                  Почему система это предлагает
+                </div>
                 <LlmExplanation rec={rec} />
                 {rec.review_comment && (
-                  <p className="text-xs mt-2"><span className="text-muted-foreground">Комментарий ревью:</span> {rec.review_comment}</p>
+                  <p className="text-xs mt-2">
+                    <span className="text-muted-foreground">Комментарий при решении:</span> {rec.review_comment}
+                  </p>
                 )}
               </div>
-              <div className="text-sm space-y-1">
-                <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">Расчёт</div>
-                <Detail label="Себестоимость (COGS)" value={rec.cogs != null ? formatCurrency(rec.cogs) : '—'} />
-                <Detail
-                  label="Прогноз спроса"
-                  value={`${rec.current_qty_forecast ?? '—'} → ${rec.new_qty_forecast ?? '—'} шт/нед`}
-                />
-                <Detail label="GP" value={`${rec.current_gp != null ? formatCurrency(rec.current_gp) : '—'} → ${rec.expected_gp != null ? formatCurrency(rec.expected_gp) : '—'}`} />
-                <Detail label="Эластичность" value={`${rec.elasticity_used ?? '—'} (grade ${rec.elasticity_grade ?? '—'})`} />
-                {rec.constraints_applied && rec.constraints_applied.length > 0 && (
-                  <div className="flex flex-wrap gap-1 pt-1">
-                    {rec.constraints_applied.map((c) => (
-                      <Badge key={c} variant="secondary" className="text-[10px]">{c}</Badge>
-                    ))}
-                  </div>
-                )}
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <span>Себестоимость <b className="tabular" style={{ color: 'var(--text)' }}>{rec.cogs != null ? formatCurrency(rec.cogs) : '—'}</b></span>
+                <span>Прогноз спроса <b className="tabular" style={{ color: 'var(--text)' }}>{rec.current_qty_forecast ?? '—'} → {rec.new_qty_forecast ?? '—'} шт/нед</b></span>
+                <span>Прибыль/нед <b className="tabular" style={{ color: 'var(--text)' }}>{rec.current_gp != null ? formatCurrency(rec.current_gp) : '—'} → {rec.expected_gp != null ? formatCurrency(rec.expected_gp) : '—'}</b></span>
+                <span>
+                  <Term tip={GLOSSARY.elasticity}>Чувствительность спроса</Term>{' '}
+                  <b className="tabular" style={{ color: 'var(--text)' }}>{rec.elasticity_used ?? '—'}</b>{' '}
+                  ({gradeWord(rec.elasticity_grade)})
+                </span>
+              </div>
+              {rec.constraints_applied && rec.constraints_applied.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-xs text-muted-foreground mr-1">Пройденные ограничения:</span>
+                  {rec.constraints_applied.map((c) => (
+                    <Badge key={c} variant="secondary" className="text-[10px]">✓ {constraintLabel(c)}</Badge>
+                  ))}
+                </div>
+              )}
+              <div>
+                <Link
+                  to={`/pricing/position/${rec.product_id}/${rec.department_id}`}
+                  state={fromPath}
+                  className="text-xs font-medium hover:underline"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Открыть карточку блюда: история цены, кривая спроса, прошлые решения →
+                </Link>
               </div>
             </div>
           </TableCell>
         </TableRow>
       )}
     </>
-  )
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between gap-4">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="tabular">{value}</span>
-    </div>
   )
 }

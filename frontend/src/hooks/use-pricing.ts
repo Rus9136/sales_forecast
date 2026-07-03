@@ -41,13 +41,17 @@ export function useDepartmentWeekly(params: DepartmentWeeklyParams) {
   })
 }
 
-export function useRecommendationsSummary(departmentId?: string) {
+export function useRecommendationsSummary(
+  departmentId?: string,
+  options?: { enabled?: boolean },
+) {
   return useQuery<RecommendationSummary>({
     queryKey: ['pricing', 'recommendations-summary', departmentId],
     queryFn: () =>
       api.get<RecommendationSummary>('/api/pricing-engine/recommendations/summary', {
         department_id: departmentId,
       }),
+    enabled: options?.enabled ?? true,
   })
 }
 
@@ -55,6 +59,12 @@ interface RecommendationFilters {
   department_id?: string
   status?: string
   batch_id?: string
+  /** Серверный поиск по названию блюда (ILIKE по всей базе, не по странице). */
+  search?: string
+  menu_role?: string
+  elasticity_grade?: string
+  /** Серверная сортировка: delta_gp | delta_pct | grade. */
+  sort?: string
   limit?: number
   offset?: number
 }
@@ -67,6 +77,10 @@ export function useRecommendations(filters: RecommendationFilters) {
         department_id: filters.department_id,
         status: filters.status,
         batch_id: filters.batch_id,
+        search: filters.search || undefined,
+        menu_role: filters.menu_role,
+        elasticity_grade: filters.elasticity_grade,
+        sort: filters.sort,
         limit: String(filters.limit ?? 500),
         offset: String(filters.offset ?? 0),
       }),
@@ -365,6 +379,26 @@ export function useBaseline(label?: string) {
 function invalidateOutcomes(qc: ReturnType<typeof useQueryClient>) {
   void qc.invalidateQueries({ queryKey: ['pricing', 'outcomes'] })
   void qc.invalidateQueries({ queryKey: ['pricing', 'outcomes-summary'] })
+}
+
+/** Зафиксировать базу сравнения (baseline) — снимок KPI за N полных недель. */
+export function useFreezeBaseline() {
+  const qc = useQueryClient()
+  return useMutation<
+    { status: string; label?: string; departments?: number; message?: string },
+    Error,
+    { label: string; weeks?: number; force?: boolean }
+  >({
+    mutationFn: ({ label, weeks, force }) =>
+      api.post('/api/pricing-engine/baseline/freeze', undefined, {
+        label,
+        weeks: weeks != null ? String(weeks) : undefined,
+        force: force ? 'true' : undefined,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pricing', 'baseline'] })
+    },
+  })
 }
 
 export function useEvaluateOutcomes() {

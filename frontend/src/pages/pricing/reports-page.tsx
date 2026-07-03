@@ -21,6 +21,7 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import {
   usePricingReports, usePricingReport, useGeneratePricingReport,
 } from '@/hooks/use-pricing'
+import { usePricingScope } from '@/contexts/pricing-context'
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/formatters'
 import { cn } from '@/lib/utils'
 import type { ReportType, PricingReportListItem } from '@/types/pricing'
@@ -48,18 +49,17 @@ function fmtRatioPct(v: number | null | undefined): string {
 }
 
 export function PricingReportsPage() {
+  const { effectiveDepartmentId } = usePricingScope()
   const [typeFilter, setTypeFilter] = useState(ALL)
-  const [deptId, setDeptId] = useState(ALL)
   const [openId, setOpenId] = useState<number | null>(null)
   const [genOpen, setGenOpen] = useState(false)
   const [genType, setGenType] = useState<ReportType>('weekly')
   const [genDept, setGenDept] = useState(ALL)
   const [genResult, setGenResult] = useState<string | null>(null)
 
-  const effectiveDept = deptId === ALL ? undefined : deptId
   const reports = usePricingReports({
     report_type: typeFilter === ALL ? undefined : typeFilter,
-    department_id: effectiveDept,
+    department_id: effectiveDepartmentId,
   })
   const generate = useGeneratePricingReport()
 
@@ -82,13 +82,19 @@ export function PricingReportsPage() {
   if (reports.error) return <ErrorAlert message={(reports.error as Error).message} />
 
   return (
-    <div className="page">
-      <div className="page__header">
-        <div className="page__title">
-          <h1>Отчёты по ценам</h1>
-          <span className="sub">Еженедельные и ежемесячные LLM-сводки по управлению ценами</span>
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div className="seg">
+          {[{ k: ALL, l: 'Все' }, { k: 'weekly', l: 'Недельные' }, { k: 'monthly', l: 'Месячные' }].map((t) => (
+            <button key={t.k} type="button" className={cn(typeFilter === t.k && 'active')} onClick={() => setTypeFilter(t.k)}>
+              {t.l}
+            </button>
+          ))}
         </div>
-        <div className="page__actions">
+        <span className="pricing-hint">
+          ИИ пишет сводку по итогам недели (пн 08:00) и месяца (1-е число): что сработало, что нет.
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <Button variant="outline" onClick={() => reports.refetch()}>
             <RotateCcw className="h-4 w-4 mr-2" /> Обновить
           </Button>
@@ -101,22 +107,6 @@ export function PricingReportsPage() {
       {genResult && (
         <Card><div className="p-3 text-sm"><span className="font-medium">Готово:</span> {genResult}</div></Card>
       )}
-
-      <Card>
-        <div className="p-4 flex flex-wrap items-end gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs">Тип</Label>
-            <div className="seg">
-              {[{ k: ALL, l: 'Все' }, { k: 'weekly', l: 'Недельные' }, { k: 'monthly', l: 'Месячные' }].map((t) => (
-                <button key={t.k} type="button" className={cn(typeFilter === t.k && 'active')} onClick={() => setTypeFilter(t.k)}>
-                  {t.l}
-                </button>
-              ))}
-            </div>
-          </div>
-          <DepartmentSelect value={deptId} onChange={setDeptId} includeInactive />
-        </div>
-      </Card>
 
       {reports.isLoading ? (
         <LoadingSpinner />
@@ -176,7 +166,7 @@ export function PricingReportsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   )
 }
 

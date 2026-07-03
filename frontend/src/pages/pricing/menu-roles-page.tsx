@@ -1,9 +1,8 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { Boxes } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import {
@@ -12,7 +11,6 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { DepartmentSelect } from '@/components/shared/department-select'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ErrorAlert } from '@/components/shared/error-alert'
@@ -20,15 +18,18 @@ import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import {
   useMenuRolesList, useMenuRolesSummary, useOverrideMenuRole, useClusterMenuRoles,
 } from '@/hooks/use-pricing'
+import { usePricingScope } from '@/contexts/pricing-context'
 import { apiErrorMessage } from '@/lib/api-client'
-import { menuRoleLabel, menuRoleColor, MENU_ROLE_LABELS } from '@/lib/pricing-labels'
-import type { SkuMenuRoleItem } from '@/types/pricing'
+import {
+  menuRoleLabel, menuRoleColor, MENU_ROLE_LABELS, MENU_ROLE_DESCRIPTIONS,
+} from '@/lib/pricing-labels'
+import type { MenuRole, SkuMenuRoleItem } from '@/types/pricing'
 
 const ALL = '__all__'
 const KEEP_AUTO = '__auto__'
 const PAGE_SIZE = 200
 
-const ROLE_ORDER = ['premium_anchor', 'margin_driver', 'traffic_driver', 'tail', 'image_rare']
+const ROLE_ORDER: MenuRole[] = ['premium_anchor', 'margin_driver', 'traffic_driver', 'image_rare', 'tail']
 
 function featurePct(features: Record<string, unknown> | null, key: string): string {
   if (!features) return '—'
@@ -37,17 +38,25 @@ function featurePct(features: Record<string, unknown> | null, key: string): stri
   return (v * 100).toFixed(1) + '%'
 }
 
+/** Silhouette → оценка качества словами (метрика ML остаётся в тултипе). */
+function clusterQualityWord(score: number | null | undefined): string {
+  if (score == null || !Number.isFinite(score)) return ''
+  if (score >= 0.4) return 'качество разбиения: хорошее'
+  if (score >= 0.25) return 'качество разбиения: среднее'
+  return 'качество разбиения: слабое — роли стоит просмотреть вручную'
+}
+
 export function PricingMenuRolesPage() {
-  const [deptId, setDeptId] = useState(ALL)
+  const location = useLocation()
+  const { effectiveDepartmentId } = usePricingScope()
   const [roleFilter, setRoleFilter] = useState(ALL)
   const [page, setPage] = useState(0)
   const [clusterConfirm, setClusterConfirm] = useState(false)
   const [clusterResult, setClusterResult] = useState<string | null>(null)
 
-  const effectiveDept = deptId === ALL ? undefined : deptId
-  const summary = useMenuRolesSummary(effectiveDept)
+  const summary = useMenuRolesSummary(effectiveDepartmentId)
   const list = useMenuRolesList({
-    department_id: effectiveDept,
+    department_id: effectiveDepartmentId,
     effective_role: roleFilter === ALL ? undefined : roleFilter,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
@@ -55,13 +64,15 @@ export function PricingMenuRolesPage() {
   const override = useOverrideMenuRole()
   const cluster = useClusterMenuRoles()
 
-  const onFilter = (fn: () => void) => { fn(); setPage(0) }
-
   const items = list.data?.items ?? []
   const total = list.data?.total ?? 0
   const dist = summary.data?.distribution ?? {}
   const distTotal = summary.data?.total ?? 0
-  const maxCount = Math.max(1, ...Object.values(dist))
+
+  const pickRole = (role: string) => {
+    setRoleFilter((prev) => (prev === role ? ALL : role))
+    setPage(0)
+  }
 
   const runCluster = () => {
     setClusterResult(null)
@@ -69,7 +80,9 @@ export function PricingMenuRolesPage() {
       { lookbackDays: 90 },
       {
         onSuccess: (res) => {
-          setClusterResult(`Классифицировано ${res.skus_classified.toLocaleString('ru-RU')} SKU · silhouette ${res.silhouette_score?.toFixed(3) ?? '—'}`)
+          setClusterResult(
+            `Классифицировано ${res.skus_classified.toLocaleString('ru-RU')} позиций · ${clusterQualityWord(res.silhouette_score)}`,
+          )
           setClusterConfirm(false)
         },
       },
@@ -78,19 +91,24 @@ export function PricingMenuRolesPage() {
 
   if (list.error) return <ErrorAlert message={(list.error as Error).message} />
 
+  const fromPath = { fromPath: location.pathname + location.search }
+
   return (
-    <div className="page">
-      <div className="page__header">
-        <div className="page__title">
-          <h1>Роли меню</h1>
-          <span className="sub">Кластеризация позиций по 5 ролям (KMeans) + ручное переопределение</span>
-        </div>
-        <div className="page__actions">
-          <Button variant="outline" onClick={() => setClusterConfirm(true)} disabled={cluster.isPending}>
-            <Boxes className={`h-4 w-4 mr-2 ${cluster.isPending ? 'animate-pulse' : ''}`} />
-            {cluster.isPending ? 'Кластеризация…' : 'Рекластеризация'}
-          </Button>
-        </div>
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span className="pricing-hint">
+          Система сама делит меню на 5 ролей по продажам и марже — роль определяет, насколько
+          смело оптимизатор меняет цену. Ошиблась — переопределите роль вручную прямо в таблице.
+        </span>
+        <Button
+          variant="outline"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => setClusterConfirm(true)}
+          disabled={cluster.isPending}
+        >
+          <Boxes className={`h-4 w-4 mr-2 ${cluster.isPending ? 'animate-pulse' : ''}`} />
+          {cluster.isPending ? 'Пересчёт…' : 'Обновить классификацию'}
+        </Button>
       </div>
 
       {clusterResult && (
@@ -98,53 +116,31 @@ export function PricingMenuRolesPage() {
       )}
       {override.error && <ErrorAlert message={apiErrorMessage(override.error)} title="Не удалось изменить роль" />}
 
-      {/* Distribution */}
-      <div className="card">
-        <div className="card__header">
-          <div>
-            <div className="card__title">Распределение ролей</div>
-            <div className="card__sub">{distTotal.toLocaleString('ru-RU')} позиций × подразделение</div>
-          </div>
-        </div>
-        <div style={{ padding: '14px 16px' }} className="space-y-2">
-          {ROLE_ORDER.map((role) => {
-            const count = dist[role] ?? 0
-            return (
-              <div key={role} className="flex items-center gap-3">
-                <span className="text-sm" style={{ width: 140, color: menuRoleColor(role) }}>
-                  {menuRoleLabel(role)}
-                </span>
-                <div style={{ flex: 1, height: 10, background: 'var(--surface-2)', borderRadius: 5, overflow: 'hidden' }}>
-                  <div style={{ width: `${(count / maxCount) * 100}%`, height: '100%', background: menuRoleColor(role) }} />
-                </div>
-                <span className="tabular text-sm" style={{ width: 64, textAlign: 'right' }}>
-                  {count.toLocaleString('ru-RU')}
-                </span>
-                <span className="tabular text-xs text-muted-foreground" style={{ width: 48, textAlign: 'right' }}>
-                  {distTotal ? ((count / distTotal) * 100).toFixed(0) + '%' : '—'}
+      {/* Карточки ролей: смысл + количество, клик = фильтр */}
+      <div className="role-cards">
+        {ROLE_ORDER.map((role) => {
+          const count = dist[role] ?? 0
+          return (
+            <button
+              key={role}
+              type="button"
+              className={'role-card' + (roleFilter === role ? ' active' : '')}
+              onClick={() => pickRole(role)}
+              title={roleFilter === role ? 'Сбросить фильтр' : 'Показать только эту роль'}
+            >
+              <div className="swatch" style={{ background: menuRoleColor(role) }} />
+              <h5>{MENU_ROLE_LABELS[role]}</h5>
+              <p>{MENU_ROLE_DESCRIPTIONS[role]}</p>
+              <div className="n">
+                {count.toLocaleString('ru-RU')}
+                <span className="pct">
+                  {distTotal ? ((count / distTotal) * 100).toFixed(0) + '%' : ''}
                 </span>
               </div>
-            )
-          })}
-        </div>
+            </button>
+          )
+        })}
       </div>
-
-      {/* Filters */}
-      <Card>
-        <div className="p-4 flex flex-wrap items-end gap-3">
-          <DepartmentSelect value={deptId} onChange={(v) => onFilter(() => setDeptId(v))} includeInactive />
-          <div className="space-y-1">
-            <Label className="text-xs">Роль</Label>
-            <Select value={roleFilter} onValueChange={(v) => onFilter(() => setRoleFilter(v))}>
-              <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>Все роли</SelectItem>
-                {Object.entries(MENU_ROLE_LABELS).map(([k, lbl]) => <SelectItem key={k} value={k}>{lbl}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </Card>
 
       {list.isLoading ? (
         <LoadingSpinner />
@@ -156,8 +152,8 @@ export function PricingMenuRolesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Позиция</TableHead>
-                <TableHead>Авто-роль</TableHead>
-                <TableHead>Эффективная роль</TableHead>
+                <TableHead>Роль (авто)</TableHead>
+                <TableHead>Действующая роль</TableHead>
                 <TableHead className="text-right">Маржа</TableHead>
                 <TableHead className="text-right">Доля выручки</TableHead>
                 <TableHead className="text-right">Доля объёма</TableHead>
@@ -168,6 +164,7 @@ export function PricingMenuRolesPage() {
                 <RoleRow
                   key={`${r.product_id}:${r.department_id}`}
                   row={r}
+                  fromPath={fromPath}
                   busy={override.isPending}
                   onOverride={(manualRole) =>
                     override.mutate({ productId: r.product_id, departmentId: r.department_id, manualRole })
@@ -178,11 +175,11 @@ export function PricingMenuRolesPage() {
           </Table>
           <div className="flex items-center justify-between p-3 text-sm border-t">
             <span className="text-muted-foreground">
-              Показано {items.length} из {total.toLocaleString('ru-RU')} · стр. {page + 1}
+              Всего: {total.toLocaleString('ru-RU')} · стр. {page + 1} из {Math.max(1, Math.ceil(total / PAGE_SIZE))}
             </span>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>←</Button>
-              <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={items.length < PAGE_SIZE}>→</Button>
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={(page + 1) * PAGE_SIZE >= total}>→</Button>
             </div>
           </div>
         </Card>
@@ -191,19 +188,20 @@ export function PricingMenuRolesPage() {
       <ConfirmDialog
         open={clusterConfirm}
         onOpenChange={setClusterConfirm}
-        title="Запустить рекластеризацию?"
-        description="KMeans пересчитает авто-роли по 90-дневному окну. Ручные переопределения сохраняются. Операция тяжёлая (несколько минут)."
-        confirmText="Запустить"
+        title="Обновить классификацию ролей?"
+        description="Система пересчитает роли по продажам за последние 90 дней. Ручные переопределения сохранятся. Обычно классификация обновляется сама каждое воскресенье ночью; пересчёт занимает несколько минут."
+        confirmText="Обновить"
         onConfirm={runCluster}
       />
-    </div>
+    </>
   )
 }
 
 function RoleRow({
-  row, busy, onOverride,
+  row, fromPath, busy, onOverride,
 }: {
   row: SkuMenuRoleItem
+  fromPath: { fromPath: string }
   busy: boolean
   onOverride: (manualRole: string) => void
 }) {
@@ -212,6 +210,7 @@ function RoleRow({
       <TableCell>
         <Link
           to={`/pricing/position/${row.product_id}/${row.department_id}`}
+          state={fromPath}
           className="text-sm font-medium hover:underline"
           style={{ color: 'var(--accent)' }}
         >

@@ -4,6 +4,7 @@
 @import "./styles/tokens.css";
 @import "./styles/shell.css";
 @import "./styles/dashboard.css";
+@import "./styles/pricing.css";
 
 /* Map Tailwind theme tokens to design-token CSS vars so shadcn/ui & Tailwind utilities
    inherit theme/accent without hard-coded hex values. */

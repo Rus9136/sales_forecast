@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppLayout } from '@/components/layout/app-layout'
 import { AuthProvider } from '@/contexts/auth-context'
 import { UIPrefsProvider } from '@/contexts/ui-prefs-context'
+import { PricingProvider } from '@/contexts/pricing-context'
+import { PricingLayout, PricingHomeRedirect } from '@/pages/pricing/pricing-layout'
 import { ProtectedRoute } from '@/components/auth/protected-route'
 import { HomeRedirect } from '@/components/auth/home-redirect'
 import { LoginPage } from '@/pages/login-page'
@@ -89,28 +91,37 @@ export default function App() {
                   <Route element={<ProtectedRoute section="ai.recommendations" />}>
                     <Route path="/ai-recommendations" element={<AIRecommendationsPage />} />
                   </Route>
-                  <Route element={<ProtectedRoute section="pricing.dashboard" />}>
-                    <Route path="/pricing/dashboard" element={<PricingDashboardPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="pricing.recommendations" />}>
-                    <Route path="/pricing/recommendations" element={<PricingRecommendationsPage />} />
+                  <Route
+                    element={
+                      <PricingProvider>
+                        <PricingLayout />
+                      </PricingProvider>
+                    }
+                  >
+                    <Route path="/pricing" element={<PricingHomeRedirect />} />
+                    <Route element={<ProtectedRoute section="pricing.dashboard" />}>
+                      <Route path="/pricing/dashboard" element={<PricingDashboardPage />} />
+                    </Route>
+                    <Route element={<ProtectedRoute section="pricing.recommendations" />}>
+                      <Route path="/pricing/recommendations" element={<PricingRecommendationsPage />} />
+                    </Route>
+                    <Route element={<ProtectedRoute section="pricing.rules" />}>
+                      <Route path="/pricing/rules" element={<PricingRulesPage />} />
+                    </Route>
+                    <Route element={<ProtectedRoute section="pricing.outcomes" />}>
+                      <Route path="/pricing/outcomes" element={<PricingOutcomesPage />} />
+                    </Route>
+                    <Route element={<ProtectedRoute section="pricing.analytics" />}>
+                      <Route path="/pricing/elasticity" element={<PricingElasticityPage />} />
+                      <Route path="/pricing/menu-roles" element={<PricingMenuRolesPage />} />
+                      <Route path="/pricing/audit" element={<PricingAuditPage />} />
+                    </Route>
+                    <Route element={<ProtectedRoute section="pricing.reports" />}>
+                      <Route path="/pricing/reports" element={<PricingReportsPage />} />
+                    </Route>
                   </Route>
                   <Route element={<ProtectedRoute section="pricing.position_detail" />}>
                     <Route path="/pricing/position/:productId/:departmentId" element={<PricingPositionPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="pricing.rules" />}>
-                    <Route path="/pricing/rules" element={<PricingRulesPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="pricing.outcomes" />}>
-                    <Route path="/pricing/outcomes" element={<PricingOutcomesPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="pricing.analytics" />}>
-                    <Route path="/pricing/elasticity" element={<PricingElasticityPage />} />
-                    <Route path="/pricing/menu-roles" element={<PricingMenuRolesPage />} />
-                    <Route path="/pricing/audit" element={<PricingAuditPage />} />
-                  </Route>
-                  <Route element={<ProtectedRoute section="pricing.reports" />}>
-                    <Route path="/pricing/reports" element={<PricingReportsPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="menu.products" />}>
                     <Route path="/menu/products" element={<MenuProductsPage />} />
