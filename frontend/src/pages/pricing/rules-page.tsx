@@ -22,7 +22,9 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import {
   usePricingRules, useCreatePricingRule, useUpdatePricingRule, useDeletePricingRule,
+  useRuleConstraintStats,
 } from '@/hooks/use-pricing'
+import { usePricingScope } from '@/contexts/pricing-context'
 import { useDepartments } from '@/hooks/use-departments'
 import { useProduct } from '@/hooks/use-menu'
 import type { Product } from '@/types/menu'
@@ -247,7 +249,13 @@ function ParamsEditor({
 }
 
 // ── Card for a single global rule ──────────────────────────────────
-function GlobalRuleCard({ ruleType, rule }: { ruleType: string; rule: PricingRule | null }) {
+function GlobalRuleCard({
+  ruleType, rule, impactCount,
+}: {
+  ruleType: string
+  rule: PricingRule | null
+  impactCount?: number
+}) {
   const meta = RULE_META[ruleType]
   const create = useCreatePricingRule()
   const update = useUpdatePricingRule()
@@ -286,6 +294,13 @@ function GlobalRuleCard({ ruleType, rule }: { ruleType: string; rule: PricingRul
         <p className="text-sm" style={{ margin: 0, color: 'var(--text-muted)' }}>
           {humanSummary(ruleType, draft)}
         </p>
+        {impactCount != null && impactCount > 0 && (
+          <p className="text-xs" style={{ margin: 0, color: 'var(--info)', fontWeight: 600 }}>
+            Сейчас сдерживает {impactCount.toLocaleString('ru-RU')}{' '}
+            {impactCount % 10 === 1 && impactCount % 100 !== 11 ? 'новое предложение' : 'новых предложений'}
+            {' '}— без этого правила цены были бы агрессивнее
+          </p>
+        )}
         <div style={{ opacity: rule && !rule.is_active ? 0.5 : 1 }}>
           <ParamsEditor ruleType={ruleType} value={draft} onChange={setDraft} />
         </div>
@@ -399,7 +414,9 @@ function CreateOverrideDialog({ open, onOpenChange }: { open: boolean; onOpenCha
 }
 
 export function PricingRulesPage() {
+  const { effectiveDepartmentId } = usePricingScope()
   const rulesQuery = usePricingRules()
+  const constraintStats = useRuleConstraintStats(effectiveDepartmentId)
   const update = useUpdatePricingRule()
   const del = useDeletePricingRule()
   const [createOpen, setCreateOpen] = useState(false)
@@ -461,6 +478,7 @@ export function PricingRulesPage() {
                 key={`${t}:${globalByType.get(t)?.id ?? 'new'}`}
                 ruleType={t}
                 rule={globalByType.get(t) ?? null}
+                impactCount={constraintStats.data?.by_constraint?.[t]}
               />
             ))}
           </div>

@@ -16,6 +16,7 @@ import type {
   PricingReportListResponse,
   PricingRule,
   RecommendationSummary,
+  RuleConstraintStats,
   ReportType,
   SkuElasticityDetail,
   SkuElasticityListResponse,
@@ -294,6 +295,17 @@ export function usePricingRules() {
   return useQuery<RulesResponse>({
     queryKey: ['pricing', 'rules'],
     queryFn: () => api.get<RulesResponse>('/api/pricing-engine/rules'),
+  })
+}
+
+/** Сколько новых рекомендаций сейчас сдерживает каждое правило (по constraints_applied). */
+export function useRuleConstraintStats(departmentId?: string) {
+  return useQuery<RuleConstraintStats>({
+    queryKey: ['pricing', 'rules-constraint-stats', departmentId],
+    queryFn: () =>
+      api.get<RuleConstraintStats>('/api/pricing-engine/rules/constraint-stats', {
+        department_id: departmentId,
+      }),
   })
 }
 

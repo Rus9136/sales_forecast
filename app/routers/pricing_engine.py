@@ -63,6 +63,38 @@ async def list_rules(
     return {"items": items, "total": len(items)}
 
 
+@router.get("/rules/constraint-stats")
+async def rule_constraint_stats(
+    department_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Сколько открытых (new) рекомендаций сейчас сдерживает каждое правило.
+
+    Считается по price_recommendation.constraints_applied (text[]) — код правила
+    попадает туда, когда ограничение реально урезало кандидата в grid search.
+    """
+    dept_filter = ""
+    params: dict = {}
+    if department_id:
+        dept_filter = "AND pr.department_id = CAST(:dept_id AS uuid)"
+        params["dept_id"] = department_id
+
+    rows = db.execute(
+        text(f"""
+            SELECT c AS code, COUNT(*) AS n
+            FROM price_recommendation pr, unnest(pr.constraints_applied) AS c
+            WHERE pr.status = 'new' {dept_filter}
+            GROUP BY c
+        """),
+        params,
+    ).fetchall()
+    total_new = db.execute(
+        text(f"SELECT COUNT(*) FROM price_recommendation pr WHERE pr.status = 'new' {dept_filter}"),
+        params,
+    ).scalar()
+    return {"by_constraint": {r.code: r.n for r in rows}, "total_new": total_new}
+
+
 @router.post("/rules")
 async def create_rule(
     rule_type: str = Query(...),
@@ -671,6 +703,58 @@ async def list_audit_log(
         {**params, "limit": limit, "offset": offset},
     ).fetchall()
 
+    # Обогащение ссылками на объекты: рекомендация/роль меню → карточка позиции в UI
+    rec_ids: list[int] = []
+    role_pids: list[int] = []
+    for r in rows:
+        if r.entity_type == "recommendation" and r.entity_id and r.entity_id.isdigit():
+            rec_ids.append(int(r.entity_id))
+        elif r.entity_type == "menu_role" and r.entity_id and "/" in r.entity_id:
+            pid = r.entity_id.split("/", 1)[0]
+            if pid.isdigit():
+                role_pids.append(int(pid))
+
+    rec_map: dict = {}
+    if rec_ids:
+        for rr in db.execute(
+            text("""
+                SELECT pr.id, pr.product_id, pr.department_id::text AS department_id,
+                       p.name AS product_name
+                FROM price_recommendation pr
+                JOIN product p ON p.id = pr.product_id
+                WHERE pr.id = ANY(:ids)
+            """),
+            {"ids": rec_ids},
+        ).fetchall():
+            rec_map[rr.id] = rr
+
+    product_names: dict = {}
+    if role_pids:
+        for pr_row in db.execute(
+            text("SELECT id, name FROM product WHERE id = ANY(:ids)"),
+            {"ids": role_pids},
+        ).fetchall():
+            product_names[pr_row.id] = pr_row.name
+
+    def _object_of(r) -> dict:
+        if r.entity_type == "recommendation" and r.entity_id and r.entity_id.isdigit():
+            rr = rec_map.get(int(r.entity_id))
+            if rr is not None:
+                return {
+                    "object_label": rr.product_name,
+                    "object_product_id": rr.product_id,
+                    "object_department_id": rr.department_id,
+                }
+        if r.entity_type == "menu_role" and r.entity_id and "/" in r.entity_id:
+            pid, dept = r.entity_id.split("/", 1)
+            if pid.isdigit():
+                return {
+                    "object_label": product_names.get(int(pid), f"Блюдо #{pid}"),
+                    "object_product_id": int(pid),
+                    "object_department_id": dept,
+                }
+        return {}
+
     items = [
         {
             "id": r.id,
@@ -681,6 +765,7 @@ async def list_audit_log(
             "department_id": r.department_id,
             "details": r.details,
             "created_at": str(r.created_at),
+            **_object_of(r),
         }
         for r in rows
     ]

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { RotateCcw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -51,6 +52,7 @@ function detailsSummary(details: Record<string, unknown> | null): string {
 }
 
 export function PricingAuditPage() {
+  const location = useLocation()
   const { effectiveDepartmentId } = usePricingScope()
   const [entityType, setEntityType] = useState(ALL)
   const [page, setPage] = useState(0)
@@ -68,6 +70,8 @@ export function PricingAuditPage() {
   const total = query.data?.total ?? 0
 
   if (query.error) return <ErrorAlert message={(query.error as Error).message} />
+
+  const fromPath = { fromPath: location.pathname + location.search }
 
   return (
     <>
@@ -117,14 +121,24 @@ export function PricingAuditPage() {
                   <TableCell className="text-sm whitespace-nowrap">{formatDateTime(r.created_at)}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{entityLabel(r.entity_type)}</Badge>
-                    {r.entity_id && (
+                    {r.object_label && r.object_product_id != null && r.object_department_id ? (
+                      <Link
+                        to={`/pricing/position/${r.object_product_id}/${r.object_department_id}`}
+                        state={fromPath}
+                        className="text-xs font-medium ml-2 hover:underline"
+                        style={{ color: 'var(--accent)' }}
+                        title="Открыть карточку позиции"
+                      >
+                        {r.object_label}
+                      </Link>
+                    ) : r.entity_id ? (
                       <span
                         className="text-xs font-mono text-muted-foreground ml-2"
                         title={r.entity_id}
                       >
                         #{r.entity_id.length > 10 ? r.entity_id.slice(0, 10) + '…' : r.entity_id}
                       </span>
-                    )}
+                    ) : null}
                   </TableCell>
                   <TableCell className="text-sm font-medium">{auditActionLabel(r.action)}</TableCell>
                   <TableCell className="text-sm">{r.actor === 'api' ? 'система/API' : (r.actor ?? '—')}</TableCell>

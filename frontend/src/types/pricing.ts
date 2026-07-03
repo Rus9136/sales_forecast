@@ -280,6 +280,16 @@ export interface AuditLogItem {
   department_id: string | null
   details: Record<string, unknown> | null
   created_at: string
+  /** Обогащение бэкенда: объект записи (рекомендация/роль меню) → карточка позиции. */
+  object_label?: string
+  object_product_id?: number
+  object_department_id?: string
+}
+
+/** GET /rules/constraint-stats — сколько новых рекомендаций сдерживает каждое правило. */
+export interface RuleConstraintStats {
+  by_constraint: Record<string, number>
+  total_new: number
 }
 
 export interface AuditLogResponse {
