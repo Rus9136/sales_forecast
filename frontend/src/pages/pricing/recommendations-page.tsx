@@ -29,9 +29,9 @@ import {
   useReviewRecommendation, useBatchReview, useGenerateRecommendations,
 } from '@/hooks/use-pricing'
 import { useAuth } from '@/contexts/auth-context'
-import { apiDownload } from '@/lib/api-client'
+import { apiDownload, apiErrorMessage } from '@/lib/api-client'
 import { formatCurrency } from '@/lib/formatters'
-import { menuRoleLabel, statusLabel, gradeColor, MENU_ROLE_LABELS } from '@/lib/pricing-labels'
+import { menuRoleLabel, statusLabel, statusBadgeVariant, gradeColor, MENU_ROLE_LABELS } from '@/lib/pricing-labels'
 import type { PriceRecommendation } from '@/types/pricing'
 
 const ALL = '__all__'
@@ -40,6 +40,7 @@ const PAGE_SIZE = 200
 const STATUS_TABS: { key: string; label: string }[] = [
   { key: 'new', label: 'Новые' },
   { key: 'approved', label: 'Утверждённые' },
+  { key: 'applied', label: 'Применённые' },
   { key: 'rejected', label: 'Отклонённые' },
   { key: '', label: 'Все' },
 ]
@@ -52,13 +53,6 @@ function fmtPctSigned(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
   const sign = value > 0 ? '+' : ''
   return `${sign}${value.toFixed(1)}%`
-}
-
-function statusBadgeVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  if (s === 'approved') return 'default'
-  if (s === 'rejected') return 'destructive'
-  if (s === 'expired') return 'outline'
-  return 'secondary'
 }
 
 export function PricingRecommendationsPage() {
@@ -229,6 +223,9 @@ export function PricingRecommendationsPage() {
         <Card><CardContent className="p-3 text-sm"><span className="font-medium">Результат:</span> {genResult}</CardContent></Card>
       )}
       {exportError && <ErrorAlert message={`Экспорт не удался: ${exportError}`} />}
+      {reviewMut.error && <ErrorAlert message={apiErrorMessage(reviewMut.error)} title="Ревью не выполнено" />}
+      {batchMut.error && <ErrorAlert message={apiErrorMessage(batchMut.error)} title="Массовое ревью не выполнено" />}
+      {generateMut.error && <ErrorAlert message={apiErrorMessage(generateMut.error)} title="Генерация не выполнена" />}
 
       <Card>
         <CardContent className="p-4">
@@ -486,6 +483,16 @@ function RecRow({
           >
             {rec.product_name ?? `#${rec.product_id}`}
           </Link>
+          {rec.rec_type === 'experiment' && (
+            <Badge
+              variant="outline"
+              className="ml-2 align-middle text-[10px]"
+              style={{ color: 'var(--info)', borderColor: 'var(--info)' }}
+              title="Контролируемый замер эластичности"
+            >
+              Эксперимент
+            </Badge>
+          )}
           {rec.department_name && (
             <div className="text-xs text-muted-foreground">{rec.department_name}</div>
           )}

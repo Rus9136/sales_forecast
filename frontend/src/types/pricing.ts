@@ -7,7 +7,7 @@ export type MenuRole =
 
 export type ElasticityGrade = 'A' | 'B' | 'C' | 'D'
 
-export type RecommendationStatus = 'new' | 'approved' | 'rejected' | 'expired'
+export type RecommendationStatus = 'new' | 'approved' | 'rejected' | 'applied' | 'expired'
 
 export interface DepartmentWeekly {
   department_id: string
@@ -55,9 +55,11 @@ export interface PriceRecommendation {
   menu_role: MenuRole | string | null
   constraints_applied: string[] | null
   llm_explanation?: string | null
+  rec_type: 'optimizer' | 'experiment'
   status: RecommendationStatus
   created_at: string
   reviewed_at?: string | null
+  reviewed_by: string | null
   review_comment?: string | null
 }
 

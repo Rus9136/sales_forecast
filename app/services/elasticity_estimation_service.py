@@ -28,14 +28,17 @@ CONSERVATIVE_CI_FACTOR = 1.2
 
 DATASET_SQL = """
 WITH catalog_week AS (
-    -- For each (product, dept, week) the real menu price valid that week
-    -- (AVG across sizes). Uses sku_catalog_price (orders), NOT derived avg_price.
-    SELECT
+    -- For each (product, dept, week) the real menu price valid that week.
+    -- Берём цену БАЗОВОЙ серии (price_type='BASE', без размера) через
+    -- DISTINCT ON, а не AVG по размерам: добавление/удаление размера меняло
+    -- среднюю без реального изменения цены — фиктивная «вариация», на которой
+    -- OLS оценивал ε. Uses sku_catalog_price (orders), NOT derived avg_price.
+    SELECT DISTINCT ON (sws.product_id, sws.department_id, sws.week_start)
         sws.product_id,
         sws.department_id,
         sws.week_start,
         sws.total_qty,
-        AVG(scp.price) AS price
+        scp.price
     FROM sku_weekly_summary sws
     JOIN sku_catalog_price scp
         ON scp.product_id = sws.product_id
@@ -47,7 +50,9 @@ WITH catalog_week AS (
     WHERE sws.total_qty > 0
       AND sws.week_start >= :from_date
       AND sws.week_start <= :to_date
-    GROUP BY sws.product_id, sws.department_id, sws.week_start, sws.total_qty
+    ORDER BY sws.product_id, sws.department_id, sws.week_start,
+             (scp.price_type <> 'BASE'), (scp.product_size_id IS NOT NULL),
+             scp.product_size_id, scp.id
 ),
 weekly AS (
     SELECT
@@ -98,15 +103,34 @@ ORDER BY w.product_id, w.department_id, w.week_start
 """
 
 GRADE_SQL = """
-WITH variation AS (
-    -- Number of DISTINCT real menu prices (from orders) = price-change signal.
+WITH per_series AS (
+    -- Ценовые «режимы» по временной оси для каждой серии (размер × тип цены):
+    -- 1 + число реальных смен цены (LAG по date_from). Прежний
+    -- COUNT(DISTINCT price) по всем размерам инфлировал грейды: продукт
+    -- с 5 размерами по 5 ПОСТОЯННЫМ ценам получал n_events=5 → Grade A
+    -- без единого реального изменения цены.
     -- Only intervals overlapping the lookback window (date_to > :from_date):
     -- prices that expired before the window carry no usable signal.
-    SELECT product_id, department_id, COUNT(DISTINCT price) AS n_events
-    FROM sku_catalog_price
-    WHERE product_id IS NOT NULL AND price > 0
-      AND date_to > :from_date
-      AND NOT is_stale
+    SELECT product_id, department_id, product_size_id, price_type,
+           1 + COUNT(*) FILTER (
+               WHERE prev_price IS NOT NULL AND price <> prev_price
+           ) AS n_regimes
+    FROM (
+        SELECT product_id, department_id, product_size_id, price_type, price,
+               LAG(price) OVER (
+                   PARTITION BY product_id, department_id, product_size_id, price_type
+                   ORDER BY date_from, id
+               ) AS prev_price
+        FROM sku_catalog_price
+        WHERE product_id IS NOT NULL AND price > 0
+          AND date_to > :from_date
+          AND NOT is_stale
+    ) t
+    GROUP BY product_id, department_id, product_size_id, price_type
+),
+variation AS (
+    SELECT product_id, department_id, MAX(n_regimes) AS n_events
+    FROM per_series
     GROUP BY product_id, department_id
 ),
 sales_span AS (
@@ -128,7 +152,8 @@ FULL OUTER JOIN sales_span s
 
 
 def _assign_grade(n_events: int, n_days: int) -> str:
-    """n_events = number of distinct real menu prices (catalog)."""
+    """n_events = number of price REGIMES over time for the base series
+    (1 + real price changes), not distinct values across sizes."""
     if n_events >= 5 and n_days >= 90:
         return "A"
     if n_events >= 4 and n_days >= 60:
@@ -213,7 +238,7 @@ class ElasticityEstimationService:
     def __init__(self, db: Session):
         self.db = db
 
-    def estimate_all(self, lookback_days: int = 540) -> dict:
+    def estimate_all(self, lookback_days: int = 730) -> dict:
         """Run full 3-level elasticity estimation."""
         from datetime import timedelta
         today = date.today()
@@ -248,13 +273,16 @@ class ElasticityEstimationService:
         group_estimates = self._estimate_groups(df)
         logger.info("Group-level estimates: %d groups", len(group_estimates))
 
-        sku_estimates = self._estimate_sku_level(df, grades_df, group_estimates)
+        sku_estimates, tau_sq_by_group = self._estimate_sku_level(df, grades_df, group_estimates)
         logger.info("SKU-level estimates (Grade A/B): %d", len(sku_estimates))
 
-        results = self._assign_all(df, grades_df, global_est, group_estimates, sku_estimates, version)
+        results = self._assign_all(
+            df, grades_df, global_est, group_estimates, sku_estimates,
+            tau_sq_by_group, version,
+        )
         logger.info("Total elasticity assignments: %d", len(results))
 
-        n_upserted = self._upsert(results)
+        n_upserted = self._upsert(results, version)
         logger.info("Upserted %d elasticity records", n_upserted)
 
         grade_dist = {}
@@ -280,7 +308,8 @@ class ElasticityEstimationService:
         beta, se, r_sq, n, k = _run_ols(X, y, extra_dof)
 
         if beta is None:
-            return {"epsilon": -1.0, "se": 0.5, "r_squared": 0.0, "n": n}
+            # деградация: фейковый prior помечается явно, а не выдаётся за оценку
+            return {"epsilon": -1.0, "se": 0.5, "r_squared": 0.0, "n": n, "degraded": True}
 
         eps_idx = col_names.index("log_price")
         t_crit = stats.t.ppf(0.975, df=max(n - k - extra_dof, 1))
@@ -325,13 +354,20 @@ class ElasticityEstimationService:
         df: pd.DataFrame,
         grades_df: pd.DataFrame,
         group_estimates: dict[str, dict],
-    ) -> dict[tuple, dict]:
+    ) -> tuple[dict[tuple, dict], dict[str, float]]:
         """Two-pass empirical Bayes: raw per-SKU OLS, then shrinkage toward
         the group estimate with tau² from the spread of raw SKU epsilons
-        WITHIN the group (between-SKU heterogeneity)."""
+        WITHIN the group (between-SKU heterogeneity).
+
+        Возвращает (sku_estimates, tau_sq_by_group) — τ² нужна и дальше:
+        консервативный край CI для Grade C/D строится как предиктивный
+        интервал sqrt(SE² + τ²), а не sampling-CI пулированного коэффициента.
+        """
+        # Grade A/B only: SKU-оценка на 3 реальных ценах (Grade C) почти
+        # неизбежно шумная — C планируется по group-уровню с широким CI
         eligible = {
             (int(r["product_id"]), str(r["department_id"]))
-            for _, r in grades_df[grades_df["grade"].isin(["A", "B", "C"])].iterrows()
+            for _, r in grades_df[grades_df["grade"].isin(["A", "B"])].iterrows()
         }
 
         # Pass 1: raw OLS per eligible SKU×dept
@@ -343,6 +379,10 @@ class ElasticityEstimationService:
 
             # одна пара: FE эквивалентен intercept — within не нужен
             X, y, col_names, _ = _build_design_matrix(sdf)
+            # остаточные dof ≥ 10: матрица до ~15 колонок, пары с n чуть выше
+            # MIN_OLS_OBS давали оценки на 1-5 степенях свободы
+            if X.shape[0] - X.shape[1] < 10:
+                continue
             beta, se, r_sq, n, k = _run_ols(X, y)
             if beta is None:
                 continue
@@ -360,14 +400,17 @@ class ElasticityEstimationService:
                 "group_key": sdf["group_key"].iloc[0],
             }
 
-        # tau² per group: var of raw SKU epsilons minus mean sampling variance
+        # tau² per group: var of raw SKU epsilons minus mean sampling variance.
+        # Сырые ε винзоризуются: единичные выбросы (+7, −40) взрывали var,
+        # w→1 и shrinkage отключался ровно на самых шумных группах.
         tau_sq_by_group: dict[str, float] = {}
         by_group: dict[str, list[dict]] = {}
         for est in raw.values():
             by_group.setdefault(est["group_key"], []).append(est)
         for gk, ests in by_group.items():
             if len(ests) >= 2:
-                var_across = float(np.var([e["eps"] for e in ests]))
+                eps_wins = np.clip([e["eps"] for e in ests], -4.0, 1.0)
+                var_across = float(np.var(eps_wins))
                 mean_se_sq = float(np.mean([e["se"] ** 2 for e in ests]))
                 tau_sq_by_group[gk] = max(var_across - mean_se_sq, 0.001)
 
@@ -396,7 +439,7 @@ class ElasticityEstimationService:
                 "group_key": gk,
             }
 
-        return results
+        return results, tau_sq_by_group
 
     def _shrink(
         self,
@@ -420,6 +463,7 @@ class ElasticityEstimationService:
         global_est: dict,
         group_estimates: dict[str, dict],
         sku_estimates: dict[tuple, dict],
+        tau_sq_by_group: dict[str, float],
         version: str,
     ) -> list[dict]:
         pairs = df.groupby(["product_id", "department_id"]).first().reset_index()
@@ -427,6 +471,12 @@ class ElasticityEstimationService:
             (int(r["product_id"]), str(r["department_id"])): (r["grade"], int(r["n_events"]))
             for _, r in grades_df.iterrows()
         }
+
+        # глобальная межгрупповая гетерогенность — fallback τ² для групп,
+        # где SKU-оценок не хватило (и для level='global')
+        group_eps = [g["epsilon"] for g in group_estimates.values()]
+        tau_global_sq = float(np.var(np.clip(group_eps, -4.0, 1.0))) if len(group_eps) >= 2 else 0.25
+        tau_global_sq = max(tau_global_sq, 0.09)  # floor: sd ≥ 0.3
 
         results = []
         for _, row in pairs.iterrows():
@@ -436,7 +486,7 @@ class ElasticityEstimationService:
             gk = row["group_key"]
             grade, n_events = grade_map.get(key, ("D", 0))
 
-            if key in sku_estimates and grade in ("A", "B", "C"):
+            if key in sku_estimates and grade in ("A", "B"):
                 est = sku_estimates[key]
                 level = "sku"
             elif gk in group_estimates:
@@ -452,14 +502,21 @@ class ElasticityEstimationService:
             ci_hi = est.get("ci_upper", eps + 1.96 * se)
 
             if grade in ("C", "D") and level != "sku":
-                ci_width = ci_hi - ci_lo
-                ci_lo = eps - CONSERVATIVE_CI_FACTOR * 0.5 * ci_width
-                ci_hi = eps + CONSERVATIVE_CI_FACTOR * 0.5 * ci_width
-                ci_lo = max(ci_lo, CLAMP_LOWER)
-                ci_hi = min(ci_hi, CLAMP_UPPER)
+                # Предиктивный интервал для КОНКРЕТНОГО SKU: sampling-CI
+                # пулированного коэффициента при n в тысячи имеет ширину ≈ 0,
+                # межпозиционная гетерогенность τ² обязана входить в
+                # консервативный край — иначе ci_lower ≈ mean и «планирование
+                # по консервативному краю» не работает.
+                tau_sq = (
+                    tau_sq_by_group.get(gk, tau_global_sq)
+                    if level == "group" else tau_global_sq
+                )
+                spread = 1.96 * float(np.sqrt(se ** 2 + tau_sq))
+                ci_lo = max(eps - spread, CLAMP_LOWER)
+                ci_hi = min(eps + spread, CLAMP_UPPER)
 
             positive_eps_overridden = None
-            if eps > 0:
+            if eps >= 0:
                 positive_eps_overridden = round(float(eps), 4)
                 eps = -0.1
                 ci_lo = -0.5
@@ -470,6 +527,8 @@ class ElasticityEstimationService:
             diagnostics = {"global_prior": round(global_est["epsilon"], 4)}
             if positive_eps_overridden is not None:
                 diagnostics["positive_eps_overridden"] = positive_eps_overridden
+            if global_est.get("degraded"):
+                diagnostics["global_prior_degraded"] = True
 
             MAX_VAL = 9999.0
             results.append({
@@ -491,7 +550,7 @@ class ElasticityEstimationService:
 
         return results
 
-    def _upsert(self, results: list[dict]) -> int:
+    def _upsert(self, results: list[dict], version: Optional[str] = None) -> int:
         if not results:
             return 0
 
@@ -552,6 +611,17 @@ class ElasticityEstimationService:
             """
             self.db.execute(text(sql), params)
             total += len(chunk)
+
+        if version is not None:
+            # пары, выпавшие из ассортимента/окна, не должны вечно хранить
+            # старую ε: потребители не фильтруют по свежести model_version,
+            # а отсутствие записи даёт честный консервативный fallback −1.0
+            stale = self.db.execute(
+                text("DELETE FROM sku_elasticity WHERE model_version <> :ver"),
+                {"ver": version},
+            )
+            if stale.rowcount:
+                logger.info("Removed %d stale elasticity rows (old model_version)", stale.rowcount)
 
         self.db.commit()
         return total

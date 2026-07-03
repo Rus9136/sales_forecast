@@ -24,15 +24,24 @@ PRICE_HISTORY_UPDATE_SQL = text("""
         FROM sku_daily_sales
         WHERE sale_date >= :from_date AND sale_date <= :to_date
           AND total_qty > 0
+    ),
+    latest_match AS (
+        -- MAX(sale_date): UPDATE ... FROM с несколькими подходящими строками
+        -- недетерминирован — last_seen_date мог встать не на максимальную дату
+        SELECT product_id, department_id, avg_price, MAX(sale_date) AS max_seen
+        FROM daily_prices
+        GROUP BY product_id, department_id, avg_price
     )
     UPDATE sku_price_history sph
-    SET last_seen_date = dp.sale_date
-    FROM daily_prices dp
-    WHERE sph.product_id = dp.product_id
-      AND sph.department_id = dp.department_id
-      AND sph.price = dp.avg_price
-      AND sph.last_seen_date >= dp.sale_date - INTERVAL '7 days'
-      AND dp.sale_date > sph.last_seen_date
+    SET last_seen_date = lm.max_seen
+    FROM latest_match lm
+    WHERE sph.product_id = lm.product_id
+      AND sph.department_id = lm.department_id
+      AND sph.price = lm.avg_price
+      AND lm.max_seen > sph.last_seen_date
+      -- БЕЗ окна давности: условие "last_seen >= sale_date - 7 days" навсегда
+      -- «замораживало» период после паузы в продажах >7 дней (сезонные и
+      -- редкие позиции при неизменной цене выглядели завершёнными)
       AND NOT EXISTS (
           SELECT 1 FROM sku_price_history newer
           WHERE newer.product_id = sph.product_id
@@ -265,7 +274,13 @@ class PricingAnalyticsService:
         return {"updated": updated, "inserted": inserted}
 
     def aggregate_sku_weekly(self, from_date: date, to_date: date) -> dict:
-        """Aggregate sku_daily_sales + receipt_item costs into sku_weekly_summary."""
+        """Aggregate sku_daily_sales + receipt_item costs into sku_weekly_summary.
+
+        from_date принудительно расширяется до понедельника: вызов с середины
+        недели пересчитывал строку недели по половине дней и перетирал
+        корректные значения.
+        """
+        from_date = from_date - timedelta(days=from_date.weekday())
         logger.info("SKU weekly aggregation: %s → %s", from_date, to_date)
         result = self.db.execute(
             SKU_WEEKLY_SQL,
@@ -277,7 +292,9 @@ class PricingAnalyticsService:
         return {"rows_upserted": rows}
 
     def aggregate_department_weekly(self, from_date: date, to_date: date) -> dict:
-        """Aggregate receipt + receipt_item into department_weekly_summary."""
+        """Aggregate receipt + receipt_item into department_weekly_summary.
+        from_date выравнивается на понедельник (см. aggregate_sku_weekly)."""
+        from_date = from_date - timedelta(days=from_date.weekday())
         logger.info("Department weekly aggregation: %s → %s", from_date, to_date)
         result = self.db.execute(
             DEPT_WEEKLY_SQL,

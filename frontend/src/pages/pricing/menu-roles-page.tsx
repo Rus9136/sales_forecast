@@ -20,6 +20,7 @@ import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import {
   useMenuRolesList, useMenuRolesSummary, useOverrideMenuRole, useClusterMenuRoles,
 } from '@/hooks/use-pricing'
+import { apiErrorMessage } from '@/lib/api-client'
 import { menuRoleLabel, menuRoleColor, MENU_ROLE_LABELS } from '@/lib/pricing-labels'
 import type { SkuMenuRoleItem } from '@/types/pricing'
 
@@ -95,6 +96,7 @@ export function PricingMenuRolesPage() {
       {clusterResult && (
         <Card><div className="p-3 text-sm"><span className="font-medium">Готово:</span> {clusterResult}</div></Card>
       )}
+      {override.error && <ErrorAlert message={apiErrorMessage(override.error)} title="Не удалось изменить роль" />}
 
       {/* Distribution */}
       <div className="card">

@@ -223,6 +223,10 @@ class ClaudeEngine(BaseEngine):
             return True  # network-level error, retry
         if status == 529:
             return True
+        if status == 429:
+            # rate limit — транзиентная ошибка: ночной explain-batch бьёт с
+            # конкурентностью 4, без ретрая весь хвост батча мгновенно фейлился
+            return True
         if 500 <= status < 600:
             return True
         if 400 <= status < 500:
@@ -237,6 +241,10 @@ class ClaudeEngine(BaseEngine):
             base = schedule[min(attempt - 1, len(schedule) - 1)]
             jitter = random.uniform(0, 15)
             return base + jitter
+        if status == 429:
+            # rate limit восстанавливается за десятки секунд: 20s, 40s, 80s, cap 120s
+            delay = 20 * (2 ** (attempt - 1))
+            return min(delay + random.uniform(0, 5), 120.0)
         # Generic exponential backoff capped at 30s
         delay = 5 * (2 ** (attempt - 1))
         jitter = random.uniform(0, 1)

@@ -11,7 +11,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..auth import get_api_key_or_bypass
+from ..auth_ui import get_optional_user, user_has_section
 from ..db import get_db
+from ..models.auth_ui import AppUser
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,30 @@ router = APIRouter(
     tags=["pricing-engine"],
     dependencies=[Depends(get_api_key_or_bypass)],
 )
+
+# Коды ошибок статусной машины, транслируемые в HTTP 409 (конфликт состояния)
+_CONFLICT_CODES = {"cycle_cap_exceeded", "expired", "stale_price", "min_frequency",
+                   "stop_list", "label_exists"}
+
+
+def _require_section(user: Optional[AppUser], *sections: str) -> None:
+    """Проверка секции роли для мутаций. user=None (чистый API-token клиент:
+    curl/автоматизация) — допускается, актор аудита будет 'api'."""
+    if user is None:
+        return
+    if not user_has_section(user, *sections):
+        from fastapi import status as _st
+        raise HTTPException(
+            _st.HTTP_403_FORBIDDEN,
+            f"Роль '{user.role_code}' не имеет доступа к разделу: {' / '.join(sections)}",
+        )
+
+
+def _actor_of(user: Optional[AppUser]) -> Optional[str]:
+    if user is None:
+        return None
+    label = user.full_name or user.phone
+    return f"{label} ({user.phone})" if user.full_name else label
 
 
 # ==================== B4: Rules ====================
@@ -44,10 +70,12 @@ async def create_rule(
     scope_id: Optional[str] = None,
     params: str = Query(..., description="JSON string"),
     configured_by_role: Optional[str] = None,
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     import json
     from ..services.pricing_rules_service import PricingRulesService
+    _require_section(user, "pricing.rules")
     try:
         params_dict = json.loads(params)
     except json.JSONDecodeError:
@@ -60,8 +88,8 @@ async def create_rule(
             "scope_type": scope_type,
             "scope_id": scope_id,
             "params": params_dict,
-            "configured_by_role": configured_by_role,
-        })
+            "configured_by_role": (user.role_code if user else configured_by_role),
+        }, actor=_actor_of(user))
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -71,10 +99,12 @@ async def update_rule(
     rule_id: int,
     params: Optional[str] = None,
     is_active: Optional[bool] = None,
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     import json
     from ..services.pricing_rules_service import PricingRulesService
+    _require_section(user, "pricing.rules")
     data = {}
     if params:
         try:
@@ -85,14 +115,25 @@ async def update_rule(
         data["is_active"] = is_active
 
     svc = PricingRulesService(db)
-    return svc.update_rule(rule_id, data)
+    result = svc.update_rule(rule_id, data, actor=_actor_of(user))
+    if result.get("status") == "error":
+        raise HTTPException(404, result.get("message", "Rule not found"))
+    return result
 
 
 @router.delete("/rules/{rule_id}")
-async def delete_rule(rule_id: int, db: Session = Depends(get_db)):
+async def delete_rule(
+    rule_id: int,
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
     from ..services.pricing_rules_service import PricingRulesService
+    _require_section(user, "pricing.rules")
     svc = PricingRulesService(db)
-    return svc.delete_rule(rule_id)
+    result = svc.delete_rule(rule_id, actor=_actor_of(user))
+    if result.get("status") == "error":
+        raise HTTPException(404, result.get("message", "Rule not found"))
+    return result
 
 
 @router.get("/rules/effective/{product_id}/{department_id}")
@@ -208,7 +249,7 @@ async def elasticity_summary(db: Session = Depends(get_db)):
 
 @router.post("/elasticity/estimate")
 def trigger_elasticity_estimation(
-    lookback_days: int = Query(540, ge=90, le=730),
+    lookback_days: int = Query(730, ge=90, le=730),
     background: bool = Query(False, description="true → 202 + job_id, статус через GET /jobs/{id}"),
     db: Session = Depends(get_db),
 ):
@@ -491,15 +532,22 @@ async def review_recommendation(
     status: str = Query(..., description="approved or rejected"),
     comment: Optional[str] = None,
     reviewer_id: Optional[str] = None,
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     if status not in ("approved", "rejected"):
         raise HTTPException(400, "status must be 'approved' or 'rejected'")
+    _require_section(user, "pricing.recommendations")
+    # при наличии сессии reviewer_id берётся из неё — клиентский параметр
+    # подделываем и игнорируется
+    if user is not None:
+        reviewer_id = str(user.id)
     from ..services.price_optimizer_service import PriceOptimizerService
     svc = PriceOptimizerService(db)
-    result = svc.review_recommendation(rec_id, status, reviewer_id, comment)
+    result = svc.review_recommendation(rec_id, status, reviewer_id, comment,
+                                       actor=_actor_of(user))
     if result.get("status") == "error":
-        if result.get("code") == "cycle_cap_exceeded":
+        if result.get("code") in _CONFLICT_CODES:
             raise HTTPException(409, result.get("message"))
         raise HTTPException(404, result.get("message", "Recommendation not found"))
     return result
@@ -511,18 +559,22 @@ async def batch_review_recommendations(
     status: str = Query(..., description="approved or rejected"),
     reviewer_id: Optional[str] = None,
     comment: Optional[str] = None,
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     if status not in ("approved", "rejected"):
         raise HTTPException(400, "status must be 'approved' or 'rejected'")
+    _require_section(user, "pricing.recommendations")
+    if user is not None:
+        reviewer_id = str(user.id)
     from ..services.price_optimizer_service import PriceOptimizerService
     try:
         ids = [int(x.strip()) for x in rec_ids.split(",") if x.strip()]
     except ValueError:
         raise HTTPException(400, "rec_ids must be comma-separated integers")
     svc = PriceOptimizerService(db)
-    result = svc.batch_review(ids, status, reviewer_id, comment)
-    if result.get("status") == "error" and result.get("code") == "cycle_cap_exceeded":
+    result = svc.batch_review(ids, status, reviewer_id, comment, actor=_actor_of(user))
+    if result.get("status") == "error" and result.get("code") in _CONFLICT_CODES:
         raise HTTPException(409, result.get("message"))
     return result
 
@@ -534,13 +586,15 @@ def generate_experiments(
     department_id: str = Query(...),
     n: int = Query(10, ge=1, le=50),
     delta_pct: float = Query(4.0, ge=2.0, le=5.0),
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """Сгенерировать контролируемые ценовые эксперименты для grade C/D SKU.
     Идут обычным циклом approve → applied → outcome; цель — измерение эластичности."""
     from ..services.price_optimizer_service import PriceOptimizerService
+    _require_section(user, "pricing.recommendations", "pricing.outcomes")
     svc = PriceOptimizerService(db)
-    return svc.generate_experiments(department_id, n, delta_pct)
+    return svc.generate_experiments(department_id, n, delta_pct, actor=_actor_of(user))
 
 
 # ==================== Audit log ====================
@@ -606,11 +660,14 @@ async def list_audit_log(
 # ==================== Feedback loop: applied + outcomes + baseline ====================
 
 @router.post("/recommendations/detect-applied")
-def detect_applied_recommendations(db: Session = Depends(get_db)):
+def detect_applied_recommendations(
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
     """Mark approved recs as applied when the catalog shows the recommended price.
     Также выполняется автоматически после ежедневного синка цен (03:20)."""
     from ..services.pricing_feedback_service import PricingFeedbackService
-    return PricingFeedbackService(db).detect_applied()
+    return PricingFeedbackService(db).detect_applied(actor=_actor_of(user) or "api")
 
 
 @router.post("/outcomes/evaluate")
@@ -722,11 +779,19 @@ async def outcomes_summary(
 def freeze_baseline(
     label: str = Query(..., description="Например 'pre-pilot-2026-06'"),
     weeks: int = Query(8, ge=2, le=26),
+    force: bool = Query(False, description="Перезаписать существующий label"),
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Заморозить KPI за N полных недель как базу для метрики пилота."""
+    """Заморозить KPI за N полных недель как базу для метрики пилота.
+    Существующий label без force=true не перезаписывается (409)."""
     from ..services.pricing_feedback_service import PricingFeedbackService
-    return PricingFeedbackService(db).freeze_baseline(label, weeks)
+    _require_section(user, "pricing.outcomes")
+    result = PricingFeedbackService(db).freeze_baseline(label, weeks, force=force,
+                                                        actor=_actor_of(user))
+    if result.get("status") == "error" and result.get("code") in _CONFLICT_CODES:
+        raise HTTPException(409, result.get("message"))
+    return result
 
 
 @router.get("/baseline")

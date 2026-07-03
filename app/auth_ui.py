@@ -99,6 +99,32 @@ def get_current_user(
     return user
 
 
+def get_optional_user(
+    x_session_token: Optional[str] = Header(default=None, alias="X-Session-Token"),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Optional[AppUser]:
+    """Как get_current_user, но без токена возвращает None вместо 401.
+
+    Для мутирующих pricing-эндпоинтов: SPA всегда шлёт X-Session-Token —
+    тогда актор аудита и проверка секции берутся из сессии; чистые
+    API-token клиенты (curl, автоматизация) работают как раньше (actor='api').
+    Невалидный/протухший токен — по-прежнему 401.
+    """
+    token = _extract_token(x_session_token, authorization)
+    if not token:
+        return None
+    return get_current_user(x_session_token, authorization, db)
+
+
+def user_has_section(user: Optional[AppUser], *sections: str) -> bool:
+    """True, если роль пользователя имеет хотя бы одну из секций."""
+    if user is None or user.role is None:
+        return False
+    allowed = set(user.role.allowed_sections or [])
+    return any(s in allowed for s in sections)
+
+
 def require_admin(user: AppUser = Depends(get_current_user)) -> AppUser:
     if user.role_code != "admin":
         raise HTTPException(

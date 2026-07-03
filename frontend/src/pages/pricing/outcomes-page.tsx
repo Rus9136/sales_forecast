@@ -228,7 +228,7 @@ export function PricingOutcomesPage() {
                 </TableHeader>
                 <TableBody>
                   {items.map((o) => {
-                    const hit = (o.actual_delta_gp ?? 0) >= 0
+                    const hit = o.actual_delta_gp != null ? o.actual_delta_gp >= 0 : null
                     return (
                       <TableRow key={o.id}>
                         <TableCell className="text-sm whitespace-nowrap">{formatDate(o.applied_at)}</TableCell>
@@ -250,7 +250,10 @@ export function PricingOutcomesPage() {
                         <TableCell className="text-right tabular">
                           {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
                         </TableCell>
-                        <TableCell className="text-right tabular" style={{ color: hit ? 'var(--pos)' : 'var(--neg)' }}>
+                        <TableCell
+                          className="text-right tabular"
+                          style={{ color: hit == null ? 'var(--text-muted)' : hit ? 'var(--pos)' : 'var(--neg)' }}
+                        >
                           {o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}
                         </TableCell>
                         <TableCell className="text-right tabular">{fmtPctSigned(o.adj_qty_change_pct)}</TableCell>

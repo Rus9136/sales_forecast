@@ -80,7 +80,8 @@ def run_elasticity_update():
     Runs in BackgroundScheduler's thread pool (not the web event loop), so the
     heavy OLS regressions never block the single uvicorn worker. lookback=730d
     covers the full ~24-month sales history so the grade counter sees every
-    price event.
+    price event. 730 — канонический lookback (ручные прогоны с другим окном
+    молча перезаписывали грейды другими значениями).
     """
     logger.info("Starting weekly elasticity estimation")
     db = SessionLocal()
@@ -210,6 +211,9 @@ def run_price_optimization():
             except Exception as e:
                 logger.error("Optimization failed for dept %s: %s", dept_id, e)
                 dept_results[dept_id] = f"error: {e}"
+                # без rollback транзакция остаётся в failed state и все
+                # последующие точки падают с InFailedSqlTransaction
+                db.rollback()
 
         logger.info(
             "Price optimization complete: %d recommendations across %d departments",

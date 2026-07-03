@@ -27,8 +27,9 @@ import {
   useOverrideMenuRole, useSkuRecommendations, useSkuOutcomes,
 } from '@/hooks/use-pricing'
 import { useProduct, useProductRecipe } from '@/hooks/use-menu'
+import { apiErrorMessage } from '@/lib/api-client'
 import {
-  menuRoleLabel, statusLabel, gradeColor, MENU_ROLE_LABELS,
+  menuRoleLabel, statusLabel, statusBadgeVariant, gradeColor, MENU_ROLE_LABELS,
 } from '@/lib/pricing-labels'
 import { formatCurrency, formatDate, toISODate } from '@/lib/formatters'
 import { cn } from '@/lib/utils'
@@ -262,6 +263,11 @@ export function PricingPositionPage() {
         </Select>
         {menuRole.data?.manual_role && (
           <span className="text-xs text-muted-foreground">ручное переопределение</span>
+        )}
+        {overrideRole.error && (
+          <span className="text-xs" style={{ color: 'var(--neg)' }}>
+            Не удалось изменить роль: {apiErrorMessage(overrideRole.error)}
+          </span>
         )}
       </div>
 
@@ -563,7 +569,7 @@ export function PricingPositionPage() {
                             {r.elasticity_grade ?? '—'}
                           </TableCell>
                           <TableCell className="text-center">
-                            <Badge variant={r.status === 'approved' ? 'default' : r.status === 'rejected' ? 'destructive' : r.status === 'expired' ? 'outline' : 'secondary'}>
+                            <Badge variant={statusBadgeVariant(r.status)}>
                               {statusLabel(r.status)}
                             </Badge>
                           </TableCell>
@@ -610,7 +616,7 @@ export function PricingPositionPage() {
                 </TableHeader>
                 <TableBody>
                   {(outcomes.data ?? []).map((o) => {
-                    const hit = (o.actual_delta_gp ?? 0) >= 0
+                    const hit = o.actual_delta_gp != null ? o.actual_delta_gp >= 0 : null
                     return (
                       <TableRow key={o.recommendation_id}>
                         <TableCell className="text-sm">{formatDate(o.applied_at)}</TableCell>
@@ -620,7 +626,10 @@ export function PricingPositionPage() {
                         <TableCell className="text-right tabular">
                           {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
                         </TableCell>
-                        <TableCell className="text-right tabular" style={{ color: hit ? 'var(--pos)' : 'var(--neg)' }}>
+                        <TableCell
+                          className="text-right tabular"
+                          style={{ color: hit == null ? 'var(--text-muted)' : hit ? 'var(--pos)' : 'var(--neg)' }}
+                        >
                           {o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}
                         </TableCell>
                         <TableCell className="text-right tabular">{fmtPctSigned(o.adj_qty_change_pct)}</TableCell>

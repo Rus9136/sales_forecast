@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 EVAL_WINDOW_DAYS = 14
 PRICE_MATCH_TOLERANCE = 0.01
+# детекция applied ограничена окном после approve: цены дискретны (сетка
+# 50/100 KZT, коридор ±5%) — ручное изменение цены через месяцы случайно
+# совпадало с рекомендованной и порождало мусорный outcome
+APPLIED_DETECTION_WINDOW_DAYS = 30
 
 
 def compute_realized_elasticity(
@@ -60,9 +64,16 @@ class PricingFeedbackService:
 
     # -- 1. applied detection -------------------------------------------------
 
-    def detect_applied(self) -> dict:
+    def detect_applied(self, actor: str = "scheduler") -> dict:
         """Mark approved recommendations as applied when the catalog shows
-        a new price interval matching the recommended price."""
+        a new price interval matching the recommended price.
+
+        Детекция ограничена окном APPLIED_DETECTION_WINDOW_DAYS после approve;
+        approved старше окна переводятся в expired — их базис устарел, а позднее
+        совпадение цены почти наверняка не связано с рекомендацией.
+        """
+        from .pricing_audit import log_audit
+
         result = self.db.execute(
             text("""
                 WITH matches AS (
@@ -76,6 +87,7 @@ class PricingFeedbackService:
                         AND NOT scp.is_stale
                         AND ABS(scp.price - pr.recommended_price) <= :tol
                         AND scp.date_from >= pr.reviewed_at::date
+                        AND scp.date_from <= pr.reviewed_at::date + :window
                     WHERE pr.status = 'approved'
                     ORDER BY pr.id, scp.date_from
                 )
@@ -87,17 +99,54 @@ class PricingFeedbackService:
                 WHERE pr.id = m.id
                 RETURNING pr.id
             """),
-            {"tol": PRICE_MATCH_TOLERANCE},
+            {"tol": PRICE_MATCH_TOLERANCE, "window": APPLIED_DETECTION_WINDOW_DAYS},
         )
         applied_ids = [r[0] for r in result.fetchall()]
-        if applied_ids:
-            from .pricing_audit import log_audit
-            for rid in applied_ids:
-                log_audit(self.db, "recommendation", rid, "applied", actor="scheduler")
+        for rid in applied_ids:
+            log_audit(self.db, "recommendation", rid, "applied", actor=actor)
+
+        expired = self.db.execute(
+            text("""
+                UPDATE price_recommendation
+                SET status = 'expired'
+                WHERE status = 'approved'
+                  AND reviewed_at < NOW() - make_interval(days => :window)
+                RETURNING id
+            """),
+            {"window": APPLIED_DETECTION_WINDOW_DAYS},
+        )
+        expired_ids = [r[0] for r in expired.fetchall()]
+        for rid in expired_ids:
+            log_audit(self.db, "recommendation", rid, "expired", actor=actor,
+                      details={"reason": f"approved, not applied within {APPLIED_DETECTION_WINDOW_DAYS}d"})
+
+        # протухшие 'new': точка перестала торговать → ночной оптимизатор её
+        # не супersede'ит, и майские рекомендации вечно висели бы открытыми,
+        # завышая summary. TTL тот же, что и для approved.
+        stale_new = self.db.execute(
+            text("""
+                UPDATE price_recommendation
+                SET status = 'expired'
+                WHERE status = 'new'
+                  AND created_at < NOW() - make_interval(days => :window)
+            """),
+            {"window": APPLIED_DETECTION_WINDOW_DAYS},
+        )
+        expired_new = stale_new.rowcount
+
         self.db.commit()
-        if applied_ids:
-            logger.info("Detected %d applied recommendations: %s", len(applied_ids), applied_ids)
-        return {"status": "ok", "applied": len(applied_ids), "ids": applied_ids}
+        if applied_ids or expired_ids or expired_new:
+            logger.info(
+                "Detected %d applied recommendations: %s; expired %d stale approved, %d stale new",
+                len(applied_ids), applied_ids, len(expired_ids), expired_new,
+            )
+        return {
+            "status": "ok",
+            "applied": len(applied_ids),
+            "ids": applied_ids,
+            "expired_stale_approved": len(expired_ids),
+            "expired_stale_new": expired_new,
+        }
 
     # -- 2. outcome evaluation -------------------------------------------------
 
@@ -122,7 +171,11 @@ class PricingFeedbackService:
         skipped: list[str] = []
         for rec in pending:
             try:
-                outcome = self._evaluate_single(rec, eval_window_days)
+                # SAVEPOINT: ошибка SQL на одном rec переводила транзакцию в
+                # failed state — все последующие итерации и финальный commit
+                # падали, и уже посчитанные outcome-строки ночи терялись
+                with self.db.begin_nested():
+                    outcome = self._evaluate_single(rec, eval_window_days)
                 if outcome:
                     evaluated += 1
                 else:
@@ -260,8 +313,28 @@ class PricingFeedbackService:
 
     # -- 3. baseline freeze ----------------------------------------------------
 
-    def freeze_baseline(self, label: str, weeks: int = 8) -> dict:
-        """Freeze per-department + network KPI over the last N complete ISO weeks."""
+    def freeze_baseline(self, label: str, weeks: int = 8, force: bool = False,
+                        actor: Optional[str] = None) -> dict:
+        """Freeze per-department + network KPI over the last N complete ISO weeks.
+
+        Повторный вызов с существующим label БЕЗ force — ошибка: «замороженная»
+        пред-пилотная база молча пересчитывалась по свежим (пост-пилотным)
+        данным, обнуляя точку отсчёта метрики «ΔGP vs baseline».
+        """
+        existing = self.db.execute(
+            text("SELECT COUNT(*) FROM pricing_baseline_kpi WHERE label = :label"),
+            {"label": label},
+        ).scalar()
+        if existing and not force:
+            return {
+                "status": "error",
+                "code": "label_exists",
+                "message": (
+                    f"Baseline '{label}' уже заморожен ({existing} строк). "
+                    "Перезапись — только с force=true"
+                ),
+            }
+
         today = date.today()
         last_monday = today - timedelta(days=today.weekday())
         baseline_to = last_monday - timedelta(days=1)        # воскресенье прошлой недели
@@ -364,8 +437,8 @@ class PricingFeedbackService:
             {"label": label, "weeks": weeks, "bfrom": baseline_from, "bto": baseline_to},
         )
         from .pricing_audit import log_audit
-        log_audit(self.db, "baseline", label, "freeze",
-                  details={"weeks": weeks, "departments": dept_count,
+        log_audit(self.db, "baseline", label, "freeze", actor=actor,
+                  details={"weeks": weeks, "departments": dept_count, "force": force,
                            "baseline_from": str(baseline_from), "baseline_to": str(baseline_to)})
         self.db.commit()
 

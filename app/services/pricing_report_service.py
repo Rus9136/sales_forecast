@@ -56,6 +56,9 @@ class PricingReportService:
         return {r["status"]: r["n"] for r in rows}
 
     def _outcomes(self, start: date, end: date, dept: Optional[str]) -> dict:
+        # фильтр по created_at (дате появления оценки), не по applied_at:
+        # outcome появляется через 14+ дней после применения, поэтому фильтр
+        # по applied_at за отчётную неделю всегда давал evaluated=0
         r = self.db.execute(
             text(f"""
                 SELECT COUNT(*) AS n,
@@ -64,7 +67,7 @@ class PricingReportService:
                        COUNT(*) FILTER (WHERE actual_delta_gp > 0) AS positive,
                        AVG(realized_elasticity) AS avg_eps
                 FROM price_recommendation_outcome
-                WHERE applied_at BETWEEN :start AND :end
+                WHERE created_at::date BETWEEN :start AND :end
                 {self._dept_clause(dept)}
             """),
             {"start": start, "end": end, "dept": dept},

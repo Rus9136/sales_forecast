@@ -38,6 +38,13 @@ export class ApiError extends Error {
   }
 }
 
+/** Человекочитаемый текст ошибки: detail бека (напр. 409 max_changes_per_cycle) или message. */
+export function apiErrorMessage(err: unknown): string {
+  const detail = (err as { detail?: string })?.detail
+  if (detail) return detail
+  return err instanceof Error ? err.message : String(err)
+}
+
 type SessionExpiredHandler = () => void
 let sessionExpiredHandler: SessionExpiredHandler | null = null
 

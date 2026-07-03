@@ -172,7 +172,7 @@ export function PricingDashboardPage() {
   const sparkAov = current.map((w) => (w.receipts > 0 ? w.revenue / w.receipts : 0))
 
   const byStatus = recSummary.data?.by_status ?? {}
-  const managedCount = byStatus.approved ?? 0
+  const managedCount = (byStatus.approved ?? 0) + (byStatus.applied ?? 0)
   const newCount = byStatus.new ?? 0
   const potentialGp = recSummary.data?.total_delta_gp_new ?? null
 
@@ -396,6 +396,7 @@ export function PricingDashboardPage() {
                   {[
                     { key: 'new', label: 'Новые' },
                     { key: 'approved', label: 'Утверждено' },
+                    { key: 'applied', label: 'Применено' },
                     { key: 'rejected', label: 'Отклонено' },
                     { key: 'expired', label: 'Истекло' },
                   ].map((s) => (

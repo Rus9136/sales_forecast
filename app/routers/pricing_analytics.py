@@ -11,7 +11,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..auth import get_api_key_or_bypass
+from ..auth_ui import get_optional_user, user_has_section
 from ..db import get_db
+from ..models.auth_ui import AppUser
 from ..services.pricing_analytics_service import PricingAnalyticsService
 from ..services.menu_clustering_service import MenuClusteringService
 
@@ -358,10 +360,19 @@ async def update_menu_role(
     product_id: int,
     department_id: str,
     manual_role: Optional[str] = Query(None),
+    user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
+    # FastAPI отдаёт '' (а не None) для ?manual_role= — пустая строка означает
+    # сброс override («Авто»); раньше UI-кнопка «Авто» всегда падала с 400
+    if manual_role == "":
+        manual_role = None
     if manual_role is not None and manual_role not in VALID_ROLES:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(VALID_ROLES))}")
+    if user is not None and not user_has_section(
+        user, "pricing.analytics", "pricing.position_detail",
+    ):
+        raise HTTPException(403, f"Роль '{user.role_code}' не имеет доступа к переопределению ролей меню")
 
     result = db.execute(text("""
         UPDATE sku_menu_role
@@ -374,8 +385,11 @@ async def update_menu_role(
     if not row:
         raise HTTPException(404, "SKU menu role not found")
     from ..services.pricing_audit import log_audit
+    actor = None
+    if user is not None:
+        actor = f"{user.full_name} ({user.phone})" if user.full_name else user.phone
     log_audit(db, "menu_role", f"{product_id}/{department_id}", "override",
-              department_id=department_id,
+              actor=actor, department_id=department_id,
               details={"manual_role": manual_role, "effective_role": row.effective_role})
     db.commit()
     return {"status": "ok", "effective_role": row.effective_role}

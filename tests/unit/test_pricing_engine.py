@@ -297,3 +297,154 @@ class TestRealizedElasticity:
     def test_full_drop_returns_none_eps(self):
         adj, eps = compute_realized_elasticity(-1.0, None, 1000, 1050)
         assert eps is None
+
+
+class TestFailSafeDefaults:
+    """Ревью 2026-07-03: отсутствие строки правила в БД не должно отключать
+    защитные проверки — применяются FAILSAFE_DEFAULTS (fail-safe, не fail-open)."""
+
+    def test_min_margin_enforced_without_rule(self, rules_svc):
+        # маржа 20% при дефолте 60% — блок даже с пустым набором правил
+        ok, violations = rules_svc.check_recommendation(
+            current_price=1000, candidate_price=1000, cogs=800,
+            menu_role="margin_driver", last_change_date=None, rules={},
+        )
+        assert not ok
+        assert any(v.startswith("min_margin") for v in violations)
+
+    def test_max_step_enforced_without_rule(self, rules_svc):
+        ok, violations = rules_svc.check_recommendation(
+            current_price=1000, candidate_price=1200, cogs=100,
+            menu_role="margin_driver", last_change_date=None, rules={},
+        )
+        assert not ok
+        assert any(v.startswith("max_step") for v in violations)
+
+    def test_rounding_enforced_without_rule(self, rules_svc):
+        ok, violations = rules_svc.check_recommendation(
+            current_price=1000, candidate_price=1030, cogs=100,
+            menu_role="margin_driver", last_change_date=None, rules={},
+        )
+        assert not ok
+        assert any(v.startswith("rounding") for v in violations)
+
+    def test_min_frequency_enforced_without_rule(self, rules_svc):
+        ok, violations = rules_svc.check_recommendation(
+            current_price=1000, candidate_price=1050, cogs=100,
+            menu_role="margin_driver",
+            last_change_date=date.today() - timedelta(days=3), rules={},
+        )
+        assert not ok
+        assert any(v.startswith("min_frequency") for v in violations)
+
+    def test_valid_candidate_passes_with_empty_rules(self, rules_svc):
+        ok, violations = rules_svc.check_recommendation(
+            current_price=1000, candidate_price=1050, cogs=100,
+            menu_role="margin_driver", last_change_date=None, rules={},
+        )
+        assert ok, violations
+
+
+class TestPlanningElasticityGlobalLevel:
+    """Global prior (≈ -0.1) не должен уходить в планирование data-poor SKU."""
+
+    def test_global_level_uses_hard_fallback(self):
+        # ci_lower от global prior почти равен mean — планируем не мягче -1.0
+        assert select_planning_elasticity(-0.106, -0.11, "D", "global") == -1.0
+
+    def test_global_level_keeps_more_elastic_ci(self):
+        assert select_planning_elasticity(-0.5, -1.8, "D", "global") == -1.8
+
+    def test_group_level_still_uses_ci(self):
+        assert select_planning_elasticity(-0.2, -0.8, "C", "group") == -0.8
+
+    def test_grade_ab_unaffected_by_level(self):
+        assert select_planning_elasticity(-0.4, -0.9, "A", "global") == -0.4
+
+
+class TestCumulativeCap:
+    """Храповик: цена не выше +15% к цене 90 дней назад."""
+
+    def _sku(self, price_90d):
+        return {
+            "product_id": 1,
+            "product_name": "Test",
+            "current_price": 1000.0,
+            "avg_daily_qty": 100.0,
+            "cogs": 200.0,
+            "elasticity": -0.3,
+            "elasticity_mean": -0.3,
+            "elasticity_grade": "A",
+            "menu_role": "margin_driver",
+            "last_change_date": None,
+            "segment_type": None,
+            "estimation_level": "sku",
+            "price_90d": price_90d,
+            "department_id": "00000000-0000-0000-0000-000000000001",
+        }
+
+    def _patch_rules(self, optimizer, monkeypatch):
+        monkeypatch.setattr(
+            optimizer.rules_service, "get_effective_rules",
+            lambda *a, **k: dict(DEFAULT_RULES),
+        )
+
+    def test_cap_blocks_price_above_cumulative_ceiling(self, optimizer, monkeypatch):
+        self._patch_rules(optimizer, monkeypatch)
+        # 90 дней назад цена была 900 → потолок 1035; неэластичный SKU
+        # без потолка ушёл бы на верх коридора (1050)
+        rec = optimizer._optimize_single(
+            self._sku(price_90d=900.0), "batch", 0.0, date.today(),
+        )
+        if rec is not None:
+            assert rec["recommended_price"] <= 900.0 * 1.15
+            assert "cumulative_cap" in (rec["constraints_applied"] or [])
+
+    def test_no_cap_without_history(self, optimizer, monkeypatch):
+        self._patch_rules(optimizer, monkeypatch)
+        rec = optimizer._optimize_single(
+            self._sku(price_90d=None), "batch", 0.0, date.today(),
+        )
+        assert rec is not None
+        assert rec["recommended_price"] == 1050.0  # верх коридора ±5%
+
+
+class TestDirectionalPlanningElasticity:
+    """Двусторонний пессимизм: вниз — неэластичный край, иначе широкий CI
+    для C/D делает снижение цены ложно привлекательным."""
+
+    def test_down_uses_inelastic_edge_for_cd(self):
+        from app.services.price_optimizer_service import select_planning_elasticity_down
+        assert select_planning_elasticity_down(-1.5, -0.2, "D", "group") == -0.2
+        assert select_planning_elasticity_down(-1.5, -0.2, "C", "group") == -0.2
+
+    def test_down_grade_ab_uses_mean(self):
+        from app.services.price_optimizer_service import select_planning_elasticity_down
+        assert select_planning_elasticity_down(-0.7, -0.2, "A") == -0.7
+
+    def test_down_without_ci_falls_back_near_zero(self):
+        from app.services.price_optimizer_service import select_planning_elasticity_down
+        assert select_planning_elasticity_down(-1.5, None, "D") == -0.1
+
+    def test_optimizer_does_not_recommend_speculative_decrease(self, optimizer, monkeypatch):
+        """Grade D с широким CI: снижение цены не должно выигрывать за счёт
+        сверхэластичного края — вниз планируем по неэластичному краю."""
+        monkeypatch.setattr(
+            optimizer.rules_service, "get_effective_rules",
+            lambda *a, **k: {k2: v for k2, v in DEFAULT_RULES.items() if k2 != "no_decrease_anchor"},
+        )
+        sku = {
+            "product_id": 1, "product_name": "T", "current_price": 1000.0,
+            "avg_daily_qty": 100.0, "cogs": 200.0,
+            "elasticity": -3.0,        # вверх: сверхконсервативно
+            "elasticity_down": -0.2,   # вниз: почти нет отклика
+            "elasticity_mean": -0.4, "elasticity_grade": "D",
+            "menu_role": "margin_driver", "last_change_date": None,
+            "segment_type": None, "estimation_level": "group",
+            "price_90d": None,
+            "department_id": "00000000-0000-0000-0000-000000000001",
+        }
+        rec = optimizer._optimize_single(sku, "batch", 0.0, date.today())
+        # при ε_down=-0.2 снижение цены режет GP → рекомендации быть не должно
+        # (повышение заблокировано ε_up=-3.0)
+        assert rec is None

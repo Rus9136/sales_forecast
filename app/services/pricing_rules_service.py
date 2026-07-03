@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 from typing import Any, Optional
@@ -17,7 +18,27 @@ VALID_RULE_TYPES = {
     "max_changes_per_cycle",
 }
 
+# допустимые scope по типу правила: max_changes_per_cycle читается только
+# get_change_cycle_cap (department/global) — segment/product-строки этого
+# типа молча игнорировались бы
+RULE_TYPE_SCOPES: dict[str, set[str]] = {
+    "max_changes_per_cycle": {"global", "department"},
+}
+VALID_SCOPE_TYPES = {"global", "segment", "department", "product"}
+
 PREMIUM_ROLES = {"premium_anchor", "image_rare"}
+
+# Fail-safe дефолты защитных правил: удаление строки правила из БД раньше
+# МОЛЧА снимало проверку (check пропускал), при этом оптимизатор продолжал
+# применять зашитые дефолты к сетке кандидатов — «система без правил» вела
+# себя как «частично без ограничений». Теперь check при отсутствии строки
+# применяет те же дефолты, что и генератор сетки.
+FAILSAFE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "min_margin": {"value": 0.60},
+    "max_step": {"value": 0.05},
+    "min_frequency": {"days": 14},
+    "rounding": {"step": 50, "flagship_step": 100},
+}
 
 
 class PricingRulesService:
@@ -105,28 +126,33 @@ class PricingRulesService:
         last_change_date: Optional[date],
         rules: dict[str, dict[str, Any]],
     ) -> tuple[bool, list[str]]:
-        """Check a candidate price against all rules. Returns (is_valid, violations)."""
+        """Check a candidate price against all rules. Returns (is_valid, violations).
+
+        Для защитных правил (min_margin/max_step/min_frequency/rounding)
+        отсутствие строки в БД НЕ отключает проверку — применяются
+        FAILSAFE_DEFAULTS (fail-safe, а не fail-open).
+        """
         violations: list[str] = []
 
-        # Rule 1: min_margin
-        r = rules.get("min_margin")
-        if r is not None and cogs is not None and candidate_price > 0:
+        # Rule 1: min_margin (fail-safe)
+        r = rules.get("min_margin", FAILSAFE_DEFAULTS["min_margin"])
+        if cogs is not None and candidate_price > 0:
             min_margin = r.get("value", 0.60)
             margin = (candidate_price - cogs) / candidate_price
             if margin < min_margin:
                 violations.append(f"min_margin: {margin:.2%} < {min_margin:.0%}")
 
-        # Rule 2: max_step
-        r = rules.get("max_step")
-        if r is not None and current_price > 0:
+        # Rule 2: max_step (fail-safe)
+        r = rules.get("max_step", FAILSAFE_DEFAULTS["max_step"])
+        if current_price > 0:
             max_step = r.get("value", 0.05)
             step = abs(candidate_price - current_price) / current_price
             if step > max_step:
                 violations.append(f"max_step: {step:.2%} > {max_step:.0%}")
 
-        # Rule 3: min_frequency
-        r = rules.get("min_frequency")
-        if r is not None and last_change_date:
+        # Rule 3: min_frequency (fail-safe)
+        r = rules.get("min_frequency", FAILSAFE_DEFAULTS["min_frequency"])
+        if last_change_date:
             days_since = (date.today() - last_change_date).days
             min_days = r.get("days", 14)
             if days_since < min_days:
@@ -140,12 +166,11 @@ class PricingRulesService:
 
         # Rule 5: min_competitive_idx — skip in Phase 1 (no competitor data)
 
-        # Rule 6: rounding
-        r = rules.get("rounding")
-        if r is not None:
-            step = r.get("flagship_step", 100) if menu_role in PREMIUM_ROLES else r.get("step", 50)
-            if candidate_price % step != 0:
-                violations.append(f"rounding: {candidate_price} not divisible by {step}")
+        # Rule 6: rounding (fail-safe)
+        r = rules.get("rounding", FAILSAFE_DEFAULTS["rounding"])
+        step = r.get("flagship_step", 100) if menu_role in PREMIUM_ROLES else r.get("step", 50)
+        if candidate_price % step != 0:
+            violations.append(f"rounding: {candidate_price} not divisible by {step}")
 
         # Rule 7: no_psychological
         r = rules.get("no_psychological")
@@ -202,7 +227,7 @@ class PricingRulesService:
             for r in rows
         ]
 
-    def create_rule(self, data: dict) -> dict:
+    def create_rule(self, data: dict, actor: Optional[str] = None) -> dict:
         from .pricing_audit import log_audit
 
         if data["rule_type"] not in VALID_RULE_TYPES:
@@ -210,7 +235,15 @@ class PricingRulesService:
                 f"Invalid rule_type '{data['rule_type']}'. "
                 f"Must be one of: {', '.join(sorted(VALID_RULE_TYPES))}"
             )
-        self.db.execute(
+        if data["scope_type"] not in VALID_SCOPE_TYPES:
+            raise ValueError(f"Invalid scope_type '{data['scope_type']}'")
+        allowed_scopes = RULE_TYPE_SCOPES.get(data["rule_type"])
+        if allowed_scopes and data["scope_type"] not in allowed_scopes:
+            raise ValueError(
+                f"rule_type '{data['rule_type']}' allows scopes: "
+                f"{', '.join(sorted(allowed_scopes))}"
+            )
+        row = self.db.execute(
             text("""
                 INSERT INTO pricing_rule
                     (rule_type, scope_type, scope_id, params, configured_by_role,
@@ -218,29 +251,31 @@ class PricingRulesService:
                 VALUES (:rule_type, :scope_type, :scope_id, CAST(:params AS jsonb),
                         :configured_by_role, COALESCE(:effective_from, CURRENT_DATE),
                         :effective_to)
+                RETURNING id
             """),
             {
                 "rule_type": data["rule_type"],
                 "scope_type": data["scope_type"],
                 "scope_id": data.get("scope_id"),
-                "params": __import__("json").dumps(data["params"]),
+                "params": json.dumps(data["params"]),
                 "configured_by_role": data.get("configured_by_role"),
                 "effective_from": data.get("effective_from"),
                 "effective_to": data.get("effective_to"),
             },
-        )
-        log_audit(self.db, "rule", None, "create",
+        ).fetchone()
+        rule_id = row[0]
+        log_audit(self.db, "rule", rule_id, "create", actor=actor,
                   details={"rule_type": data["rule_type"], "scope_type": data["scope_type"],
                            "scope_id": data.get("scope_id"), "params": data["params"]})
         self.db.commit()
-        return {"status": "ok"}
+        return {"status": "ok", "id": rule_id}
 
-    def update_rule(self, rule_id: int, data: dict) -> dict:
+    def update_rule(self, rule_id: int, data: dict, actor: Optional[str] = None) -> dict:
         sets = ["updated_at = NOW()"]
         params: dict[str, Any] = {"id": rule_id}
         if "params" in data and data["params"] is not None:
             sets.append("params = CAST(:params AS jsonb)")
-            params["params"] = __import__("json").dumps(data["params"])
+            params["params"] = json.dumps(data["params"])
         if "is_active" in data and data["is_active"] is not None:
             sets.append("is_active = :is_active")
             params["is_active"] = data["is_active"]
@@ -251,17 +286,20 @@ class PricingRulesService:
             sets.append("effective_to = :effective_to")
             params["effective_to"] = data["effective_to"]
 
-        self.db.execute(
+        result = self.db.execute(
             text(f"UPDATE pricing_rule SET {', '.join(sets)} WHERE id = :id"),
             params,
         )
+        if result.rowcount == 0:
+            self.db.rollback()
+            return {"status": "error", "message": f"Rule {rule_id} not found"}
         from .pricing_audit import log_audit
-        log_audit(self.db, "rule", rule_id, "update",
+        log_audit(self.db, "rule", rule_id, "update", actor=actor,
                   details={k: v for k, v in data.items() if v is not None})
         self.db.commit()
         return {"status": "ok"}
 
-    def delete_rule(self, rule_id: int) -> dict:
+    def delete_rule(self, rule_id: int, actor: Optional[str] = None) -> dict:
         from .pricing_audit import log_audit
 
         # Hard delete: soft-deleted строки блокировали повторное создание
@@ -277,7 +315,7 @@ class PricingRulesService:
         if deleted is None:
             self.db.rollback()
             return {"status": "error", "message": f"Rule {rule_id} not found"}
-        log_audit(self.db, "rule", rule_id, "delete",
+        log_audit(self.db, "rule", rule_id, "delete", actor=actor,
                   details={"rule_type": deleted[0], "scope_type": deleted[1],
                            "scope_id": deleted[2], "params": deleted[3]})
         self.db.commit()

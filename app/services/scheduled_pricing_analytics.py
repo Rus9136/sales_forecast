@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 def run_pricing_analytics_aggregation():
-    """Daily aggregation: price history (last 3 days) + weekly summaries (current + prev week)."""
+    """Daily aggregation: price history (last 8 days) + weekly summaries (current + prev week).
+
+    Окно price history = 8 дней ≥ окна receipts gap check (7 дней): дозалитые
+    задним числом чеки раньше не попадали в историю цен (окно было 3 дня).
+    """
     logger.info("Scheduler triggered: pricing analytics aggregation")
     try:
         db = next(get_db())
@@ -23,7 +27,7 @@ def run_pricing_analytics_aggregation():
             svc = PricingAnalyticsService(db)
             today = date.today()
 
-            price_from = today - timedelta(days=3)
+            price_from = today - timedelta(days=8)
             r1 = svc.aggregate_price_history(price_from, today)
 
             from_monday = today - timedelta(days=today.weekday() + 7)

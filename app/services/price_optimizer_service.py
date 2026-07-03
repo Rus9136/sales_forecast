@@ -18,24 +18,64 @@ logger = logging.getLogger(__name__)
 MIN_GP_THRESHOLD = 500.0
 DEFAULT_ELASTICITY = -0.5
 CONSERVATIVE_FALLBACK_ELASTICITY = -1.0
+# кумулятивный потолок: цена не выше +15% к цене 90 дней назад — иначе
+# монотонная модель qty=q0·ratio^ε с ре-базированием на новую цену даёт
+# «храповик» +max_step каждые min_frequency дней без ограничения
+CUMULATIVE_CAP_PCT = 0.15
+CUMULATIVE_CAP_WINDOW_DAYS = 90
+# approved-рекомендация без применения протухает: базис (цена/COGS/эластичность)
+# устаревает, а детекция applied без TTL ловила совпадения через полгода
+APPROVED_TTL_DAYS = 30
 
 
 def select_planning_elasticity(
     mean: float, ci_lower: Optional[float], grade: str,
+    estimation_level: Optional[str] = None,
 ) -> float:
     """Elasticity used for planning expected qty/GP.
 
     Grade A/B — точечная оценка надёжна. Grade C/D — оценка в основном
     заимствована (group/global), точечная ε почти не информативна, поэтому
     планируем по консервативному краю CI (наиболее эластичный сценарий):
-    завышенные ΔGP от «слепого» prior не проходят порог. Без записи
-    эластичности — жёсткий консервативный fallback.
+    завышенные ΔGP от «слепого» prior не проходят порог.
+
+    estimation_level='global' — про SKU не известно ничего: global prior
+    почти нулевой (≈ −0.1) делал data-poor позиции «неэластичными» и толкал
+    их к верху коридора. Планируем не мягче жёсткого fallback −1.0 — как для
+    SKU вовсе без записи эластичности.
     """
     if grade in ("A", "B"):
         return mean
+    if estimation_level == "global":
+        candidate = ci_lower if ci_lower is not None else mean
+        return min(candidate, CONSERVATIVE_FALLBACK_ELASTICITY)
     if ci_lower is not None:
         return ci_lower
     return min(mean, CONSERVATIVE_FALLBACK_ELASTICITY)
+
+
+# «почти нет отклика спроса» — пессимизм для снижения цены без данных
+CONSERVATIVE_DOWN_ELASTICITY = -0.1
+
+
+def select_planning_elasticity_down(
+    mean: float, ci_upper: Optional[float], grade: str,
+    estimation_level: Optional[str] = None,
+) -> float:
+    """Планирующая ε для КАНДИДАТОВ НИЖЕ текущей цены.
+
+    Консервативность двусторонняя: для повышений пессимизм — эластичный край
+    (ci_lower), но для снижений тот же край наоборот РАЗДУВАЕТ ожидаемый рост
+    qty и делает снижение цены ложно привлекательным. Для снижений пессимизм —
+    НЕэластичный край (ci_upper, ближе к нулю): скидка почти не приводит
+    покупателей → GP от снижения падает → спекулятивные снижения на слабых
+    грейдах не проходят порог ΔGP.
+    """
+    if grade in ("A", "B"):
+        return mean
+    if ci_upper is not None:
+        return min(ci_upper, 0.0)
+    return max(mean, CONSERVATIVE_DOWN_ELASTICITY)
 
 
 class PriceOptimizerService:
@@ -53,6 +93,13 @@ class PriceOptimizerService:
         today = date.today()
         errors: list[str] = []
 
+        # сериализуем генерацию по точке: ручной POST конкурентно с ночным
+        # джобом (или двойной клик) давал два батча и дубли 'new' на SKU
+        self.db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('pricing_gen:' || :d))"),
+            {"d": department_id},
+        )
+
         skus = self._load_sku_data(department_id)
         if not skus:
             return {
@@ -66,28 +113,61 @@ class PriceOptimizerService:
 
         self._supersede_open_recommendations(department_id)
         experiment_products = self._open_experiment_products(department_id)
+        pending_products = self._pending_review_products(department_id)
 
         created = 0
         skipped_no_cogs = 0
+        skipped_pending = 0
         for sku in skus:
             try:
                 if sku["product_id"] in experiment_products:
                     continue  # идёт эксперимент — не загрязняем измерение
+                if sku["product_id"] in pending_products:
+                    skipped_pending += 1  # есть approved/недооценённая applied
+                    continue
                 if sku["cogs"] is None:
                     skipped_no_cogs += 1
                     continue
-                rec = self._optimize_single(sku, batch_id, min_gp_threshold, today)
-                if rec:
-                    self._insert_recommendation(rec)
-                    created += 1
+                # SAVEPOINT: сбой SQL на одном SKU не абортит транзакцию всего
+                # батча (иначе остальные итерации падали InFailedSqlTransaction)
+                with self.db.begin_nested():
+                    rec = self._optimize_single(sku, batch_id, min_gp_threshold, today)
+                    if rec:
+                        self._insert_recommendation(rec)
+                        created += 1
             except Exception as e:
                 errors.append(f"SKU {sku['product_id']}: {e}")
                 logger.warning("Optimization error for SKU %s: %s", sku["product_id"], e)
 
+        # переносим LLM-объяснение с только что замещённой рекомендации, если
+        # содержание не изменилось — иначе каждая ночь заново жгла ~150-200
+        # вызовов Claude на неизменные рекомендации
+        self.db.execute(
+            text("""
+                UPDATE price_recommendation new_r
+                SET llm_explanation = old_r.llm_explanation
+                FROM price_recommendation old_r
+                WHERE new_r.batch_id = CAST(:batch_id AS uuid)
+                  AND new_r.llm_explanation IS NULL
+                  AND old_r.id = (
+                      SELECT o.id FROM price_recommendation o
+                      WHERE o.product_id = new_r.product_id
+                        AND o.department_id = new_r.department_id
+                        AND o.status = 'expired'
+                        AND o.llm_explanation IS NOT NULL
+                        AND o.recommended_price = new_r.recommended_price
+                        AND o.current_price = new_r.current_price
+                      ORDER BY o.id DESC LIMIT 1
+                  )
+            """),
+            {"batch_id": batch_id},
+        )
+
         self.db.commit()
         logger.info(
-            "Optimization for dept %s: %d recommendations from %d SKUs (%d skipped: no COGS)",
-            department_id, created, len(skus), skipped_no_cogs,
+            "Optimization for dept %s: %d recommendations from %d SKUs "
+            "(%d skipped: no COGS, %d skipped: pending review)",
+            department_id, created, len(skus), skipped_no_cogs, skipped_pending,
         )
 
         return {
@@ -96,6 +176,7 @@ class PriceOptimizerService:
             "recommendations_created": created,
             "skus_processed": len(skus),
             "skipped_no_cogs": skipped_no_cogs,
+            "skipped_pending_review": skipped_pending,
             "batch_id": batch_id,
             "errors": errors,
         }
@@ -124,9 +205,13 @@ class PriceOptimizerService:
                     GROUP BY product_id
                 ),
                 catalog_now AS (
-                    SELECT product_id,
-                        ROUND(AVG(price), 2) AS catalog_price,
-                        MAX(date_from) AS last_change_date
+                    -- цена БАЗОВОЙ серии (BASE, без размера), не AVG по
+                    -- размерам/прайс-категориям: среднее — несуществующая цена,
+                    -- detect_applied по ней никогда не матчился
+                    SELECT DISTINCT ON (product_id)
+                        product_id,
+                        price AS catalog_price,
+                        date_from AS last_change_date
                     FROM sku_catalog_price
                     WHERE department_id = CAST(:dept_id AS uuid)
                       AND product_id IS NOT NULL
@@ -134,7 +219,23 @@ class PriceOptimizerService:
                       AND NOT is_stale
                       AND date_from <= CURRENT_DATE
                       AND date_to > CURRENT_DATE
-                    GROUP BY product_id
+                    ORDER BY product_id, (price_type <> 'BASE'),
+                             (product_size_id IS NOT NULL), product_size_id, id
+                ),
+                price_90 AS (
+                    -- цена базовой серии 90 дней назад — база кумулятивного
+                    -- потолка (+15% за окно)
+                    SELECT DISTINCT ON (product_id)
+                        product_id, price AS price_90d
+                    FROM sku_catalog_price
+                    WHERE department_id = CAST(:dept_id AS uuid)
+                      AND product_id IS NOT NULL
+                      AND price > 0
+                      AND NOT is_stale
+                      AND date_from <= CURRENT_DATE - :cum_window
+                      AND date_to > CURRENT_DATE - :cum_window
+                    ORDER BY product_id, (price_type <> 'BASE'),
+                             (product_size_id IS NOT NULL), product_size_id, id
                 ),
                 recent_cost AS (
                     SELECT sws.product_id,
@@ -156,11 +257,15 @@ class PriceOptimizerService:
                     COALESCE(se.reliability_grade, 'D') AS elasticity_grade,
                     COALESCE(smr.effective_role, 'unknown') AS menu_role,
                     cn.last_change_date,
-                    d.segment_type
+                    d.segment_type,
+                    se.estimation_level,
+                    p90.price_90d,
+                    se.elasticity_ci_upper
                 FROM recent_sales rs
                 JOIN product p ON p.id = rs.product_id
                 JOIN departments d ON d.id = CAST(:dept_id AS uuid)
                 LEFT JOIN catalog_now cn ON cn.product_id = rs.product_id
+                LEFT JOIN price_90 p90 ON p90.product_id = rs.product_id
                 LEFT JOIN recent_cost rc ON rc.product_id = rs.product_id
                 LEFT JOIN sku_elasticity se
                     ON se.product_id = rs.product_id
@@ -171,7 +276,11 @@ class PriceOptimizerService:
                 WHERE COALESCE(cn.catalog_price, rs.derived_price) > 0
                 ORDER BY COALESCE(cn.catalog_price, rs.derived_price) * rs.avg_daily_qty DESC
             """),
-            {"dept_id": department_id, "default_eps": DEFAULT_ELASTICITY},
+            {
+                "dept_id": department_id,
+                "default_eps": DEFAULT_ELASTICITY,
+                "cum_window": CUMULATIVE_CAP_WINDOW_DAYS,
+            },
         ).fetchall()
 
         skus = []
@@ -179,18 +288,23 @@ class PriceOptimizerService:
             mean = float(r[5])
             ci_lower = float(r[6]) if r[6] is not None else None
             grade = r[7]
+            estimation_level = r[11]
+            ci_upper = float(r[13]) if r[13] is not None else None
             skus.append({
                 "product_id": r[0],
                 "product_name": r[1],
                 "current_price": float(r[2]),
                 "avg_daily_qty": float(r[3]),
                 "cogs": float(r[4]) if r[4] is not None else None,
-                "elasticity": select_planning_elasticity(mean, ci_lower, grade),
+                "elasticity": select_planning_elasticity(mean, ci_lower, grade, estimation_level),
+                "elasticity_down": select_planning_elasticity_down(mean, ci_upper, grade, estimation_level),
                 "elasticity_mean": mean,
                 "elasticity_grade": grade,
                 "menu_role": r[8],
                 "last_change_date": r[9],
                 "segment_type": r[10],
+                "estimation_level": estimation_level,
+                "price_90d": float(r[12]) if r[12] is not None else None,
                 "department_id": department_id,
             })
         return skus
@@ -205,7 +319,8 @@ class PriceOptimizerService:
         """Find optimal price for a single SKU via grid search."""
         current_price = sku["current_price"]
         cogs = sku["cogs"]
-        elasticity = sku["elasticity"]
+        elasticity = sku["elasticity"]  # пессимизм для повышений (эластичный край)
+        elasticity_down = sku.get("elasticity_down", elasticity)  # пессимизм для снижений
         menu_role = sku["menu_role"]
         q_base = sku["avg_daily_qty"] * 7  # weekly qty
 
@@ -227,13 +342,23 @@ class PriceOptimizerService:
 
         current_gp = self._compute_gp(current_price, current_price, cogs, q_base, elasticity)
 
+        # кумулятивный потолок: не выше +15% к цене 90 дней назад
+        cum_cap_price = None
+        if sku.get("price_90d"):
+            cum_cap_price = sku["price_90d"] * (1 + CUMULATIVE_CAP_PCT)
+
         best_price = current_price
         best_gp = current_gp
         best_qty = q_base
+        best_eps = elasticity
         binding_constraints: set[str] = set()
 
         for p in candidates:
             if p == current_price:
+                continue
+
+            if cum_cap_price is not None and p > cum_cap_price:
+                binding_constraints.add("cumulative_cap")
                 continue
 
             is_valid, violations = self.rules_service.check_recommendation(
@@ -244,11 +369,14 @@ class PriceOptimizerService:
                 binding_constraints.update(v.split(":", 1)[0] for v in violations)
                 continue
 
-            gp, qty = self._compute_gp_and_qty(p, current_price, cogs, q_base, elasticity)
+            # двусторонний пессимизм: вверх — эластичный край, вниз — неэластичный
+            eps = elasticity if p > current_price else elasticity_down
+            gp, qty = self._compute_gp_and_qty(p, current_price, cogs, q_base, eps)
             if gp > best_gp:
                 best_price = p
                 best_gp = gp
                 best_qty = qty
+                best_eps = eps
 
         if best_price == current_price:
             return None
@@ -277,7 +405,7 @@ class PriceOptimizerService:
             "current_gp": round(current_gp, 2),
             "expected_gp": round(best_gp, 2),
             "delta_gp": round(delta_gp, 2),
-            "elasticity_used": sku["elasticity"],
+            "elasticity_used": best_eps,
             "elasticity_grade": sku["elasticity_grade"],
             "menu_role": menu_role,
             "constraints_applied": applied if applied else None,
@@ -369,6 +497,7 @@ class PriceOptimizerService:
         department_id: str,
         n: int = 10,
         delta_pct: float = 4.0,
+        actor: Optional[str] = None,
     ) -> dict:
         """Предложить контролируемые изменения цены для ИЗМЕРЕНИЯ эластичности.
 
@@ -464,7 +593,7 @@ class PriceOptimizerService:
                             "current_price": current_price, "target_price": float(target)})
 
         log_audit(self.db, "experiment", batch_id, "generate",
-                  department_id=department_id,
+                  actor=actor, department_id=department_id,
                   details={"n_requested": n, "n_created": len(created), "delta_pct": delta_pct})
         self.db.commit()
 
@@ -513,6 +642,29 @@ class PriceOptimizerService:
         ).fetchall()
         return {r[0] for r in rows}
 
+    def _pending_review_products(self, department_id: str) -> set[int]:
+        """SKUs с pending approved или applied-без-outcome рекомендацией.
+
+        Новая генерация для них создавала вторую живую рекомендацию: менеджер
+        мог утвердить оба повышения подряд, а detect_applied помечал applied
+        обе — двойной outcome и задвоение summary.
+        """
+        rows = self.db.execute(
+            text("""
+                SELECT DISTINCT pr.product_id FROM price_recommendation pr
+                WHERE pr.department_id = CAST(:dept_id AS uuid)
+                  AND (
+                      pr.status = 'approved'
+                      OR (pr.status = 'applied' AND NOT EXISTS (
+                          SELECT 1 FROM price_recommendation_outcome o
+                          WHERE o.recommendation_id = pr.id
+                      ))
+                  )
+            """),
+            {"dept_id": department_id},
+        ).fetchall()
+        return {r[0] for r in rows}
+
     def _cycle_cap_remaining(self, department_id: str) -> Optional[dict]:
         """Сколько изменений ещё можно утвердить в текущем окне для точки.
         → {'cap', 'window_days', 'used', 'remaining'} или None (правило не задано)."""
@@ -537,27 +689,49 @@ class PriceOptimizerService:
 
     def review_recommendation(
         self, rec_id: int, status: str, reviewer_id: Optional[str] = None,
-        comment: Optional[str] = None,
+        comment: Optional[str] = None, actor: Optional[str] = None,
     ) -> dict:
         from .pricing_audit import log_audit
 
         if status not in ("approved", "rejected"):
             return {"status": "error", "message": "Status must be 'approved' or 'rejected'"}
 
+        # FOR UPDATE: без блокировки конкурентный ревью/супersede между SELECT
+        # и UPDATE давал «тихий успех» на 0 строк с фантомной audit-записью
         row = self.db.execute(
-            text("SELECT department_id::text FROM price_recommendation WHERE id = :id AND status = 'new'"),
+            text("""
+                SELECT id, department_id::text, product_id, status, created_at,
+                       current_price
+                FROM price_recommendation WHERE id = :id FOR UPDATE
+            """),
             {"id": rec_id},
         ).fetchone()
         if not row:
+            self.db.rollback()
+            return {"status": "error", "message": f"Recommendation {rec_id} not found"}
+        if row.status != "new":
+            self.db.rollback()
             return {
                 "status": "error",
-                "message": f"Recommendation {rec_id} not found or not in 'new' status",
+                "message": f"Recommendation {rec_id} is not in 'new' status (current: {row.status})",
             }
-        department_id = row[0]
+        department_id = row[1]
 
         if status == "approved":
+            revalidation_error = self._revalidate_for_approve(row, department_id)
+            if revalidation_error:
+                self.db.commit()  # фиксируем возможную авто-экспирацию
+                return revalidation_error
+
+            # cap-проверка + UPDATE атомарны только под блокировкой по точке:
+            # два конкурентных approve по разным rec'ам совместно пробивали лимит
+            self.db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('pricing_review:' || :d))"),
+                {"d": department_id},
+            )
             cap = self._cycle_cap_remaining(department_id)
             if cap and cap["remaining"] < 1:
+                self.db.rollback()
                 return {
                     "status": "error",
                     "code": "cycle_cap_exceeded",
@@ -567,7 +741,7 @@ class PriceOptimizerService:
                     ),
                 }
 
-        self.db.execute(
+        result = self.db.execute(
             text("""
                 UPDATE price_recommendation
                 SET status = :status,
@@ -578,17 +752,89 @@ class PriceOptimizerService:
             """),
             {"id": rec_id, "status": status, "reviewer_id": reviewer_id, "comment": comment},
         )
+        if result.rowcount != 1:
+            self.db.rollback()
+            return {"status": "error", "message": f"Recommendation {rec_id} was modified concurrently"}
         log_audit(
             self.db, "recommendation", rec_id, status,
-            actor=reviewer_id, department_id=department_id,
+            actor=actor or reviewer_id, department_id=department_id,
             details={"comment": comment} if comment else None,
         )
         self.db.commit()
         return {"status": "ok", "recommendation_id": rec_id, "new_status": status}
 
+    def _revalidate_for_approve(self, row, department_id: str) -> Optional[dict]:
+        """Правила проверялись только при генерации — на approve базис мог
+        устареть. Возвращает error-dict или None (валидно).
+
+        Проверки: TTL рекомендации, актуальность current_price по каталогу,
+        stop_list и min_frequency по текущему состоянию правил.
+        """
+        from datetime import datetime as _dt
+
+        created_at = row.created_at
+        age_days = (date.today() - created_at.date()).days if isinstance(created_at, _dt) \
+            else (date.today() - created_at).days
+        if age_days > APPROVED_TTL_DAYS:
+            self.db.execute(
+                text("UPDATE price_recommendation SET status = 'expired' WHERE id = :id AND status = 'new'"),
+                {"id": row.id},
+            )
+            from .pricing_audit import log_audit
+            log_audit(self.db, "recommendation", row.id, "expired",
+                      actor="system", department_id=department_id,
+                      details={"reason": f"older than {APPROVED_TTL_DAYS}d at approve"})
+            return {
+                "status": "error",
+                "code": "expired",
+                "message": f"Рекомендация старше {APPROVED_TTL_DAYS} дней — истекла, перегенерируйте батч",
+            }
+
+        catalog = self.db.execute(
+            text("""
+                SELECT price, date_from FROM sku_catalog_price
+                WHERE department_id = CAST(:dept_id AS uuid)
+                  AND product_id = :pid AND price > 0 AND NOT is_stale
+                  AND date_from <= CURRENT_DATE AND date_to > CURRENT_DATE
+                ORDER BY (price_type <> 'BASE'), (product_size_id IS NOT NULL),
+                         product_size_id, id
+                LIMIT 1
+            """),
+            {"dept_id": department_id, "pid": row.product_id},
+        ).fetchone()
+        if catalog and abs(float(catalog[0]) - float(row.current_price)) > 0.01:
+            return {
+                "status": "error",
+                "code": "stale_price",
+                "message": (
+                    f"Цена в каталоге ({float(catalog[0]):.0f}) изменилась после генерации "
+                    f"(базис {float(row.current_price):.0f}) — перегенерируйте рекомендации"
+                ),
+            }
+
+        rules = self.rules_service.get_effective_rules(row.product_id, department_id, None)
+        if "stop_list" in rules:
+            return {
+                "status": "error",
+                "code": "stop_list",
+                "message": "Позиция в стоп-листе (правило добавлено после генерации)",
+            }
+        r = rules.get("min_frequency")
+        last_change = catalog[1] if catalog else None
+        if r is not None and last_change is not None:
+            min_days = r.get("days", 14)
+            days_since = (date.today() - last_change).days
+            if days_since < min_days:
+                return {
+                    "status": "error",
+                    "code": "min_frequency",
+                    "message": f"Цена менялась {days_since}д назад при лимите частоты {min_days}д",
+                }
+        return None
+
     def batch_review(
         self, rec_ids: list[int], status: str, reviewer_id: Optional[str] = None,
-        comment: Optional[str] = None,
+        comment: Optional[str] = None, actor: Optional[str] = None,
     ) -> dict:
         from .pricing_audit import log_audit
 
@@ -597,20 +843,31 @@ class PriceOptimizerService:
         if not rec_ids:
             return {"status": "ok", "updated": 0}
 
+        extra_cond = ""
         if status == "approved":
+            # свежесть базиса: протухшие 'new' не утверждаются батчем
+            extra_cond = " AND created_at >= NOW() - make_interval(days => :ttl)"
             # лимит изменений за цикл проверяется по каждой затронутой точке
+            # под advisory-блокировками (sorted — от deadlock'ов), иначе два
+            # параллельных batch-approve совместно пробивали cap
             dept_counts = self.db.execute(
-                text("""
+                text(f"""
                     SELECT department_id::text, COUNT(*)
                     FROM price_recommendation
-                    WHERE id = ANY(:ids) AND status = 'new'
+                    WHERE id = ANY(:ids) AND status = 'new'{extra_cond}
                     GROUP BY department_id
                 """),
-                {"ids": rec_ids},
+                {"ids": rec_ids, "ttl": APPROVED_TTL_DAYS},
             ).fetchall()
+            for dept_id in sorted(d for d, _ in dept_counts):
+                self.db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('pricing_review:' || :d))"),
+                    {"d": dept_id},
+                )
             for dept_id, n_requested in dept_counts:
                 cap = self._cycle_cap_remaining(dept_id)
                 if cap and n_requested > cap["remaining"]:
+                    self.db.rollback()
                     return {
                         "status": "error",
                         "code": "cycle_cap_exceeded",
@@ -622,22 +879,23 @@ class PriceOptimizerService:
                     }
 
         result = self.db.execute(
-            text("""
+            text(f"""
                 UPDATE price_recommendation
                 SET status = :status,
                     reviewed_by = CAST(:reviewer_id AS uuid),
                     reviewed_at = NOW(),
                     review_comment = :comment
-                WHERE id = ANY(:ids) AND status = 'new'
+                WHERE id = ANY(:ids) AND status = 'new'{extra_cond}
                 RETURNING id, department_id::text
             """),
-            {"status": status, "reviewer_id": reviewer_id, "ids": rec_ids, "comment": comment},
+            {"status": status, "reviewer_id": reviewer_id, "ids": rec_ids,
+             "comment": comment, "ttl": APPROVED_TTL_DAYS},
         )
         updated_rows = result.fetchall()
         for rid, dept_id in updated_rows:
             log_audit(
                 self.db, "recommendation", rid, status,
-                actor=reviewer_id, department_id=dept_id,
+                actor=actor or reviewer_id, department_id=dept_id,
                 details={"batch": True, "comment": comment} if comment else {"batch": True},
             )
         self.db.commit()

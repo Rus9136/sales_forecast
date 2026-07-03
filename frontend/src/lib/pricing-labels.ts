@@ -31,12 +31,24 @@ export const STATUS_LABELS: Record<RecommendationStatus, string> = {
   new: 'Новая',
   approved: 'Утверждена',
   rejected: 'Отклонена',
+  applied: 'Применена',
   expired: 'Истекла',
 }
 
 export function statusLabel(status: string | null | undefined): string {
   if (!status) return '—'
   return STATUS_LABELS[status as RecommendationStatus] ?? status
+}
+
+/** shadcn Badge variant per recommendation status (applied → success/green). */
+export function statusBadgeVariant(
+  status: string | null | undefined,
+): 'default' | 'secondary' | 'destructive' | 'success' | 'outline' {
+  if (status === 'approved') return 'default'
+  if (status === 'applied') return 'success'
+  if (status === 'rejected') return 'destructive'
+  if (status === 'expired') return 'outline'
+  return 'secondary'
 }
 
 /** Semantic token color per reliability grade (A best → D weakest). */

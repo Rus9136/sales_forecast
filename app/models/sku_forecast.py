@@ -1,7 +1,7 @@
 """SKU-level daily sales aggregation and forecast storage."""
 
 from sqlalchemy import (
-    BigInteger, Column, Date, DateTime, Integer, Numeric, Text, func,
+    BigInteger, Column, Date, DateTime, Integer, Numeric, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -10,6 +10,9 @@ from ..db import Base
 
 class SkuDailySales(Base):
     __tablename__ = "sku_daily_sales"
+    __table_args__ = (
+        UniqueConstraint("department_id", "product_id", "sale_date"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     department_id = Column(UUID(as_uuid=True), nullable=False, index=True)

@@ -115,14 +115,17 @@ class IikoPriceLoader:
                 })
         return rows
 
-    def _upsert(self, rows: list[dict], product_map: Dict[str, int], known_depts: set) -> int:
-        """Batch upsert price intervals, resolving product_id and filtering unknown depts."""
+    def _upsert(self, rows: list[dict], product_map: Dict[str, int], known_depts: set) -> tuple[int, int]:
+        """Batch upsert price intervals, resolving product_id and filtering unknown depts.
+        Returns (upserted, skipped_unknown_dept)."""
         if not rows:
-            return 0
+            return 0, 0
 
+        skipped_unknown = 0
         values = []
         for r in rows:
             if r["department_id"] not in known_depts:
+                skipped_unknown += 1
                 continue
             product_id = product_map.get(r["iiko_product_id"])
             values.append((
@@ -141,45 +144,52 @@ class IikoPriceLoader:
             ))
 
         if not values:
-            return 0
+            return 0, skipped_unknown
 
-        raw = self.db.connection().connection
-        cur = raw.cursor()
+        # ОТДЕЛЬНОЕ raw-соединение из engine, не connection Session'а:
+        # raw.commit() на соединении сессии коммитил её транзакцию «под ногами»
+        # у SQLAlchemy — работало случайно и ломалось при изменении конфигурации
+        engine = self.db.get_bind()
+        raw = engine.raw_connection()
         try:
-            # synced_at = clock_timestamp(): реальное время выполнения, НЕ NOW()
-            # (NOW() прибит к началу транзакции сессии и может быть РАНЬШЕ
-            # sync_started_at — stale-маркировка зацепила бы свежие строки)
-            execute_values(
-                cur,
-                """
-                INSERT INTO sku_catalog_price
-                    (department_id, iiko_product_id, product_id, product_size_id,
-                     price, date_from, date_to, price_type, document_id,
-                     included, is_dish_of_day, iiko_source_domain, synced_at)
-                VALUES %s
-                ON CONFLICT (department_id, iiko_product_id,
-                    COALESCE(product_size_id, '00000000-0000-0000-0000-000000000000'::uuid),
-                    date_from, price_type)
-                DO UPDATE SET
-                    price = EXCLUDED.price,
-                    date_to = EXCLUDED.date_to,
-                    product_id = EXCLUDED.product_id,
-                    document_id = EXCLUDED.document_id,
-                    included = EXCLUDED.included,
-                    is_dish_of_day = EXCLUDED.is_dish_of_day,
-                    is_stale = false,
-                    synced_at = clock_timestamp()
-                """,
-                values,
-                template="(" + ", ".join(["%s"] * 12) + ", clock_timestamp())",
-                page_size=1000,
-            )
-            raw.commit()
+            cur = raw.cursor()
+            try:
+                # synced_at = clock_timestamp(): реальное время выполнения, НЕ NOW()
+                # (NOW() прибит к началу транзакции и может быть РАНЬШЕ
+                # sync_started_at — stale-маркировка зацепила бы свежие строки)
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO sku_catalog_price
+                        (department_id, iiko_product_id, product_id, product_size_id,
+                         price, date_from, date_to, price_type, document_id,
+                         included, is_dish_of_day, iiko_source_domain, synced_at)
+                    VALUES %s
+                    ON CONFLICT (department_id, iiko_product_id,
+                        COALESCE(product_size_id, '00000000-0000-0000-0000-000000000000'::uuid),
+                        date_from, price_type)
+                    DO UPDATE SET
+                        price = EXCLUDED.price,
+                        date_to = EXCLUDED.date_to,
+                        product_id = EXCLUDED.product_id,
+                        document_id = EXCLUDED.document_id,
+                        included = EXCLUDED.included,
+                        is_dish_of_day = EXCLUDED.is_dish_of_day,
+                        is_stale = false,
+                        synced_at = clock_timestamp()
+                    """,
+                    values,
+                    template="(" + ", ".join(["%s"] * 12) + ", clock_timestamp())",
+                    page_size=1000,
+                )
+                raw.commit()
+            finally:
+                cur.close()
         finally:
-            cur.close()
-        return len(values)
+            raw.close()
+        return len(values), skipped_unknown
 
-    def _mark_stale(self, host: str, sync_started_at, upserted: int) -> int:
+    def _mark_stale(self, host: str, sync_started_at, snapshot_count: int) -> int:
         """Интервалы домена, не пришедшие в полном снапшоте — отозванные
         приказы. Помечаем is_stale (не удаляем: аудит); при повторном
         появлении upsert снимает флаг.
@@ -194,10 +204,10 @@ class IikoPriceLoader:
             """),
             {"host": host},
         ).scalar() or 0
-        if existing > 0 and upserted < 0.5 * existing:
+        if existing > 0 and snapshot_count < 0.5 * existing:
             logger.warning(
                 "%s: snapshot has %d intervals vs %d known — skipping stale marking",
-                host, upserted, existing,
+                host, snapshot_count, existing,
             )
             return 0
 
@@ -235,11 +245,17 @@ class IikoPriceLoader:
                 product_map = self._build_product_map(host, iiko_ids)
                 resolved = sum(1 for r in parsed if r["iiko_product_id"] in product_map)
 
-                upserted = self._upsert(parsed, product_map, known_depts)
+                upserted, skipped_unknown = self._upsert(parsed, product_map, known_depts)
+                if skipped_unknown:
+                    logger.warning("%s: %d intervals skipped (unknown department)",
+                                   host, skipped_unknown)
 
                 stale_marked = 0
                 if full_snapshot and parsed:
-                    stale_marked = self._mark_stale(host, sync_started_at, upserted)
+                    # предохранитель сравнивает размер СНАПШОТА (len(parsed)),
+                    # а не upserted: строки незамапленных подразделений раньше
+                    # молча выключали stale-маркировку домена
+                    stale_marked = self._mark_stale(host, sync_started_at, len(parsed))
                     if stale_marked:
                         logger.info("%s: %d price intervals marked stale (rescinded orders)",
                                     host, stale_marked)
@@ -251,6 +267,7 @@ class IikoPriceLoader:
                     "products": len(products),
                     "price_intervals": len(parsed),
                     "upserted": upserted,
+                    "skipped_unknown_dept": skipped_unknown,
                     "stale_marked": stale_marked,
                     "product_resolved": resolved,
                     "resolve_pct": round(100.0 * resolved / len(parsed), 1) if parsed else 0,

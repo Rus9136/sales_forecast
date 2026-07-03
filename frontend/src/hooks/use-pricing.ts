@@ -234,6 +234,8 @@ export function useOverrideMenuRole() {
       ),
     onSuccess: (_res, vars) => {
       void qc.invalidateQueries({ queryKey: ['pricing', 'menu-role', vars.productId, vars.departmentId] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'menu-roles-list'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'menu-roles-summary'] })
       void qc.invalidateQueries({ queryKey: ['pricing', 'recommendations'] })
     },
   })
@@ -263,7 +265,7 @@ export function useSkuOutcomes({ productId, departmentId }: SkuKey) {
         limit: '500',
       }),
     enabled: Number.isFinite(productId) && !!departmentId,
-    select: (res) => res.items ?? [],
+    select: (res) => (res.items ?? []).filter((o) => o.product_id === productId),
   })
 }
 

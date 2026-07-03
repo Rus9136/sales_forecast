@@ -1,7 +1,8 @@
 """Pricing analytics models: price history, SKU weekly, department weekly, menu roles."""
 
 from sqlalchemy import (
-    Boolean, BigInteger, Column, Computed, Date, DateTime, Integer, Numeric, Text, func,
+    Boolean, BigInteger, Column, Computed, Date, DateTime, Index, Integer,
+    Numeric, Text, UniqueConstraint, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -10,6 +11,9 @@ from ..db import Base
 
 class SkuPriceHistory(Base):
     __tablename__ = "sku_price_history"
+    __table_args__ = (
+        UniqueConstraint("product_id", "department_id", "first_seen_date"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(BigInteger, nullable=False, index=True)
@@ -25,6 +29,17 @@ class SkuPriceHistory(Base):
 class SkuCatalogPrice(Base):
     """Real menu prices from iiko orders (GET /resto/api/v2/price)."""
     __tablename__ = "sku_catalog_price"
+    __table_args__ = (
+        # функциональный уникальный ключ из миграции 024 — на него опирается
+        # ON CONFLICT в iiko_price_loader
+        Index(
+            "uq_catalog_price",
+            "department_id", "iiko_product_id",
+            text("COALESCE(product_size_id, '00000000-0000-0000-0000-000000000000'::uuid)"),
+            "date_from", "price_type",
+            unique=True,
+        ),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     department_id = Column(UUID(as_uuid=True), nullable=False)
@@ -38,12 +53,17 @@ class SkuCatalogPrice(Base):
     document_id = Column(UUID(as_uuid=True))
     included = Column(Boolean)
     is_dish_of_day = Column(Boolean)
+    # интервалы, исчезнувшие из снапшота iiko (отозванные приказы) — миграция 027
+    is_stale = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     iiko_source_domain = Column(Text)
     synced_at = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class SkuWeeklySummary(Base):
     __tablename__ = "sku_weekly_summary"
+    __table_args__ = (
+        UniqueConstraint("product_id", "department_id", "week_start"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(BigInteger, nullable=False, index=True)
@@ -65,6 +85,9 @@ class SkuWeeklySummary(Base):
 
 class DepartmentWeeklySummary(Base):
     __tablename__ = "department_weekly_summary"
+    __table_args__ = (
+        UniqueConstraint("department_id", "week_start"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     department_id = Column(UUID(as_uuid=True), nullable=False, index=True)
@@ -82,6 +105,9 @@ class DepartmentWeeklySummary(Base):
 
 class SkuMenuRole(Base):
     __tablename__ = "sku_menu_role"
+    __table_args__ = (
+        UniqueConstraint("product_id", "department_id"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(BigInteger, nullable=False, index=True)
