@@ -23,6 +23,10 @@ class OpenAIEngine(BaseEngine):
     def __init__(self) -> None:
         self.api_key = settings.OPENAI_API_KEY or ""
         self.model = settings.OPENAI_MODEL or "gpt-4o"
+        # Точки расширения для OpenAI-совместимых провайдеров (OpenRouter и др.)
+        self.base_url: Optional[str] = None
+        self.default_headers: Optional[dict] = None
+        self.key_env_name = "OPENAI_API_KEY"
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
@@ -41,7 +45,7 @@ class OpenAIEngine(BaseEngine):
     ) -> AgentResult:
         api_key = api_key_override or self.api_key
         if not api_key:
-            err = "OPENAI_API_KEY is not configured"
+            err = f"{self.key_env_name} is not configured"
             log_prompt(
                 db,
                 analysis_id=analysis_id,
@@ -74,7 +78,11 @@ class OpenAIEngine(BaseEngine):
                 error=f"openai SDK is not installed: {exc}",
             )
 
-        client = AsyncOpenAI(api_key=api_key)
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=self.base_url,
+            default_headers=self.default_headers,
+        )
 
         max_retries = 5
         request_started = datetime.utcnow()
@@ -83,7 +91,8 @@ class OpenAIEngine(BaseEngine):
         for attempt in range(1, max_retries + 1):
             try:
                 logger.info(
-                    "OpenAI call: agent=%s attempt=%d prompt_len=%d model=%s",
+                    "%s call: agent=%s attempt=%d prompt_len=%d model=%s",
+                    self.provider_name,
                     agent_name,
                     attempt,
                     len(user_prompt),
@@ -141,7 +150,8 @@ class OpenAIEngine(BaseEngine):
             except RateLimitError as exc:
                 last_error = f"RateLimitError: {exc}"
                 logger.warning(
-                    "OpenAI rate limited on attempt %d/%d for %s",
+                    "%s rate limited on attempt %d/%d for %s",
+                    self.provider_name,
                     attempt,
                     max_retries,
                     agent_name,
@@ -154,7 +164,8 @@ class OpenAIEngine(BaseEngine):
                 status_code = getattr(exc, "status_code", None)
                 last_error = f"APIStatusError {status_code}: {exc}"
                 logger.warning(
-                    "OpenAI API error (status=%s) on attempt %d/%d for %s",
+                    "%s API error (status=%s) on attempt %d/%d for %s",
+                    self.provider_name,
                     status_code,
                     attempt,
                     max_retries,
@@ -169,7 +180,8 @@ class OpenAIEngine(BaseEngine):
             except Exception as exc:  # pragma: no cover
                 last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning(
-                    "OpenAI transient error on attempt %d/%d: %s",
+                    "%s transient error on attempt %d/%d: %s",
+                    self.provider_name,
                     attempt,
                     max_retries,
                     exc,

@@ -107,6 +107,7 @@ export function AIRecommendationsPage() {
   const providerOptions: AIProvider[] = providers?.supported_providers ?? [
     'claude',
     'openai',
+    'openrouter',
     'gemini',
   ]
 

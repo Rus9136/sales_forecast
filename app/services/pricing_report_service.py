@@ -237,8 +237,11 @@ class PricingReportService:
         start: date,
         end: date,
         dept: Optional[str] = None,
-        provider: str = "claude",
+        provider: Optional[str] = None,
     ) -> PricingReport:
+        from .ai.engines.dispatcher import get_dispatcher
+
+        provider = (provider or get_dispatcher().DEFAULT_PROVIDER).lower()
         data = self.collect_data(report_type, start, end, dept)
         kpis = self._headline(data)
         narrative, model, status = await self._narrate(report_type, data, provider)

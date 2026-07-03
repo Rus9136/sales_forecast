@@ -284,6 +284,9 @@ ANTHROPIC_API_KEY_NARRATIVE=
 ANTHROPIC_API_KEY_REPUTATION=
 OPENAI_API_KEY=                              # Опционально (если включаете OpenAI как provider)
 OPENAI_MODEL=gpt-4o
+OPENROUTER_API_KEY=sk-or-...                 # OpenRouter (openai-совместимый шлюз, openrouter.ai/keys)
+OPENROUTER_MODEL=anthropic/claude-sonnet-4.6 # Слаг vendor/model
+AI_DEFAULT_PROVIDER=claude                   # Дефолтный провайдер фоновых LLM-задач: claude|openai|openrouter|gemini
 CLAUDE_MODEL=claude-sonnet-4-20250514
 ```
 
@@ -642,7 +645,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 ### Архитектура
 - **Слои**: Router → `MultiAgentSystem` (orchestrator) → `BaseEngine` (Claude/OpenAI/Gemini) → `data_collector` (SQL).
 - **Phase 1 → Phase 2**: Phase 1 — агенты, потребляющие сырые данные (Sales/Payroll/Staffing/Reputation). Phase 2 — синтез (Optimization → Narrative) использует результаты Phase 1.
-- **Provider isolation**: `EngineDispatcher` — синглтон через `lru_cache`, выбирает движок по `provider` (`claude`/`openai`/`gemini`).
+- **Provider isolation**: `EngineDispatcher` — синглтон через `lru_cache`, выбирает движок по `provider` (`claude`/`openai`/`openrouter`/`gemini`). Дефолт — `AI_DEFAULT_PROVIDER` из .env (используется pricing-объяснениями C4' и отчётами C4). `OpenRouterEngine` наследует `OpenAIEngine` (тот же SDK, `base_url=https://openrouter.ai/api/v1`).
 - **Per-agent изолированные ключи** (Claude): `ANTHROPIC_API_KEY_PAYROLL/_STAFFING/_NARRATIVE/_REPUTATION` — fallback на основной `ANTHROPIC_API_KEY`. Это разнесённые rate-limit'ы, как в hr-miniapp.
 - **Retry**: для 529 (overload) — экспоненциальный backoff 30/90/180/360/600s + jitter; для прочих 5xx — стандартный exponential backoff cap 30s.
 - **Variant A (текущий)**: 3 агента включены — `SalesAnalysisAgent`, `OptimizationAgent`, `NarrativeAgent`. 3 агента (`PayrollAnalysisAgent`, `StaffingAgent`, `ReputationAgent`) лежат в registry с `enabled=False` — данные `payroll`/`reviews` сейчас `None`.

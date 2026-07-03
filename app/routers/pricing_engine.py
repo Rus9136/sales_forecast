@@ -487,7 +487,7 @@ def explain_recommendation(rec_id: int, db: Session = Depends(get_db)):
     if result["status"] == "not_found":
         raise HTTPException(404, f"Recommendation {rec_id} not found")
     if result["status"] == "no_llm":
-        raise HTTPException(503, "LLM provider is not configured (ANTHROPIC_API_KEY)")
+        raise HTTPException(503, "LLM provider is not configured (see AI_DEFAULT_PROVIDER and its API key)")
     if result["status"] == "error":
         raise HTTPException(502, f"LLM call failed: {result.get('error')}")
     return result
@@ -1079,7 +1079,7 @@ async def generate_report(
     department_id: Optional[str] = None,
     period_start: Optional[date] = None,
     period_end: Optional[date] = None,
-    provider: str = "claude",
+    provider: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     if report_type not in ("weekly", "monthly"):

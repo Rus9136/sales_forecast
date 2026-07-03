@@ -1,4 +1,4 @@
-export type AIProvider = 'claude' | 'openai' | 'gemini'
+export type AIProvider = 'claude' | 'openai' | 'openrouter' | 'gemini'
 
 export interface AIProviderInfo {
   provider: AIProvider

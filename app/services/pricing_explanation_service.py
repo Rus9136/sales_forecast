@@ -2,7 +2,8 @@
 
 Для каждой рекомендации собирает контекст прямым SQL (экономика рекомендации,
 эластичность с CI, роль в меню, продажи за 4 недели, дата последнего изменения
-цены), зовёт Claude-движок существующей AI-подсистемы и сохраняет структурированный
+цены), зовёт LLM-движок AI-подсистемы (провайдер — settings.AI_DEFAULT_PROVIDER)
+и сохраняет структурированный
 JSON в price_recommendation.llm_explanation. Числа подаются модели готовым
 JSON-блоком — модель их не пересчитывает (ТЗ п.4.8).
 """
@@ -161,7 +162,8 @@ class PricingExplanationService:
         if context is None:
             return {"status": "not_found", "recommendation_id": rec_id}
 
-        engine = get_dispatcher().get_engine("claude")
+        # Провайдер по умолчанию (settings.AI_DEFAULT_PROVIDER): claude/openai/openrouter
+        engine = get_dispatcher().get_engine()
         if engine is None or not engine.is_configured():
             return {"status": "no_llm", "recommendation_id": rec_id}
 

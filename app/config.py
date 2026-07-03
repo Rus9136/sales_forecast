@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4.6"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    # Провайдер по умолчанию для фоновых LLM-задач (pricing explanations,
+    # weekly/monthly reports) и UI-запросов без явного provider.
+    # Поддерживаются: claude | openai | openrouter | gemini
+    AI_DEFAULT_PROVIDER: str = "claude"
     # C4': сколько новых рекомендаций на подразделение объясняем LLM за ночной прогон
     PRICING_EXPLAIN_TOP_N: int = 10
 
