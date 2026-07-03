@@ -26,6 +26,8 @@ Sales Forecast API — система прогнозирования прода�
 
 ## Architecture
 
+> **Ценообразование:** полная карта подсистемы (поток данных, семантика ε, статусная машина, джобы, грабли, правила доработки) — [`docs/PRICING_SYSTEM_GUIDE.md`](docs/PRICING_SYSTEM_GUIDE.md). Читать ПЕРЕД любыми изменениями в pricing-коде.
+
 - **Backend**: FastAPI (Python 3.11)
 - **Frontend**: React 19 SPA (`frontend/`) — Vite, TypeScript, shadcn/ui, TanStack Query, Recharts
 - **Database**: PostgreSQL 15
@@ -448,7 +450,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/pricing-analytics/menu-roles/summary` — Распределение ролей (GET, department_id)
 - `/api/pricing-analytics/menu-roles/{product_id}/{department_id}` — Ручное переопределение роли (PUT, manual_role)
 - `/api/pricing-analytics/menu-roles/cluster` — Запуск кластеризации (POST, lookback_days)
-- `/api/pricing-engine/elasticity|recommendations|rules` — Ценовой движок: эластичность (B2), рекомендации (B3), правила (B4) — см. API_DOCUMENTATION_PRICING.md
+- `/api/pricing-engine/elasticity|recommendations|rules` — Ценовой движок: эластичность (B2), рекомендации (B3), правила (B4) — см. API_DOCUMENTATION_PRICING.md + docs/PRICING_SYSTEM_GUIDE.md (карта подсистемы)
 - `/api/pricing-engine/experiments/generate` — Ценовые эксперименты для grade C/D (POST, измерение эластичности)
 - `/api/pricing-engine/recommendations/detect-applied` — Детекция применённых цен по каталогу (POST)
 - `/api/pricing-engine/outcomes` — Пост-анализ applied-рекомендаций: факт vs ожидание, реализованная эластичность (GET, + /summary, + POST /evaluate)
