@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     BOOTSTRAP_ADMIN_PHONE: str = ""
     BOOTSTRAP_ADMIN_NAME: str = "Администратор"
 
+    # ML: deployment decision при автопереобучении (аудит P0-3, Фаза 1.2).
+    # Кандидат деплоится, если лучше прод-модели по WAPE на общем hold-out
+    # И не хуже по MedianAPE более чем на RETRAIN_MEDAPE_TOLERANCE_PCT %.
+    RETRAIN_HOLDOUT_DAYS: int = 28
+    RETRAIN_MEDAPE_TOLERANCE_PCT: float = 10.0
+
+    # Алерты мониторинга (аудит P0-6, Фаза 1.5): Telegram Bot API
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"

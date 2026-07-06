@@ -12,6 +12,7 @@ import pickle
 import shutil
 
 import numpy as np
+import pandas as pd
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, desc
@@ -21,6 +22,7 @@ import traceback
 import uuid
 from pathlib import Path
 
+from ..config import settings
 from ..db import get_db
 from ..models.branch import Department, SalesSummary, ForecastAccuracyLog, ModelVersion, ModelRetrainingLog
 from ..agents.sales_forecaster_agent import (
@@ -116,23 +118,51 @@ class ModelRetrainingService:
             if training_data.empty or len(training_data) < 1000:
                 raise ValueError(f"Insufficient training data: {len(training_data)} samples")
             
-            # 4. Split data
-            train_df, val_df, test_df = training_service.split_train_validation_test(training_data)
-            
-            # 5. Train new model.
-            # КРИТИЧНО (аудит P0-1a): кандидат обучается и сохраняется во
-            # ВРЕМЕННЫЙ путь. Раньше агент создавался с дефолтным путём и
-            # train_model(save_model=True) перезаписывал models/lgbm_model.pkl
-            # ДО решения о деплое — отклонённые модели попадали в прод.
+            # 4. Кандидат для РЕШЕНИЯ обучается на данных БЕЗ hold-out окна
+            # (Фаза 1.2, P0-3): решение принимается сравнением с прод-моделью
+            # на общем hold-out, которого decision-кандидат не видел вообще.
+            # Прод-модель могла видеть начало hold-out (обучалась неделю+
+            # назад) — смещение В ПОЛЬЗУ прода, т.е. консервативно.
+            # КРИТИЧНО (аудит P0-1a): оба кандидата сохраняются во ВРЕМЕННЫЕ
+            # пути — прод-файл не перезаписывается до deployment decision.
             new_version_id = self._generate_version_id()
             temp_model_path = self.models_dir / f"temp_{new_version_id}.pkl"
+            decision_model_path = self.models_dir / f"temp_decision_{new_version_id}.pkl"
 
-            self.logger.info(f"Training new model with {len(training_data)} samples")
-            new_forecaster = SalesForecasterAgent(model_path=str(temp_model_path))
-            model, metrics = new_forecaster.train_model(train_df, val_df, test_df)
+            holdout_days = settings.RETRAIN_HOLDOUT_DAYS
+            holdout_start = pd.Timestamp(date.today() - timedelta(days=holdout_days - 1))
+            decision_data = training_data[pd.to_datetime(training_data['date']) < holdout_start]
+            if len(decision_data) < 1000:
+                raise ValueError(
+                    f"Insufficient decision-training data outside hold-out: "
+                    f"{len(decision_data)} samples"
+                )
 
-            if not temp_model_path.exists():
-                raise FileNotFoundError(f"Candidate model not saved: {temp_model_path}")
+            self.logger.info(
+                f"Training decision-candidate on {len(decision_data)} samples "
+                f"(hold-out {holdout_days}d excluded)"
+            )
+            d_train, d_val, d_test = training_service.split_train_validation_test(decision_data)
+            decision_forecaster = SalesForecasterAgent(model_path=str(decision_model_path))
+            _, decision_metrics = decision_forecaster.train_model(d_train, d_val, d_test)
+
+            # 5. Like-for-like решение о деплое на общем hold-out (Фаза 1.2)
+            deployment_decision = self._make_holdout_deployment_decision(
+                db, str(decision_model_path)
+            )
+
+            # 6. Финальный кандидат на ПОЛНОМ окне — только при решении deploy
+            # (задеплоенная модель должна видеть свежайшие hold-out дни;
+            # обучение стоит ~1с, поэтому две тренировки допустимы)
+            metrics = decision_metrics
+            new_forecaster = decision_forecaster
+            if deployment_decision['decision'] == 'deployed':
+                self.logger.info(f"Training final candidate on full {len(training_data)} samples")
+                train_df, val_df, test_df = training_service.split_train_validation_test(training_data)
+                new_forecaster = SalesForecasterAgent(model_path=str(temp_model_path))
+                _, metrics = new_forecaster.train_model(train_df, val_df, test_df)
+                if not temp_model_path.exists():
+                    raise FileNotFoundError(f"Candidate model not saved: {temp_model_path}")
             
             # 8. Calculate feature importance
             feature_importance = new_forecaster.get_feature_importance()
@@ -166,22 +196,25 @@ class ModelRetrainingService:
                 "created_by": trigger_type
             }
             
-            # 10. Decide whether to deploy
             new_test_mape = metrics.get('test_mape', float('inf'))
-            deployment_decision = self._make_deployment_decision(
-                current_mape, new_test_mape, performance_threshold
-            )
-            
-            # 11. Log retraining attempt
+
+            # 11. Log retraining attempt.
+            # С Фазы 1.2 previous_mape/new_mape — hold-out WAPE прода и
+            # кандидата (сопоставимые числа); fallback на старую семантику
+            # только если hold-out сравнение не состоялось (first baseline).
+            holdout_cmp = deployment_decision.get('holdout')
             retrain_log = {
                 "retrain_date": retrain_start,
                 "trigger_type": trigger_type,
                 "trigger_details": trigger_details or {},
                 "previous_version_id": current_version,
-                "previous_mape": current_mape,
+                "previous_mape": (holdout_cmp['a']['wape'] if holdout_cmp else current_mape),
                 "new_version_id": new_version_id,
-                "new_mape": new_test_mape,
-                "mape_improvement": current_mape - new_test_mape,
+                "new_mape": (holdout_cmp['b']['wape'] if holdout_cmp else new_test_mape),
+                "mape_improvement": (
+                    holdout_cmp['a']['wape'] - holdout_cmp['b']['wape']
+                    if holdout_cmp else current_mape - new_test_mape
+                ),
                 "decision": deployment_decision['decision'],
                 "decision_reason": deployment_decision['reason'],
                 "execution_time_seconds": int((datetime.utcnow() - retrain_start).total_seconds()),
@@ -203,35 +236,48 @@ class ModelRetrainingService:
                 # на старой in-memory модели до рестарта контейнера
                 reload_forecaster_agent()
 
+                # Decision-кандидат больше не нужен
+                if decision_model_path.exists():
+                    os.remove(decision_model_path)
+
                 self.logger.info(f"✅ New model deployed! Version: {new_version_id}, MAPE: {new_test_mape:.2f}%")
             else:
-                # Move to archive if rejected
+                # Move to archive if rejected (в архив уходит decision-кандидат —
+                # финальный при reject не обучается)
                 archive_path = self.archive_dir / f"rejected_{new_version_id}.pkl"
-                shutil.move(str(temp_model_path), str(archive_path))
+                shutil.move(str(decision_model_path), str(archive_path))
                 model_version_data['status'] = 'rejected'
                 model_version_data['model_path'] = str(archive_path)
-                
+
                 self.logger.warning(f"⚠️ New model rejected. Reason: {deployment_decision['reason']}")
             
             # 13. Save metadata to database (would need model_versions table)
             self._save_model_metadata(db, model_version_data)
             self._save_retrain_log(db, retrain_log)
             
-            # 14. Return results
+            # 14. Return results (с Фазы 1.2 сопоставимые числа — hold-out WAPE)
+            if holdout_cmp:
+                result_metrics = {
+                    "holdout_days": settings.RETRAIN_HOLDOUT_DAYS,
+                    "production_wape": holdout_cmp['a']['wape'],
+                    "candidate_wape": holdout_cmp['b']['wape'],
+                    "production_median_ape": holdout_cmp['a']['median_ape'],
+                    "candidate_median_ape": holdout_cmp['b']['median_ape'],
+                }
+            else:
+                result_metrics = {
+                    "previous_mape": round(current_mape, 2),
+                    "new_mape": round(new_test_mape, 2),
+                }
             result = {
                 "status": "success",
                 "new_version_id": new_version_id,
                 "deployment_decision": deployment_decision['decision'],
                 "decision_reason": deployment_decision['reason'],
-                "metrics": {
-                    "previous_mape": round(current_mape, 2),
-                    "new_mape": round(new_test_mape, 2),
-                    "improvement": round(current_mape - new_test_mape, 2),
-                    "improvement_percent": round(((current_mape - new_test_mape) / current_mape * 100), 2) if current_mape > 0 else 0
-                },
+                "metrics": result_metrics,
                 "training_details": {
                     "samples": len(training_data),
-                    "features": len(train_df.columns) - 1,
+                    "features": len(new_forecaster.feature_columns or []),
                     "execution_time": int((datetime.utcnow() - retrain_start).total_seconds())
                 }
             }
@@ -323,6 +369,77 @@ class ModelRetrainingService:
         short_uuid = str(uuid.uuid4())[:8]
         return f"v_{timestamp}_{short_uuid}"
     
+    def _make_holdout_deployment_decision(
+        self,
+        db: Session,
+        candidate_path: str,
+    ) -> Dict[str, Any]:
+        """Like-for-like решение о деплое (Фаза 1.2, аудит P0-3).
+
+        Прод-модель и кандидат прогоняются по ОДНОМУ hold-out (последние
+        RETRAIN_HOLDOUT_DAYS дней, все точки, фичи из TrainingDataService).
+        Критерий деплоя: кандидат лучше по WAPE И не хуже прода по MedianAPE
+        более чем на RETRAIN_MEDAPE_TOLERANCE_PCT %.
+
+        Раньше сравнивались несопоставимые числа: прод-MAPE за 7 дней по
+        3-4 точкам (после smoothing) против offline test-MAPE кандидата —
+        2026-07-05 это дало ложный reject («153.8% worse») модели, которая
+        на честном hold-out была ЛУЧШЕ прода.
+
+        Любой сбой сравнения → rejected (прод-модель остаётся, safe default).
+        """
+        from .model_comparison import compare_on_holdout
+
+        production_path = self.models_dir / "lgbm_model.pkl"
+        if not production_path.exists():
+            return {
+                "decision": "deployed",
+                "reason": "No production model found — deploying first baseline",
+            }
+
+        try:
+            cmp = compare_on_holdout(
+                db, str(production_path), candidate_path,
+                holdout_days=settings.RETRAIN_HOLDOUT_DAYS,
+            )
+        except Exception as e:
+            self.logger.error(f"Hold-out comparison failed: {e}", exc_info=True)
+            return {
+                "decision": "rejected",
+                "reason": f"Hold-out comparison failed ({e}); keeping production model",
+            }
+
+        prod_m, cand_m = cmp["a"], cmp["b"]
+        h = cmp["holdout"]
+        tol = settings.RETRAIN_MEDAPE_TOLERANCE_PCT
+        detail = (
+            f"hold-out {h['from']}..{h['to']} ({h['rows']} rows): "
+            f"candidate WAPE {cand_m['wape']:.2f}% / MedAPE {cand_m['median_ape']:.2f}% "
+            f"vs production WAPE {prod_m['wape']:.2f}% / MedAPE {prod_m['median_ape']:.2f}%"
+        )
+
+        if cand_m["wape"] > 50.0:
+            return {
+                "decision": "rejected",
+                "reason": f"Sanity check failed: candidate hold-out WAPE {cand_m['wape']:.1f}% > 50% ({detail})",
+                "holdout": cmp,
+            }
+
+        wape_better = cand_m["wape"] < prod_m["wape"]
+        medape_ok = cand_m["median_ape"] <= prod_m["median_ape"] * (1 + tol / 100.0)
+
+        if wape_better and medape_ok:
+            return {
+                "decision": "deployed",
+                "reason": f"Candidate better on WAPE, MedAPE within {tol:.0f}% tolerance ({detail})",
+                "holdout": cmp,
+            }
+        if not wape_better:
+            reason = f"Candidate not better on WAPE ({detail})"
+        else:
+            reason = f"Candidate MedAPE worse than {tol:.0f}% tolerance ({detail})"
+        return {"decision": "rejected", "reason": reason, "holdout": cmp}
+
     def _make_deployment_decision(
         self,
         current_mape: float,
@@ -330,7 +447,11 @@ class ModelRetrainingService:
         threshold: float,
         absolute_max_mape: float = 50.0,
     ) -> Dict[str, str]:
-        """Decide whether to deploy new model.
+        """LEGACY (до Фазы 1.2): сравнение прод-MAPE с offline test-MAPE.
+
+        В основном контуре заменён на _make_holdout_deployment_decision —
+        сравнивал несопоставимые метрики (аудит P0-3). Сохранён как
+        sanity-хелпер для тестов и ручных сценариев без БД.
 
         Rules:
         1. Reject if new model fails sanity check (MAPE > absolute_max_mape).
