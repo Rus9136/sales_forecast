@@ -1,19 +1,28 @@
 """
-Honest 30-day forecast backtest.
+Honest 30-day forecast backtest — rolling-origin (Фаза 1.6, аудит roadmap).
 
 Производственный сценарий: в конце месяца строится прогноз на следующие 30 дней
 для построения графика смен официантов. Все lag-/rolling-фичи на горизонте >1
 дня уходят в "будущее" — приходится использовать рекурсивные предсказания.
 
-Текущая 1-day-ahead метрика (raw MAPE 36%) — лучший случай. Этот скрипт меряет
-честную деградацию по горизонтам h=1, 7, 14, 30.
+С Фазы 1.6 скрипт — ИНСТРУМЕНТ ПРИЁМКИ улучшений модели: по умолчанию берёт
+4 rolling-origin окна (первые числа последних месяцев с полными 30 днями
+факта) и агрегирует WAPE/MedianAPE по окнам. Улучшение принимается, если оно
+подтверждается на нескольких окнах, а не на одном сплите.
+
+Оговорка: прод-модель обучена на данных до сегодня, поэтому старые окна
+частично in-sample. Для СРАВНЕНИЯ моделей протокол честен, пока обе модели
+обучены на одинаковом объёме данных (одна дата обучения).
 
 Запуск:
-    docker cp scripts/backtest_30day.py sales-forecast-app:/app/backtest_30day.py
-    docker exec sales-forecast-app python /app/backtest_30day.py
+    docker cp scripts/backtest_30day.py sales-forecast-app:/tmp/backtest_30day.py
+    docker exec -w /app -e PYTHONPATH=/app sales-forecast-app \
+        python /tmp/backtest_30day.py [--anchors 2026-03-01,2026-04-01,...] \
+        [--model /app/models/lgbm_model.pkl]
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import date, timedelta
 
@@ -25,15 +34,20 @@ sys.path.insert(0, "/app")
 from app.db import get_db
 from app.models.branch import Department, SalesSummary
 from app.agents.sales_forecaster_agent import SalesForecasterAgent
+from app.services.forecast_metrics import median_ape as _median_ape, wape as _wape
 
 
-# Anchor dates — первое число месяца, на которое строим 30-day прогноз.
-# Используем последние 2-3 месяца истории. Берём первые числа месяцев,
-# для которых есть полные 30 дней факта вперёд и >= 60 дней истории назад.
-ANCHOR_DATES = [
-    date(2026, 3, 1),   # forecast Mar 1..Mar 30, history through Feb 28
-    date(2026, 4, 1),   # forecast Apr 1..Apr 30, history through Mar 31
-]
+def default_anchors(today: date, n_windows: int = 4) -> list[date]:
+    """Последние n первых чисел месяцев с полными 30 днями факта вперёд."""
+    anchors: list[date] = []
+    probe = date(today.year, today.month, 1)
+    while len(anchors) < n_windows:
+        # окно anchor..anchor+29 должно целиком лежать в прошлом
+        if probe + timedelta(days=HORIZON_DAYS - 1) < today:
+            anchors.append(probe)
+        probe = (probe - timedelta(days=1)).replace(day=1)
+    return sorted(anchors)
+
 
 HORIZON_DAYS = 30
 HISTORY_DAYS = 60  # минимум истории до anchor для lag/rolling
@@ -42,19 +56,33 @@ HORIZON_BUCKETS = [(1, 1), (2, 7), (8, 14), (15, 21), (22, 30)]
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--anchors",
+                        help="comma-separated YYYY-MM-DD (default: последние N месячных окон)")
+    parser.add_argument("--model", default="/app/models/lgbm_model.pkl")
+    parser.add_argument("--windows", type=int, default=4,
+                        help="число rolling-origin окон при автоподборе (default 4)")
+    args = parser.parse_args()
+
+    if args.anchors:
+        anchor_dates = sorted(date.fromisoformat(s.strip()) for s in args.anchors.split(","))
+    else:
+        anchor_dates = default_anchors(date.today(), args.windows)
+
     db = next(get_db())
 
-    agent = SalesForecasterAgent(model_path="/app/models/lgbm_model.pkl")
+    agent = SalesForecasterAgent(model_path=args.model)
     if agent.model is None:
         print("ERROR: model not loaded")
         sys.exit(1)
-    print(f"Model loaded. Feature count: {len(agent.feature_columns)}")
-    print(f"Anchor dates: {ANCHOR_DATES}")
+    print(f"Model loaded: {args.model} (trained_at={getattr(agent, '_trained_at', 'unknown')})")
+    print(f"Feature count: {len(agent.feature_columns)}")
+    print(f"Anchor dates: {anchor_dates}")
     print(f"Horizon: {HORIZON_DAYS} days each\n")
 
     # Загружаем все sales за нужный диапазон одним запросом
-    earliest_history = min(ANCHOR_DATES) - timedelta(days=HISTORY_DAYS + 5)
-    latest_actual = max(ANCHOR_DATES) + timedelta(days=HORIZON_DAYS - 1)
+    earliest_history = min(anchor_dates) - timedelta(days=HISTORY_DAYS + 5)
+    latest_actual = max(anchor_dates) + timedelta(days=HORIZON_DAYS - 1)
 
     rows = (
         db.query(
@@ -114,7 +142,7 @@ def main() -> None:
 
     results: list[dict] = []
 
-    for anchor in ANCHOR_DATES:
+    for anchor in anchor_dates:
         history_cutoff = anchor - timedelta(days=1)  # last real day available
         history_start = anchor - timedelta(days=HISTORY_DAYS)
 
@@ -207,6 +235,7 @@ def main() -> None:
     def metrics(g: pd.DataFrame) -> dict:
         return {
             "n": len(g),
+            "WAPE_%": round(_wape(g["actual"].values, g["predicted"].values), 2),
             "MAPE_%": round(g["ape"].mean() * 100, 2),
             "MedianAPE_%": round(g["ape"].median() * 100, 2),
             "MAE": round(g["err"].abs().mean()),
@@ -238,14 +267,41 @@ def main() -> None:
     print("MAPE / MedianAPE BY ANCHOR MONTH (combined all horizons)")
     print("=" * 90)
     rows = []
-    for anchor in ANCHOR_DATES:
+    for anchor in anchor_dates:
         sub = rdf[rdf["anchor"] == anchor]
         if sub.empty:
             continue
         m = metrics(sub)
         m["anchor"] = str(anchor)
         rows.append(m)
-    print(pd.DataFrame(rows)[["anchor", "n", "MAPE_%", "MedianAPE_%", "MAE", "Bias_%"]].to_string(index=False))
+    print(pd.DataFrame(rows)[["anchor", "n", "WAPE_%", "MAPE_%", "MedianAPE_%", "MAE", "Bias_%"]].to_string(index=False))
+
+    # ---- rolling-origin baseline (Фаза 1.6: метрика приёмки улучшений) ----
+    print("\n" + "=" * 90)
+    print("ROLLING-ORIGIN BASELINE — WAPE/MedianAPE по окнам (приёмка улучшений Фаз 2-3)")
+    print("=" * 90)
+    per_anchor = []
+    for anchor in anchor_dates:
+        sub = rdf[rdf["anchor"] == anchor]
+        if sub.empty:
+            continue
+        m30 = sub.groupby("dept_id").agg(
+            sum_actual=("actual", "sum"), sum_pred=("predicted", "sum"))
+        per_anchor.append({
+            "anchor": str(anchor),
+            "n": len(sub),
+            "WAPE_%": round(_wape(sub["actual"].values, sub["predicted"].values), 2),
+            "MedianAPE_%": round(_median_ape(sub["actual"].values, sub["predicted"].values), 2),
+            "Monthly_WAPE_%": round(_wape(m30["sum_actual"].values, m30["sum_pred"].values), 2),
+        })
+    pa = pd.DataFrame(per_anchor)
+    print(pa.to_string(index=False))
+    print(
+        f"\nAGGREGATE over {len(pa)} windows: "
+        f"WAPE {pa['WAPE_%'].mean():.2f}% ± {pa['WAPE_%'].std():.2f} | "
+        f"MedianAPE {pa['MedianAPE_%'].mean():.2f}% ± {pa['MedianAPE_%'].std():.2f} | "
+        f"Monthly WAPE {pa['Monthly_WAPE_%'].mean():.2f}% ± {pa['Monthly_WAPE_%'].std():.2f}"
+    )
 
     # ---- segments × bucket ----
     print("\n" + "=" * 90)
