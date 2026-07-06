@@ -28,6 +28,7 @@ from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elast
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.sku_model_retraining_service import run_sku_auto_retrain  # noqa: F401 — job временно отключён (audit P0-2, см. Фазу 2.2)
+from .services.scheduled_forecast_job import run_daily_forecast_sweep
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
@@ -129,6 +130,18 @@ async def lifespan(app: FastAPI):
             minute=0,
             id='daily_metrics_calculation',
             name='Daily Performance Metrics Calculation',
+            replace_existing=True
+        )
+
+        # Ежедневный batch-прогноз t+1/t+7 по всем активным точкам + SKU top-50
+        # (аудит P0-6, Фаза 1.3/1.4). 06:00 — после ночных синков продаж.
+        scheduler.add_job(
+            func=run_daily_forecast_sweep,
+            trigger="cron",
+            hour=6,
+            minute=0,
+            id='daily_forecast_sweep',
+            name='Daily Forecast Sweep (all active departments)',
             replace_existing=True
         )
 
@@ -289,7 +302,7 @@ async def lifespan(app: FastAPI):
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
             "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Catalog price 3:20, "
-            "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain DISABLED (audit P0-2), Metrics 4:00, Pricing analytics 4:30, "
+            "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain DISABLED (audit P0-2), Metrics 4:00, Pricing analytics 4:30, Forecast sweep 6:00, "
             "Price optimization 5:00, Outcome evaluation 5:30, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 
