@@ -63,6 +63,56 @@ docker exec -w /app -e PYTHONPATH=/app sales-forecast-app python -m pytest /tmp/
 
 ---
 
-## Фаза 1 — Честное измерение (не начата, ждёт подтверждения Фазы 0)
+## Фаза 1 — Честное измерение ✅ (ожидает подтверждения)
 
-## Фаза 2 — SKU-модель (не начата)
+### 1.1 WAPE/MedianAPE + horizon_days — `2127df5`
+
+- `app/services/forecast_metrics.py` — единый модуль (wape/mape/median_ape/bias_pct/regression_report) для агентов, deployment decision, мониторинга, backtest'ов.
+- `train_model` обеих моделей отдаёт `val/test_wape`, `val/test_median_ape`; headline в логах — WAPE.
+- Миграция `030_ml_monitoring_wape_horizon.sql` (применена к prod и test БД): `forecasts.horizon_days` + `forecast_accuracy_log.horizon_days` (UNIQUE-ключи расширены — t+1 и t+7 на одну дату больше не затирают друг друга), `model_performance_metrics` пересоздана (старая из 002 всегда была пустой — заглушка в неё не писала).
+- **⚠ Отклонение от плана миграции:** `model_performance_metrics` уже существовала (миграция 002) со старой схемой и 0 строк — пересоздана DROP+CREATE, задокументировано в 030.
+
+### 1.2 Like-for-like deployment decision — `b3e30b1`
+
+- `app/services/model_comparison.py` (из скрипта 0.1); скрипт стал тонким CLI.
+- `auto_retrain_model`: decision-кандидат обучается **без** hold-out окна (28д) → сравнение с прод-моделью на общем hold-out → финальное обучение на полном окне только при deploy. Прод-модель могла видеть начало hold-out — смещение в пользу прода (консервативно).
+- Критерий: кандидат лучше по WAPE И MedAPE в пределах `RETRAIN_MEDAPE_TOLERANCE_PCT` (10%, конфиг). Sanity WAPE>50% → reject. Сбой сравнения → reject (safe default). `previous_mape/new_mape` в retrain_log — теперь hold-out WAPE обеих моделей.
+- **Заметка:** ручной `POST /api/forecast/retrain` по-прежнему «train & deploy сразу» (операторский override, минует decision) — кандидат на ужесточение в Фазе 3.
+
+### 1.3+1.4 Ежедневный batch-прогноз — `e34533b`
+
+`app/services/scheduled_forecast_job.py`, scheduler 06:00: t+1 и t+7 для всех активных точек (продажи за 14д) → `forecasts`; SKU t+1 топ-50 по прогнозному обороту → `sku_forecasts`. Идемпотентна (UPSERT).
+
+### 1.5 Telegram-алерты + персист метрик — `de49dbc`
+
+- `app/services/alerting.py` (env `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`); critical-алерты мониторинга и потеря аудит-трейла retrain шлют в Telegram.
+- Мониторинг: headline WAPE (warning 25% / critical 35%), MedianAPE, bias_pct, разрез `per_horizon`; `_save_daily_metrics` реализован (UPSERT в `model_performance_metrics`, horizon 0 = общий агрегат); `_update_accuracy_log` с горизонтом; фикс `training_date`→`trained_at` (возраст модели был всегда 0).
+
+### 1.6 Rolling-origin backtest — `2b52c13`
+
+`scripts/backtest_30day.py`: `--anchors`/автоподбор 4 месячных окон, WAPE, таблица ROLLING-ORIGIN BASELINE + агрегат mean±std.
+
+### 📌 БАЗОВАЯ ЛИНИЯ (прод-модель trained_at=2026-07-05, recursive 30-day, 4 окна)
+
+| Anchor | n | WAPE | MedianAPE | Monthly WAPE |
+|---|---|---|---|---|
+| 2026-03-01 | 923 | 29.94% | 22.40% | 20.93% |
+| 2026-04-01 | 929 | 25.18% | 20.16% | 15.54% |
+| 2026-05-01 | 937 | 24.97% | 19.14% | 15.07% |
+| 2026-06-01 | 1220 | 23.39% | 21.39% | 15.36% |
+| **AGGREGATE** | | **25.87% ± 2.83** | **20.77% ± 1.42** | **16.73% ± 2.81** |
+
+Все улучшения Фаз 2-3 меряются против этой линии тем же протоколом (`docker exec ... python /tmp/backtest_30day.py`). Оговорка: окна частично in-sample для прод-модели; протокол честен для сравнения моделей, обученных на одну дату.
+
+### Проверки Фазы 1
+
+| Проверка | Результат |
+|---|---|
+| Джоба 1.3 вручную → покрытие | ✅ `forecasts` за сегодня: **41 dept**, 82 строки (t+1 + t+7); сводка джобы: 0 ошибок |
+| `sku_forecasts` непуста | ✅ **2009 строк**, 41 подразделение (было 0 строк с момента создания таблицы) |
+| Мониторинг + персист | ✅ ручной прогон за 2026-07-05: WAPE 39.5% (3 старые точки) → **critical-алерт сгенерирован**, 2 строки записаны в `model_performance_metrics` (horizon 0 и 1) |
+| Telegram | ⚠ **токены не добавлены в `.env.prod`** — код готов и покрыт тестами (4 unit), отправка вернёт warning «not configured». Нужны `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (+ перезапуск контейнера), после чего живой тест |
+| Тесты | ✅ **284 passed, 18 skipped** (полный набор в контейнере, включая 10 новых) |
+| Backtest 3+ окна | ✅ 4 окна, база зафиксирована выше |
+
+## Фаза 2 — SKU-модель (не начата, ждёт подтверждения Фазы 1)
