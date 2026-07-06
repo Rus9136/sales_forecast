@@ -14,20 +14,28 @@ import logging
 import numpy as np
 
 from ..db import get_db
-from ..models.branch import Department, SalesSummary, ForecastAccuracyLog, Forecast
+from ..models.branch import Department, SalesSummary, ForecastAccuracyLog, Forecast, ModelPerformanceMetrics
 from ..agents.sales_forecaster_agent import get_forecaster_agent
 from .error_analysis_service import ErrorAnalysisService
+from .forecast_metrics import wape as _wape, median_ape as _median_ape, bias_pct as _bias_pct
+from .alerting import send_telegram_alert
 
 logger = logging.getLogger(__name__)
 
 
 class ModelMonitoringService:
     """Service for continuous model performance monitoring"""
-    
+
     def __init__(self):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        
-        # Alert thresholds
+
+        # Alert thresholds.
+        # Headline — WAPE (аудит P1-7): MAPE на смешанных масштабах точек
+        # взрывается на малых знаменателях. Пороги откалиброваны по факту:
+        # hold-out WAPE прод-модели ~19% (июль 2026).
+        self.wape_warning_threshold = 25.0
+        self.wape_critical_threshold = 35.0
+        # Legacy MAPE-пороги (остаются в performance summary для преемственности)
         self.mape_warning_threshold = 10.0
         self.mape_critical_threshold = 15.0
         self.degradation_threshold = 20.0  # 20% increase in error
@@ -51,20 +59,23 @@ class ModelMonitoringService:
             
             self.logger.info(f"Calculating daily metrics for {target_date}")
             
-            # 1. Get all forecasts and actuals for the date using raw SQL to handle UUID casting
+            # 1. Get all forecasts and actuals for the date using raw SQL to handle UUID casting.
+            # horizon_days (миграция 030): t+1 и t+7 прогнозы на одну дату
+            # оцениваются раздельно — виден спад качества по горизонту.
             forecasts_actuals = db.execute(text("""
-                SELECT 
+                SELECT
                     f.branch_id,
                     f.predicted_amount,
+                    f.horizon_days,
                     s.total_sales as actual_amount,
                     d.name as branch_name
                 FROM forecasts f
-                JOIN sales_summary s ON CAST(f.branch_id AS UUID) = s.department_id 
+                JOIN sales_summary s ON CAST(f.branch_id AS UUID) = s.department_id
                     AND f.forecast_date = s.date
                 JOIN departments d ON CAST(f.branch_id AS UUID) = d.id
                 WHERE f.forecast_date = :target_date
             """), {"target_date": target_date}).fetchall()
-            
+
             if not forecasts_actuals:
                 self.logger.warning(f"No forecast/actual pairs found for {target_date}")
                 return {
@@ -72,20 +83,33 @@ class ModelMonitoringService:
                     "status": "no_data",
                     "message": "No predictions found for this date"
                 }
-            
+
             # 2. Calculate metrics
             errors = []
             mapes = []
+            actuals = []
+            preds = []
             branch_errors = {}
-            
+            by_horizon: Dict[int, Dict[str, list]] = {}
+
             for fa in forecasts_actuals:
                 if fa.actual_amount > 0:
                     error = fa.predicted_amount - fa.actual_amount
                     mape = (abs(error) / fa.actual_amount) * 100
-                    
+                    horizon = int(fa.horizon_days or 1)
+
                     errors.append(error)
                     mapes.append(mape)
-                    
+                    actuals.append(float(fa.actual_amount))
+                    preds.append(float(fa.predicted_amount))
+
+                    hbucket = by_horizon.setdefault(horizon, {"actual": [], "pred": []})
+                    hbucket["actual"].append(float(fa.actual_amount))
+                    hbucket["pred"].append(float(fa.predicted_amount))
+
+                    # По каждой точке храним худший из горизонтов не нужно —
+                    # branch_errors используется для branch-алертов, берём
+                    # последний (обычно h=1)
                     branch_errors[str(fa.branch_id)] = {
                         "name": fa.branch_name,
                         "mape": mape,
@@ -93,23 +117,35 @@ class ModelMonitoringService:
                         "predicted": fa.predicted_amount,
                         "actual": fa.actual_amount
                     }
-                    
-                    # Update accuracy log
+
+                    # Update accuracy log (с горизонтом)
                     self._update_accuracy_log(
-                        db, fa.branch_id, target_date, 
+                        db, fa.branch_id, target_date,
                         fa.predicted_amount, fa.actual_amount,
-                        abs(error), mape
+                        abs(error), mape, horizon
                     )
-            
-            # 3. Calculate aggregated metrics
+
+            # 3. Calculate aggregated metrics (headline — WAPE, аудит P1-7)
             daily_metrics = {
                 "date": target_date.isoformat(),
+                "daily_wape": _wape(actuals, preds) if actuals else 0.0,
+                "daily_median_ape": _median_ape(actuals, preds) if actuals else 0.0,
                 "daily_mape": np.mean(mapes) if mapes else 0.0,
                 "daily_mae": np.mean(np.abs(errors)) if errors else 0.0,
                 "daily_rmse": np.sqrt(np.mean(np.square(errors))) if errors else 0.0,
                 "daily_predictions_count": len(mapes),
                 "prediction_bias": np.mean(errors) if errors else 0.0,  # >0 means over-predicting
-                "mape_std": np.std(mapes) if mapes else 0.0
+                "bias_pct": _bias_pct(actuals, preds) if actuals else 0.0,
+                "mape_std": np.std(mapes) if mapes else 0.0,
+                # Разрез по горизонту прогноза (1 = t+1, 7 = t+7, ...)
+                "per_horizon": {
+                    h: {
+                        "n": len(v["actual"]),
+                        "wape": round(_wape(v["actual"], v["pred"]), 2),
+                        "median_ape": round(_median_ape(v["actual"], v["pred"]), 2),
+                    }
+                    for h, v in sorted(by_horizon.items())
+                },
             }
             
             # 4. Find best and worst performing branches
@@ -139,14 +175,19 @@ class ModelMonitoringService:
             # 7. Get model info
             forecaster = get_forecaster_agent()
             model_info = forecaster.get_model_info()
-            daily_metrics['model_version'] = model_info.get('training_date', 'unknown')
-            
-            # 8. Save metrics (would save to model_performance_metrics table)
-            self._save_daily_metrics(db, daily_metrics)
-            
-            self.logger.info(f"Daily metrics calculated: MAPE={daily_metrics['daily_mape']:.2f}%, "
-                           f"Predictions={daily_metrics['daily_predictions_count']}")
-            
+            daily_metrics['model_version'] = model_info.get('trained_at', 'unknown')
+
+            # 8. Persist metrics + внешний алертинг (Фаза 1.5)
+            self._save_daily_metrics(db, daily_metrics, by_horizon)
+            self._dispatch_alerts(target_date, daily_metrics)
+
+            self.logger.info(
+                f"Daily metrics calculated: WAPE={daily_metrics['daily_wape']:.2f}%, "
+                f"MedAPE={daily_metrics['daily_median_ape']:.2f}%, "
+                f"MAPE={daily_metrics['daily_mape']:.2f}%, "
+                f"Predictions={daily_metrics['daily_predictions_count']}"
+            )
+
             return daily_metrics
             
         except Exception as e:
@@ -234,7 +275,7 @@ class ModelMonitoringService:
             forecaster = get_forecaster_agent()
             model_info = forecaster.get_model_info()
             summary['current_model'] = {
-                "version": model_info.get('training_date', 'unknown'),
+                "version": model_info.get('trained_at', 'unknown'),
                 "status": model_info.get('status', 'unknown'),
                 "features": model_info.get('n_features', 0)
             }
@@ -380,25 +421,27 @@ class ModelMonitoringService:
                 db.close()
     
     def _update_accuracy_log(
-        self, 
-        db: Session, 
-        branch_id: str, 
+        self,
+        db: Session,
+        branch_id: str,
         forecast_date: date,
-        predicted: float, 
-        actual: float, 
-        mae: float, 
-        mape: float
+        predicted: float,
+        actual: float,
+        mae: float,
+        mape: float,
+        horizon_days: int = 1,
     ):
-        """Update or create accuracy log entry"""
+        """Update or create accuracy log entry (ключ: branch + date + horizon)."""
         try:
             # Check if entry exists
             existing = db.query(ForecastAccuracyLog).filter(
                 and_(
                     ForecastAccuracyLog.branch_id == branch_id,
-                    ForecastAccuracyLog.forecast_date == forecast_date
+                    ForecastAccuracyLog.forecast_date == forecast_date,
+                    ForecastAccuracyLog.horizon_days == horizon_days
                 )
             ).first()
-            
+
             if existing:
                 # Update existing
                 existing.actual_amount = actual
@@ -412,12 +455,13 @@ class ModelMonitoringService:
                     predicted_amount=predicted,
                     actual_amount=actual,
                     mae=mae,
-                    mape=mape
+                    mape=mape,
+                    horizon_days=horizon_days
                 )
                 db.add(new_log)
-            
+
             db.commit()
-            
+
         except Exception as e:
             self.logger.error(f"Error updating accuracy log: {e}")
             db.rollback()
@@ -462,22 +506,22 @@ class ModelMonitoringService:
     ) -> List[Dict[str, Any]]:
         """Check for various alert conditions"""
         alerts = []
-        
-        # 1. Overall MAPE alerts
-        daily_mape = daily_metrics.get('daily_mape', 0)
-        if daily_mape > self.mape_critical_threshold:
+
+        # 1. Overall WAPE alerts (headline-метрика, аудит P1-7; пороги 25/35%)
+        daily_wape = daily_metrics.get('daily_wape', 0)
+        if daily_wape > self.wape_critical_threshold:
             alerts.append({
                 "type": "critical",
                 "category": "overall_performance",
-                "message": f"Critical: Daily MAPE ({daily_mape:.1f}%) exceeds threshold",
-                "value": daily_mape
+                "message": f"Critical: Daily WAPE ({daily_wape:.1f}%) exceeds threshold {self.wape_critical_threshold:.0f}%",
+                "value": daily_wape
             })
-        elif daily_mape > self.mape_warning_threshold:
+        elif daily_wape > self.wape_warning_threshold:
             alerts.append({
                 "type": "warning",
                 "category": "overall_performance",
-                "message": f"Warning: Daily MAPE ({daily_mape:.1f}%) is high",
-                "value": daily_mape
+                "message": f"Warning: Daily WAPE ({daily_wape:.1f}%) is high (threshold {self.wape_warning_threshold:.0f}%)",
+                "value": daily_wape
             })
         
         # 2. Degradation alerts
@@ -532,30 +576,96 @@ class ModelMonitoringService:
         return float(slope)
     
     def _calculate_model_age(self, model_info: Dict) -> int:
-        """Calculate model age in days"""
+        """Calculate model age in days (по trained_at из метаданных .pkl).
+
+        Аудит P0-4: раньше искался несуществующий ключ 'training_date' —
+        возраст всегда был 0 и health-check «model too old» не срабатывал.
+        """
         try:
-            if 'training_date' in model_info:
-                training_date_str = model_info['training_date']
-                if isinstance(training_date_str, str):
-                    # Parse various date formats
-                    for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S']:
-                        try:
-                            training_date = datetime.strptime(training_date_str.split('.')[0], fmt)
-                            return (datetime.utcnow() - training_date).days
-                        except:
-                            continue
-        except:
-            pass
-        
+            trained_at = model_info.get('trained_at')
+            if isinstance(trained_at, str) and trained_at != 'unknown':
+                training_date = datetime.fromisoformat(trained_at.replace('Z', '+00:00'))
+                return (datetime.utcnow() - training_date).days
+        except Exception as e:
+            self.logger.warning(f"Cannot parse model trained_at: {e}")
+
         return 0
-    
-    def _save_daily_metrics(self, db: Session, metrics: Dict):
-        """Save daily metrics to database"""
-        # This would save to model_performance_metrics table when created
-        # For now, just log
-        self.logger.info(f"Daily metrics: MAPE={metrics.get('daily_mape', 0):.2f}%, "
-                        f"Predictions={metrics.get('daily_predictions_count', 0)}, "
-                        f"Alerts={len(metrics.get('alerts', []))}")
+
+    def _save_daily_metrics(self, db: Session, metrics: Dict, by_horizon: Dict):
+        """Персист дневных агрегатов в model_performance_metrics (Фаза 1.5).
+
+        horizon_days=0 — агрегат по всем горизонтам, 1/7/... — по конкретным.
+        UPSERT — повторный прогон за тот же день перезаписывает строки.
+        Раньше метод был заглушкой «For now, just log» и агрегаты терялись.
+        """
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        try:
+            metric_date = date.fromisoformat(metrics["date"])
+            rows = [{
+                "metric_date": metric_date,
+                "horizon_days": 0,
+                "n_predictions": int(metrics.get("daily_predictions_count", 0)),
+                "wape": float(metrics.get("daily_wape", 0.0)),
+                "mape": float(metrics.get("daily_mape", 0.0)),
+                "median_ape": float(metrics.get("daily_median_ape", 0.0)),
+                "mae": float(metrics.get("daily_mae", 0.0)),
+                "bias_pct": float(metrics.get("bias_pct", 0.0)),
+                "alerts": metrics.get("alerts") or None,
+                "model_version": str(metrics.get("model_version", "unknown")),
+            }]
+            for h, v in (metrics.get("per_horizon") or {}).items():
+                y_true = by_horizon[h]["actual"]
+                y_pred = by_horizon[h]["pred"]
+                rows.append({
+                    "metric_date": metric_date,
+                    "horizon_days": int(h),
+                    "n_predictions": int(v["n"]),
+                    "wape": float(v["wape"]),
+                    "mape": None,
+                    "median_ape": float(v["median_ape"]),
+                    "mae": float(np.mean(np.abs(np.array(y_true) - np.array(y_pred)))),
+                    "bias_pct": float(_bias_pct(y_true, y_pred)),
+                    "alerts": None,
+                    "model_version": str(metrics.get("model_version", "unknown")),
+                })
+
+            for row in rows:
+                stmt = pg_insert(ModelPerformanceMetrics).values(**row).on_conflict_do_update(
+                    constraint="uq_perf_metrics_date_horizon",
+                    set_={k: row[k] for k in row if k not in ("metric_date", "horizon_days")},
+                )
+                db.execute(stmt)
+            db.commit()
+
+            self.logger.info(
+                f"Daily metrics persisted ({len(rows)} rows): "
+                f"WAPE={metrics.get('daily_wape', 0):.2f}%, "
+                f"Predictions={metrics.get('daily_predictions_count', 0)}, "
+                f"Alerts={len(metrics.get('alerts', []))}"
+            )
+        except Exception as e:
+            self.logger.error(f"Error persisting daily metrics: {e}", exc_info=True)
+            db.rollback()
+
+    def _dispatch_alerts(self, target_date: date, metrics: Dict):
+        """Отправить critical-алерты наружу (Фаза 1.5, P0-6).
+
+        Warning/info остаются в логах и model_performance_metrics.alerts;
+        в Telegram уходят только critical — иначе канал зашумится.
+        """
+        critical = [a for a in metrics.get("alerts", []) if a.get("type") == "critical"]
+        if not critical:
+            return
+        lines = [f"🔴 Sales Forecast: {len(critical)} critical alert(s) за {target_date}"]
+        for a in critical:
+            lines.append(f"— {a.get('message')}")
+        lines.append(
+            f"WAPE {metrics.get('daily_wape', 0):.1f}%, "
+            f"MedAPE {metrics.get('daily_median_ape', 0):.1f}%, "
+            f"predictions {metrics.get('daily_predictions_count', 0)}"
+        )
+        send_telegram_alert("\n".join(lines))
 
 
 def get_model_monitoring_service() -> ModelMonitoringService:

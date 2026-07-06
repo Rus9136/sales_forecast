@@ -588,13 +588,17 @@ class ModelRetrainingService:
             
         except Exception as e:
             # Не тихий rollback: потеря аудит-трейла — критичное событие
-            # (P0-4: так молча терялись ВСЕ записи с эпохи numpy 2.x).
-            # TODO(Фаза 1.5): сюда же — отправка алерта в Telegram.
+            # (P0-4: так молча терялись ВСЕ записи с эпохи numpy 2.x)
             self.logger.critical(
                 f"❌ AUDIT TRAIL LOST — model_versions INSERT failed for "
                 f"{metadata.get('version_id')}: {e}", exc_info=True
             )
             db.rollback()
+            from .alerting import send_telegram_alert
+            send_telegram_alert(
+                f"🔴 Sales Forecast: AUDIT TRAIL LOST — model_versions INSERT "
+                f"failed for {metadata.get('version_id')}: {e}"
+            )
     
     def _save_retrain_log(self, db: Session, log_data: Dict):
         """Save retraining log to database"""
@@ -621,13 +625,17 @@ class ModelRetrainingService:
             self.logger.info(f"✅ Retraining log saved to database: {log_data['new_version_id']}")
             
         except Exception as e:
-            # См. комментарий в _save_model_metadata — аудит-трейл терять нельзя.
-            # TODO(Фаза 1.5): алерт в Telegram.
+            # См. комментарий в _save_model_metadata — аудит-трейл терять нельзя
             self.logger.critical(
                 f"❌ AUDIT TRAIL LOST — model_retraining_log INSERT failed for "
                 f"{log_data.get('new_version_id')}: {e}", exc_info=True
             )
             db.rollback()
+            from .alerting import send_telegram_alert
+            send_telegram_alert(
+                f"🔴 Sales Forecast: AUDIT TRAIL LOST — model_retraining_log INSERT "
+                f"failed for {log_data.get('new_version_id')}: {e}"
+            )
 
 
 # Global instance for scheduler
