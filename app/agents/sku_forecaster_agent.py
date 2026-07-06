@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..services.sku_training_service import SkuTrainingDataService
+from ..services.forecast_metrics import wape as _wape, median_ape as _median_ape
 
 logger = logging.getLogger(__name__)
 
@@ -127,16 +128,21 @@ class SkuForecasterAgent:
             'n_unique_departments': n_unique_depts,
             'val_mae': float(mean_absolute_error(y_val, y_val_pred)),
             'val_mape': float(self._mape(y_val, y_val_pred)),
+            'val_wape': _wape(y_val, y_val_pred),
+            'val_median_ape': _median_ape(y_val, y_val_pred),
             'val_r2': float(r2_score(y_val, y_val_pred)),
             'val_rmse': float(np.sqrt(mean_squared_error(y_val, y_val_pred))),
             'test_mae': float(mean_absolute_error(y_test, y_test_pred)),
             'test_mape': float(self._mape(y_test, y_test_pred)),
+            'test_wape': _wape(y_test, y_test_pred),
+            'test_median_ape': _median_ape(y_test, y_test_pred),
             'test_r2': float(r2_score(y_test, y_test_pred)),
             'test_rmse': float(np.sqrt(mean_squared_error(y_test, y_test_pred))),
         }
         self._training_metrics = metrics
         logger.info(
-            f"SKU model trained — test MAPE={metrics['test_mape']:.2f}%, "
+            f"SKU model trained — test WAPE={metrics['test_wape']:.2f}%, "
+            f"test MAPE={metrics['test_mape']:.2f}%, "
             f"test MAE={metrics['test_mae']:.2f}, test R²={metrics['test_r2']:.4f}"
         )
 
@@ -164,6 +170,7 @@ class SkuForecasterAgent:
         db: Session,
         top_n: int = 50,
         save_to_db: bool = False,
+        order_by: str = "qty",
     ) -> List[dict]:
         """Batch-predict qty for all active SKUs at a department for one date."""
         if self.model is None:
@@ -222,7 +229,12 @@ class SkuForecasterAgent:
             history, active_skus, forecast_date, department_id, db,
         )
 
-        results.sort(key=lambda x: x['predicted_qty'], reverse=True)
+        # order_by='revenue' — топ по прогнозному обороту (Фаза 1.4: ежедневная
+        # джоба сохраняет топ-50 SKU по обороту); 'qty' — legacy для UI
+        if order_by == "revenue":
+            results.sort(key=lambda x: (x.get('estimated_revenue') or 0.0), reverse=True)
+        else:
+            results.sort(key=lambda x: x['predicted_qty'], reverse=True)
         if top_n:
             results = results[:top_n]
 

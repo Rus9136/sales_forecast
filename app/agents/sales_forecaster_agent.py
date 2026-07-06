@@ -12,6 +12,7 @@ import threading
 from typing import Optional, Dict, Any, Tuple
 
 from ..services.training_service import TrainingDataService
+from ..services.forecast_metrics import wape, median_ape
 from ..models.branch import SalesSummary, Department
 from ..db import get_db
 
@@ -178,38 +179,49 @@ class SalesForecasterAgent:
         test_r2 = r2_score(y_test, y_test_pred)
         test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
         
+        # WAPE/MedianAPE — headline-метрики (аудит P1-7): MAPE на смешанных
+        # масштабах точек взрывается на малых знаменателях
+        val_wape = wape(y_val, y_val_pred)
+        val_median_ape = median_ape(y_val, y_val_pred)
+        test_wape = wape(y_test, y_test_pred)
+        test_median_ape = median_ape(y_test, y_test_pred)
+
         # Comprehensive metrics
         metrics = {
             # Dataset sizes
             'train_samples': len(X_train),
             'val_samples': len(X_val),
             'test_samples': len(X_test),
-            
+
             # Validation metrics (used during training)
             'val_mae': val_mae,
             'val_mape': val_mape,
+            'val_wape': val_wape,
+            'val_median_ape': val_median_ape,
             'val_r2': val_r2,
             'val_rmse': val_rmse,
-            
+
             # Test metrics (honest evaluation)
             'test_mae': test_mae,
             'test_mape': test_mape,
+            'test_wape': test_wape,
+            'test_median_ape': test_median_ape,
             'test_r2': test_r2,
             'test_rmse': test_rmse,
-            
+
             # Legacy fields for backward compatibility
             'mae': test_mae,  # Используем test метрики как основные
             'mape': test_mape,
             'r2': test_r2,
             'rmse': test_rmse
         }
-        
+
         logger.info("=== MODEL TRAINING RESULTS ===")
         logger.info(f"📊 VALIDATION METRICS (используется для early stopping):")
-        logger.info(f"   MAE: {val_mae:.2f}, MAPE: {val_mape:.2f}%, R²: {val_r2:.4f}, RMSE: {val_rmse:.2f}")
+        logger.info(f"   WAPE: {val_wape:.2f}%, MedAPE: {val_median_ape:.2f}%, MAPE: {val_mape:.2f}%, MAE: {val_mae:.2f}, R²: {val_r2:.4f}")
         logger.info(f"")
         logger.info(f"🎯 TEST METRICS (честная оценка обобщающей способности):")
-        logger.info(f"   MAE: {test_mae:.2f}, MAPE: {test_mape:.2f}%, R²: {test_r2:.4f}, RMSE: {test_rmse:.2f}")
+        logger.info(f"   WAPE: {test_wape:.2f}%, MedAPE: {test_median_ape:.2f}%, MAPE: {test_mape:.2f}%, MAE: {test_mae:.2f}, R²: {test_r2:.4f}")
         logger.info(f"")
         logger.info(f"📈 Разница между validation и test показывает склонность к переобучению")
         logger.info(f"   MAPE разница: {abs(val_mape - test_mape):.2f}% ({'переобучение' if val_mape < test_mape else 'недообучение'})")
@@ -657,14 +669,19 @@ class SalesForecasterAgent:
 
         try:
             model_version = str(getattr(self, "_trained_at", "unknown") or "unknown")
+            # Горизонт на момент создания прогноза (Фаза 1.1): t+1 и t+7 на одну
+            # дату хранятся раздельно — деградация по горизонту измерима.
+            # Прошлые даты (например, /comparison) получают 0.
+            horizon_days = max(0, (forecast_date - date.today()).days)
 
             stmt = pg_insert(Forecast).values(
                 branch_id=str(branch_id),
                 forecast_date=forecast_date,
                 predicted_amount=predicted_amount,
                 model_version=model_version,
+                horizon_days=horizon_days,
             ).on_conflict_do_update(
-                index_elements=["branch_id", "forecast_date"],
+                index_elements=["branch_id", "forecast_date", "horizon_days"],
                 set_={
                     "predicted_amount": predicted_amount,
                     "model_version": model_version,

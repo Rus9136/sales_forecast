@@ -1,4 +1,5 @@
-from sqlalchemy import Column, String, ForeignKey, DateTime, Float, Integer, Date, Boolean
+from sqlalchemy import Column, String, ForeignKey, DateTime, Float, Integer, Date, Boolean, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..db import Base
@@ -12,6 +13,10 @@ class Forecast(Base):
     forecast_date = Column(Date, nullable=False, index=True)
     predicted_amount = Column(Float, nullable=False)
     model_version = Column(String, nullable=False)
+    # Горизонт в днях на момент создания прогноза (миграция 030, Фаза 1.1):
+    # позволяет хранить t+1 и t+7 прогнозы на одну дату раздельно и мерить
+    # деградацию качества по горизонту
+    horizon_days = Column(Integer, nullable=False, default=1, server_default="1")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     branch = relationship("Branch", back_populates="forecasts")
@@ -27,6 +32,33 @@ class ForecastAccuracyLog(Base):
     actual_amount = Column(Float, nullable=True)
     mae = Column(Float, nullable=True)
     mape = Column(Float, nullable=True)
+    horizon_days = Column(Integer, nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelPerformanceMetrics(Base):
+    """Дневные агрегаты качества прогноза (миграция 030, Фаза 1.5).
+
+    horizon_days=0 — агрегат по всем горизонтам; 1/7/... — по конкретному.
+    Раньше _save_daily_metrics был заглушкой и агрегаты нигде не хранились.
+    """
+
+    __tablename__ = "model_performance_metrics"
+    __table_args__ = (
+        UniqueConstraint("metric_date", "horizon_days", name="uq_perf_metrics_date_horizon"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    metric_date = Column(Date, nullable=False, index=True)
+    horizon_days = Column(Integer, nullable=False, default=0, server_default="0")
+    n_predictions = Column(Integer, nullable=False)
+    wape = Column(Float, nullable=True)
+    mape = Column(Float, nullable=True)
+    median_ape = Column(Float, nullable=True)
+    mae = Column(Float, nullable=True)
+    bias_pct = Column(Float, nullable=True)
+    alerts = Column(JSONB, nullable=True)
+    model_version = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

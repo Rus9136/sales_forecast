@@ -8,7 +8,7 @@ from ..db import Base
 # Re-export all models so existing `from ..models.branch import X` imports keep working.
 from .department import Department  # noqa: F401
 from .sales import SalesSummary, SalesByHour, AutoSyncLog  # noqa: F401
-from .forecast import Forecast, ForecastAccuracyLog, PostprocessingSettings  # noqa: F401
+from .forecast import Forecast, ForecastAccuracyLog, ModelPerformanceMetrics, PostprocessingSettings  # noqa: F401
 from .ml import ModelVersion, ModelRetrainingLog  # noqa: F401
 from .employee import Employee, SalesByWaiter  # noqa: F401
 
