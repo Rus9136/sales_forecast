@@ -8,6 +8,7 @@ from sqlalchemy import and_
 import joblib
 import logging
 import os
+import threading
 from typing import Optional, Dict, Any, Tuple
 
 from ..services.training_service import TrainingDataService
@@ -123,18 +124,11 @@ class SalesForecasterAgent:
             self.feature_columns = training_service.get_feature_columns()
             target_column = training_service.get_target_column()
         else:
-            # Use pre-split data
-            training_service = TrainingDataService(db) if db else None
-            if training_service:
-                self.feature_columns = training_service.get_feature_columns()
-                target_column = training_service.get_target_column()
-            else:
-                # Create a temporary training service to get updated feature columns
-                from ..db import get_db
-                temp_db = next(get_db())
-                temp_training_service = TrainingDataService(temp_db)
-                self.feature_columns = temp_training_service.get_feature_columns()
-                target_column = temp_training_service.get_target_column()
+            # Pre-split данные: список фичей статичен (staticmethod), сессия БД
+            # не нужна (раньше здесь создавался и утекал next(get_db()) — это
+            # мешало и юнит-тестам контура деплоя, аудит P0-1d)
+            self.feature_columns = TrainingDataService.get_feature_columns()
+            target_column = 'total_sales'
         
         # Prepare datasets — train in log1p space to balance loss across
         # vastly different sales scales (500..3M ₸/day). Metrics computed
@@ -997,14 +991,36 @@ class SalesForecasterAgent:
 
 # Singleton instance
 _forecaster_instance = None
+_forecaster_lock = threading.Lock()
 
 
 def get_forecaster_agent() -> SalesForecasterAgent:
-    """Get singleton instance of SalesForecasterAgent"""
+    """Get singleton instance of SalesForecasterAgent (thread-safe)."""
     global _forecaster_instance
     if _forecaster_instance is None:
-        _forecaster_instance = SalesForecasterAgent()
+        with _forecaster_lock:
+            if _forecaster_instance is None:
+                _forecaster_instance = SalesForecasterAgent()
     return _forecaster_instance
+
+
+def reload_forecaster_agent() -> SalesForecasterAgent:
+    """Перечитать модель с диска и атомарно подменить синглтон.
+
+    Вызывается после деплоя новой модели (auto_retrain): без этого serving
+    работал бы на старой in-memory модели до рестарта контейнера (аудит P0-1c).
+    Новый агент собирается полностью (модель + feature_columns + transform)
+    ДО подмены ссылки, поэтому конкурентные запросы видят либо старый, либо
+    новый агент целиком — никогда полусобранный.
+    """
+    global _forecaster_instance
+    new_agent = SalesForecasterAgent()
+    with _forecaster_lock:
+        _forecaster_instance = new_agent
+    logger.info(
+        f"Forecaster singleton reloaded (trained_at={getattr(new_agent, '_trained_at', 'unknown')})"
+    )
+    return new_agent
 
 
 def reset_forecaster_agent():

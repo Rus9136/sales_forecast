@@ -21,7 +21,11 @@ from pathlib import Path
 
 from ..db import get_db
 from ..models.branch import Department, SalesSummary, ForecastAccuracyLog, ModelVersion, ModelRetrainingLog
-from ..agents.sales_forecaster_agent import get_forecaster_agent, SalesForecasterAgent
+from ..agents.sales_forecaster_agent import (
+    get_forecaster_agent,
+    reload_forecaster_agent,
+    SalesForecasterAgent,
+)
 from .training_service import TrainingDataService
 from .error_analysis_service import ErrorAnalysisService
 
@@ -31,9 +35,9 @@ logger = logging.getLogger(__name__)
 class ModelRetrainingService:
     """Service for automatic model retraining with versioning"""
     
-    def __init__(self):
+    def __init__(self, models_dir: str = "models"):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.models_dir = Path("models")
+        self.models_dir = Path(models_dir)
         self.models_dir.mkdir(exist_ok=True)
         self.archive_dir = self.models_dir / "archive"
         self.archive_dir.mkdir(exist_ok=True)
@@ -92,28 +96,20 @@ class ModelRetrainingService:
             # 4. Split data
             train_df, val_df, test_df = training_service.split_train_validation_test(training_data)
             
-            # 5. Train new model
-            self.logger.info(f"Training new model with {len(training_data)} samples")
-            new_forecaster = SalesForecasterAgent()
-            model, metrics = new_forecaster.train_model(train_df, val_df, test_df)
-            
-            # 6. Generate version ID
+            # 5. Train new model.
+            # КРИТИЧНО (аудит P0-1a): кандидат обучается и сохраняется во
+            # ВРЕМЕННЫЙ путь. Раньше агент создавался с дефолтным путём и
+            # train_model(save_model=True) перезаписывал models/lgbm_model.pkl
+            # ДО решения о деплое — отклонённые модели попадали в прод.
             new_version_id = self._generate_version_id()
-            
-            # 7. Save new model temporarily
             temp_model_path = self.models_dir / f"temp_{new_version_id}.pkl"
-            new_forecaster._save_model(metrics=metrics)
-            
-            # Copy to temp path for deployment decision
-            import shutil
-            self.logger.info(f"Source model path: {new_forecaster.model_path}")
-            self.logger.info(f"Target temp path: {temp_model_path}")
-            if os.path.exists(new_forecaster.model_path):
-                shutil.copy2(new_forecaster.model_path, str(temp_model_path))
-                self.logger.info(f"Model copied to temp path successfully")
-            else:
-                self.logger.error(f"Source model path does not exist: {new_forecaster.model_path}")
-                raise FileNotFoundError(f"Source model not found: {new_forecaster.model_path}")
+
+            self.logger.info(f"Training new model with {len(training_data)} samples")
+            new_forecaster = SalesForecasterAgent(model_path=str(temp_model_path))
+            model, metrics = new_forecaster.train_model(train_df, val_df, test_df)
+
+            if not temp_model_path.exists():
+                raise FileNotFoundError(f"Candidate model not saved: {temp_model_path}")
             
             # 8. Calculate feature importance
             feature_importance = new_forecaster.get_feature_importance()
@@ -168,14 +164,19 @@ class ModelRetrainingService:
             
             # 12. Deploy if approved
             if deployment_decision['decision'] == 'deployed':
+                # Archive old model BEFORE replacing it
+                self._archive_current_model(current_version)
+
                 self._deploy_model(new_version_id, temp_model_path)
                 model_version_data['is_active'] = True
                 model_version_data['status'] = 'deployed'
                 model_version_data['deployment_date'] = datetime.utcnow()
-                
-                # Archive old model
-                self._archive_current_model(current_version)
-                
+                model_version_data['model_path'] = str(self.models_dir / "lgbm_model.pkl")
+
+                # Hot-reload serving-синглтона (аудит P0-1c): иначе API работает
+                # на старой in-memory модели до рестарта контейнера
+                reload_forecaster_agent()
+
                 self.logger.info(f"✅ New model deployed! Version: {new_version_id}, MAPE: {new_test_mape:.2f}%")
             else:
                 # Move to archive if rejected
@@ -359,17 +360,25 @@ class ModelRetrainingService:
         }
     
     def _deploy_model(self, version_id: str, model_path: Path):
-        """Deploy new model by replacing the current one"""
+        """Deploy new model by atomically replacing the current one.
+
+        Аудит P0-1b: shutil.copy2 поверх прод-файла не атомарен — параллельный
+        читатель (рестарт контейнера, новый процесс) мог получить наполовину
+        записанный .pkl. Пишем во временный файл рядом и os.replace() — на
+        POSIX это атомарная операция в пределах одной ФС.
+        """
         production_path = self.models_dir / "lgbm_model.pkl"
-        
+
         # Backup current model
         if production_path.exists():
             backup_path = self.models_dir / f"backup_lgbm_model_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pkl"
             shutil.copy2(production_path, backup_path)
-        
-        # Deploy new model
-        shutil.copy2(model_path, production_path)
-        
+
+        # Deploy new model atomically
+        staging_path = production_path.with_name(production_path.name + ".staging")
+        shutil.copy2(model_path, staging_path)
+        os.replace(staging_path, production_path)
+
         # Remove temporary file
         if model_path.exists() and "temp_" in str(model_path):
             os.remove(model_path)
