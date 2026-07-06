@@ -966,6 +966,8 @@ class SalesForecasterAgent:
             'model_type': type(self.model).__name__ if self.model else None,
             'n_features': len(self.feature_columns) if self.feature_columns else 0,
             'feature_names': self.feature_columns,
+            'trained_at': getattr(self, '_trained_at', 'unknown'),
+            'target_transform': getattr(self, '_target_transform', 'identity'),
             'segment_models': sorted(self.segment_models.keys()),
             'segment_metrics': self.segment_metrics,
         }

@@ -10,6 +10,8 @@ import os
 import json
 import pickle
 import shutil
+
+import numpy as np
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, desc
@@ -30,6 +32,27 @@ from .training_service import TrainingDataService
 from .error_analysis_service import ErrorAnalysisService
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_numpy(obj):
+    """Рекурсивно привести numpy-типы к нативным Python.
+
+    Аудит P0-4: psycopg2 не умеет адаптировать np.float64 — INSERT в
+    model_versions/model_retraining_log падал с InvalidSchemaName
+    (schema "np" does not exist), и весь аудит-трейл переобучений молча
+    терялся с момента перехода на numpy 2.x.
+    """
+    if isinstance(obj, dict):
+        return {k: _clean_numpy(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_numpy(v) for v in obj]
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
 
 
 class ModelRetrainingService:
@@ -121,19 +144,22 @@ class ModelRetrainingService:
                 "model_type": "LGBMRegressor",
                 "training_date": retrain_start,
                 "training_end_date": datetime.utcnow(),
-                "n_features": len(train_df.columns) - 1,  # Exclude target
+                "n_features": len(new_forecaster.feature_columns or []),
                 "n_samples": len(training_data),
                 "training_days": 365,
                 "outlier_method": "winsorize",
                 "hyperparameters": new_forecaster.model.get_params() if hasattr(new_forecaster.model, 'get_params') else {},
+                # Ключи метрик агента: val_* / test_* (аудит P0-4 — раньше
+                # искались несуществующие 'validation_mape'/'train_mape')
                 "train_mape": metrics.get('train_mape'),
-                "validation_mape": metrics.get('validation_mape'),
+                "validation_mape": metrics.get('val_mape'),
                 "test_mape": metrics.get('test_mape'),
                 "train_r2": metrics.get('train_r2'),
-                "validation_r2": metrics.get('validation_r2'),
+                "validation_r2": metrics.get('val_r2'),
                 "test_r2": metrics.get('test_r2'),
                 "top_features": top_features,
-                "feature_names": list(train_df.columns[:-1]),
+                # Реальные фичи модели, а не сырые колонки датафрейма
+                "feature_names": list(new_forecaster.feature_columns or []),
                 "model_path": str(temp_model_path),
                 "model_size_mb": os.path.getsize(temp_model_path) / (1024 * 1024) if os.path.exists(temp_model_path) else 0.0,
                 "status": "trained",
@@ -253,9 +279,11 @@ class ModelRetrainingService:
         # Get current model info
         forecaster = get_forecaster_agent()
         model_info = forecaster.get_model_info()
-        
+
         return {
-            "version_id": model_info.get('training_date', 'unknown'),
+            # Аудит P0-3/P0-4: ключа 'training_date' в model_info никогда не
+            # было — version_id был вечно 'unknown', а model_age всегда 0
+            "version_id": model_info.get('trained_at', 'unknown'),
             "recent_mape": accuracy_logs.avg_mape or 0.0,
             "prediction_count": accuracy_logs.prediction_count or 0,
             "mape_std": accuracy_logs.mape_std or 0.0,
@@ -391,23 +419,21 @@ class ModelRetrainingService:
             shutil.copy2(production_path, archive_path)
     
     def _calculate_model_age(self, model_info: Dict) -> int:
-        """Calculate model age in days"""
+        """Calculate model age in days (по trained_at из метаданных .pkl)."""
         try:
-            if 'training_date' in model_info:
-                # Parse training date from various formats
-                training_date_str = model_info['training_date']
-                if isinstance(training_date_str, str):
-                    # Try to parse ISO format
-                    training_date = datetime.fromisoformat(training_date_str.replace('Z', '+00:00'))
-                    return (datetime.utcnow() - training_date).days
-        except:
-            pass
-        
+            trained_at = model_info.get('trained_at')
+            if isinstance(trained_at, str) and trained_at != 'unknown':
+                training_date = datetime.fromisoformat(trained_at.replace('Z', '+00:00'))
+                return (datetime.utcnow() - training_date).days
+        except Exception as e:
+            self.logger.warning(f"Cannot parse model trained_at: {e}")
+
         # Default to 0 if can't determine
         return 0
     
     def _save_model_metadata(self, db: Session, metadata: Dict):
         """Save model metadata to database"""
+        metadata = _clean_numpy(metadata)
         try:
             model_version = ModelVersion(
                 version_id=metadata['version_id'],
@@ -440,11 +466,18 @@ class ModelRetrainingService:
             self.logger.info(f"✅ Model metadata saved to database: {metadata['version_id']}")
             
         except Exception as e:
-            self.logger.error(f"❌ Error saving model metadata: {e}")
+            # Не тихий rollback: потеря аудит-трейла — критичное событие
+            # (P0-4: так молча терялись ВСЕ записи с эпохи numpy 2.x).
+            # TODO(Фаза 1.5): сюда же — отправка алерта в Telegram.
+            self.logger.critical(
+                f"❌ AUDIT TRAIL LOST — model_versions INSERT failed for "
+                f"{metadata.get('version_id')}: {e}", exc_info=True
+            )
             db.rollback()
     
     def _save_retrain_log(self, db: Session, log_data: Dict):
         """Save retraining log to database"""
+        log_data = _clean_numpy(log_data)
         try:
             retrain_log = ModelRetrainingLog(
                 retrain_date=log_data['retrain_date'],
@@ -467,7 +500,12 @@ class ModelRetrainingService:
             self.logger.info(f"✅ Retraining log saved to database: {log_data['new_version_id']}")
             
         except Exception as e:
-            self.logger.error(f"❌ Error saving retraining log: {e}")
+            # См. комментарий в _save_model_metadata — аудит-трейл терять нельзя.
+            # TODO(Фаза 1.5): алерт в Telegram.
+            self.logger.critical(
+                f"❌ AUDIT TRAIL LOST — model_retraining_log INSERT failed for "
+                f"{log_data.get('new_version_id')}: {e}", exc_info=True
+            )
             db.rollback()
 
 
