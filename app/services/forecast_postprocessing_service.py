@@ -22,7 +22,7 @@ import warnings
 from scipy import stats
 from sklearn.metrics import mean_absolute_error
 
-from ..models.branch import SalesSummary, Department
+from ..models.branch import SalesSummary, Department, ForecastAccuracyLog
 from ..agents.sales_forecaster_agent import get_forecaster_agent
 
 logger = logging.getLogger(__name__)
@@ -181,16 +181,19 @@ class ForecastPostprocessingService:
         return processed_forecasts
     
     def _get_historical_context(
-        self, 
-        branch_id: str, 
-        forecast_date: date, 
-        days_back: int = 30
+        self,
+        branch_id: str,
+        forecast_date: date,
+        days_back: int = 56
     ) -> pd.DataFrame:
-        """Get historical sales data for context"""
-        
+        """Get historical sales data for context.
+
+        Окно 8 недель (было 30д): DOW-aware сглаживание/anomaly (P1-5) требуют
+        достаточно одноимённых дней недели — 56 дней дают до 8 значений на DOW.
+        """
         start_date = forecast_date - timedelta(days=days_back)
         end_date = forecast_date - timedelta(days=1)
-        
+
         query = self.db.query(
             SalesSummary.date,
             SalesSummary.total_sales
@@ -201,15 +204,30 @@ class ForecastPostprocessingService:
                 SalesSummary.date <= end_date
             )
         ).order_by(SalesSummary.date)
-        
+
         results = query.all()
-        
+
         if not results:
             return pd.DataFrame()
-        
+
         df = pd.DataFrame(results, columns=['date', 'total_sales'])
         df['date'] = pd.to_datetime(df['date'])
         return df.sort_values('date')
+
+    def _same_weekday_values(
+        self, historical_data: pd.DataFrame, forecast_date: date, max_n: int = 8
+    ) -> pd.Series:
+        """Продажи того же дня недели, что и forecast_date (последние max_n).
+
+        Базис для DOW-aware сглаживания и anomaly (P1-5): пятница/выходной
+        сравниваются со своей нормой, а не с общим средним — иначе легитимные
+        недельные пики режутся как «аномалия»/«скачок».
+        """
+        if historical_data.empty:
+            return pd.Series(dtype=float)
+        target_dow = pd.Timestamp(forecast_date).dayofweek
+        same = historical_data[historical_data['date'].dt.dayofweek == target_dow]
+        return same['total_sales'].tail(max_n)
     
     def _apply_smoothing(
         self, 
@@ -232,27 +250,32 @@ class ForecastPostprocessingService:
         """
         if historical_data.empty or len(historical_data) < 3:
             return prediction
-        
-        # Calculate recent average (last 7 days)
-        recent_avg = historical_data['total_sales'].tail(7).mean()
-        
-        # Calculate percentage change
-        if recent_avg > 0:
-            pct_change = ((prediction - recent_avg) / recent_avg) * 100
-            
-            # If change is too large, cap it
+
+        # DOW-aware базис (P1-5): раньше сглаживание сравнивало прогноз с общим
+        # средним за 7 дней и клиппило ±50% от него — у точек с выраженной
+        # недельностью пятница/суббота систематически превышали будний средний
+        # и легитимные пики срезались. Плюс это был ВТОРОЙ клип поверх
+        # DOW-aware сглаживания в самом агенте (двойное сглаживание). Теперь
+        # база — норма того же дня недели; если её нет, откат на 7-дневное.
+        same_weekday = self._same_weekday_values(historical_data, forecast_date)
+        if len(same_weekday) >= 2:
+            baseline = float(same_weekday.mean())
+        else:
+            baseline = float(historical_data['total_sales'].tail(7).mean())
+
+        if baseline > 0:
+            pct_change = ((prediction - baseline) / baseline) * 100
+
             if abs(pct_change) > max_change_percent:
-                # Determine direction and apply cap
                 direction = 1 if pct_change > 0 else -1
                 capped_change = direction * max_change_percent
-                
-                smoothed_prediction = recent_avg * (1 + capped_change / 100)
-                
-                logger.info(f"Smoothing applied: {pct_change:.1f}% → {capped_change:.1f}%, "
+                smoothed_prediction = baseline * (1 + capped_change / 100)
+
+                logger.info(f"DOW-aware smoothing: {pct_change:.1f}% → {capped_change:.1f}%, "
                            f"prediction: {prediction:.2f} → {smoothed_prediction:.2f}")
-                
+
                 return max(0, smoothed_prediction)  # Ensure non-negative
-        
+
         return prediction
     
     def _apply_business_rules(
@@ -289,24 +312,18 @@ class ForecastPostprocessingService:
         if not historical_data.empty:
             historical_max = historical_data['total_sales'].max()
             max_ceiling = historical_max * 2.0  # 200% of historical maximum
-            
+
             if adjusted_prediction > max_ceiling:
                 adjusted_prediction = max_ceiling
                 logger.info(f"Applied maximum ceiling: {prediction:.2f} → {adjusted_prediction:.2f}")
-        
-        # Rule 3: Weekend adjustment for specific business types
-        department = self.db.query(Department).filter(Department.id == branch_id).first()
-        if department and forecast_date.weekday() >= 5:  # Weekend
-            if hasattr(department, 'segment_type') and department.segment_type in ['coffeehouse', 'cafe']:
-                # Coffeehouses typically have higher weekend sales
-                weekend_boost = 1.1  # 10% boost
-                adjusted_prediction *= weekend_boost
-        
-        # Rule 4: Holiday proximity adjustment
-        if self._is_near_holiday(forecast_date):
-            holiday_adjustment = 1.15  # 15% increase near holidays
-            adjusted_prediction *= holiday_adjustment
-        
+
+        # УДАЛЕНО (P1-5): произвольные множители ×1.1 (выходные для кофеен) и
+        # ×1.15 (близость праздника). Это рудименты «weekend boost», удалённого
+        # из агента ещё в апреле 2026 — backtest признал такие ручные множители
+        # вредными (переворачивали bias с −20% в +13%). Выходные/праздники уже
+        # выучены моделью через is_weekend/is_saturday/is_holiday-фичи.
+        # Остаются только санитарные floor/ceiling.
+
         return max(0, adjusted_prediction)  # Ensure non-negative
     
     def _detect_forecast_anomalies(
@@ -330,21 +347,31 @@ class ForecastPostprocessingService:
         """
         if historical_data.empty or len(historical_data) < 7:
             return {'score': 0.0, 'is_anomaly': False, 'reason': 'insufficient_data'}
-        
-        # Calculate z-score relative to historical mean and std
-        historical_mean = historical_data['total_sales'].mean()
-        historical_std = historical_data['total_sales'].std()
-        
-        if historical_std == 0:
+
+        # DOW-aware база (P1-5): z-score против нормы того же дня недели, а не
+        # против общего 30-дневного среднего — иначе выходные с их естественно
+        # более высокими продажами систематически помечались «аномалией».
+        same_weekday = self._same_weekday_values(historical_data, forecast_date)
+        if len(same_weekday) >= 3:
+            historical_mean = float(same_weekday.mean())
+            historical_std = float(same_weekday.std())
+            basis = 'same_weekday'
+        else:
+            historical_mean = float(historical_data['total_sales'].mean())
+            historical_std = float(historical_data['total_sales'].std())
+            basis = 'overall'
+
+        if historical_std == 0 or pd.isna(historical_std):
             z_score = 0.0
         else:
             z_score = abs((prediction - historical_mean) / historical_std)
-        
+
         is_anomaly = z_score > z_threshold
-        
+
         result = {
             'score': float(z_score),
             'is_anomaly': bool(is_anomaly),
+            'basis': basis,
             'historical_mean': float(historical_mean),
             'historical_std': float(historical_std),
             'threshold': float(z_threshold)
@@ -376,6 +403,16 @@ class ForecastPostprocessingService:
         Returns:
             Dict with confidence interval information
         """
+        # Split-conformal (P1-5): интервал строится из ЭМПИРИЧЕСКОГО
+        # распределения ошибок модели на этой точке, а не из эвристики
+        # «normal × CV-cap 0.5». Берём относительные остатки
+        # r = (факт − прогноз)/прогноз из forecast_accuracy_log за ~90 дней и
+        # их квантили — покрытие честное и калиброванное под конкретный филиал.
+        conformal = self._conformal_interval(prediction, branch_id, confidence_level)
+        if conformal is not None:
+            return conformal
+
+        # Fallback (мало истории ошибок): историческая волатильность.
         if historical_data.empty or len(historical_data) < 3:
             return {
                 'lower_bound': prediction * 0.8,
@@ -383,33 +420,64 @@ class ForecastPostprocessingService:
                 'confidence_level': confidence_level,
                 'method': 'default_range'
             }
-        
-        # Method 1: Based on historical volatility
+
         historical_std = historical_data['total_sales'].std()
         historical_mean = historical_data['total_sales'].mean()
-        
-        # Calculate coefficient of variation
         cv = historical_std / historical_mean if historical_mean > 0 else 0.3
-        
-        # Use normal distribution assumption
         alpha = 1 - confidence_level
-        z_critical = stats.norm.ppf(1 - alpha/2)
-        
-        # Estimate prediction standard error as fraction of prediction
-        prediction_std = prediction * min(cv, 0.5)  # Cap at 50% CV
-        
+        z_critical = stats.norm.ppf(1 - alpha / 2)
+        prediction_std = prediction * min(cv, 0.5)
         margin_of_error = z_critical * prediction_std
-        
-        lower_bound = max(0, prediction - margin_of_error)
-        upper_bound = prediction + margin_of_error
-        
+
         return {
-            'lower_bound': float(lower_bound),
-            'upper_bound': float(upper_bound),
+            'lower_bound': float(max(0, prediction - margin_of_error)),
+            'upper_bound': float(prediction + margin_of_error),
             'confidence_level': float(confidence_level),
-            'method': 'historical_volatility',
+            'method': 'historical_volatility_fallback',
             'coefficient_of_variation': float(cv),
             'margin_of_error': float(margin_of_error)
+        }
+
+    def _conformal_interval(
+        self, prediction: float, branch_id: str, confidence_level: float,
+        lookback_days: int = 90, min_samples: int = 10,
+    ) -> Optional[Dict[str, Any]]:
+        """Split-conformal CI из относительных остатков модели (P1-5).
+
+        Возвращает None, если истории ошибок мало (→ fallback на волатильность).
+        """
+        if prediction <= 0:
+            return None
+        start = date.today() - timedelta(days=lookback_days)
+        rows = self.db.query(
+            ForecastAccuracyLog.predicted_amount,
+            ForecastAccuracyLog.actual_amount,
+        ).filter(
+            and_(
+                ForecastAccuracyLog.branch_id == str(branch_id),
+                ForecastAccuracyLog.forecast_date >= start,
+                ForecastAccuracyLog.actual_amount.isnot(None),
+                ForecastAccuracyLog.predicted_amount > 0,
+            )
+        ).all()
+        rel = [
+            (float(a) - float(p)) / float(p)
+            for p, a in rows if p and float(p) > 0 and a is not None
+        ]
+        if len(rel) < min_samples:
+            return None
+
+        alpha = 1 - confidence_level
+        q_low = float(np.quantile(rel, alpha / 2))
+        q_high = float(np.quantile(rel, 1 - alpha / 2))
+        return {
+            'lower_bound': float(max(0, prediction * (1 + q_low))),
+            'upper_bound': float(prediction * (1 + q_high)),
+            'confidence_level': float(confidence_level),
+            'method': 'split_conformal',
+            'n_residuals': len(rel),
+            'rel_q_low': round(q_low, 3),
+            'rel_q_high': round(q_high, 3),
         }
     
     def _get_business_context_flags(
