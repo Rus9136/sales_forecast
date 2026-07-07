@@ -8,6 +8,7 @@ import logging
 
 from ..models.branch import SalesSummary, Department
 from ..db import get_db
+from . import kz_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -306,15 +307,18 @@ class TrainingDataService:
         df['is_summer'] = (df['season'] == 'summer').astype(int)
         df['is_autumn'] = (df['season'] == 'autumn').astype(int)
         
-        # Kazakhstan holidays
-        df['is_holiday'] = df['date'].apply(self._is_kazakhstan_holiday).astype(int)
-        df['is_pre_holiday'] = df['date'].apply(self._is_pre_holiday).astype(int)
-        df['is_post_holiday'] = df['date'].apply(self._is_post_holiday).astype(int)
-        
+        # Kazakhstan holidays — единый календарь (P1-3): один источник для
+        # train и inference, Курбан-айт/Рамадан/зарплатные до 2030
+        df['is_holiday'] = df['date'].apply(kz_calendar.is_holiday).astype(int)
+        df['is_pre_holiday'] = df['date'].apply(kz_calendar.is_pre_holiday).astype(int)
+        df['is_post_holiday'] = df['date'].apply(kz_calendar.is_post_holiday).astype(int)
+        df['is_ramadan'] = df['date'].apply(kz_calendar.is_ramadan).astype(int)
+        df['is_payday_window'] = df['date'].apply(kz_calendar.is_payday_window).astype(int)
+
         # Days from/to important dates
         df['days_from_new_year'] = (df['date'] - pd.to_datetime(df['year'].astype(str) + '-01-01')).dt.days
         df['days_to_new_year'] = (pd.to_datetime((df['year'] + 1).astype(str) + '-01-01') - df['date']).dt.days
-        
+
         return df
     
     def _add_department_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -506,140 +510,6 @@ class TrainingDataService:
 
         return df
     
-    def get_feature_columns(self) -> list:
-        """Get list of feature column names for model training"""
-        return [
-            # Basic time features
-            'day_of_week',
-            'month',
-            'day_of_month',
-            'year',
-            
-            # Weekend and workday features
-            'is_weekend',
-            'is_friday',
-            'is_monday',
-            'is_saturday',
-            'is_sunday',
-            'weekend_multiplier',
-            
-            # Quarter features
-            'quarter',
-            'is_quarter_start',
-            'is_quarter_end',
-            
-            # Week and month features
-            'week_of_year',
-            'is_month_start',
-            'is_month_end',
-            
-            # Season features
-            'is_winter',
-            'is_spring',
-            'is_summer',
-            'is_autumn',
-            
-            # Holiday features
-            'is_holiday',
-            'is_pre_holiday',
-            'is_post_holiday',
-            
-            # Days from/to important dates
-            'days_from_new_year',
-            'days_to_new_year',
-            
-            # Rolling averages
-            'rolling_3d_avg_sales',
-            'rolling_7d_avg_sales',
-            'rolling_14d_avg_sales',
-            'rolling_30d_avg_sales',
-            
-            # Rolling standard deviations
-            'rolling_3d_std_sales',
-            'rolling_7d_std_sales',
-            'rolling_14d_std_sales',
-            
-            # Rolling sums
-            'rolling_7d_sum_sales',
-            'rolling_14d_sum_sales',
-            
-            # Lag features
-            'lag_1d_sales',
-            'lag_2d_sales',
-            'lag_7d_sales',
-            'lag_14d_sales',
-            
-            # Percentage changes
-            'pct_change_1d',
-            'pct_change_7d',
-            'pct_change_14d',
-            
-            # Rolling min/max
-            'rolling_7d_min_sales',
-            'rolling_7d_max_sales',
-            
-            # Sales momentum
-            'sales_momentum_7d',
-            'sales_momentum_14d',
-            
-            # Department type features
-            'is_department',
-            'is_organization',
-            
-            # Segment type features
-            'is_coffeehouse',
-            'is_restaurant',
-            'is_confectionery', 
-            'is_food_court',
-            'is_store',
-            'is_fast_food',
-            'is_bakery',
-            'is_cafe',
-            'is_bar',
-            
-            # Department hierarchy
-            'has_parent',
-            
-            # Department size indicators
-            'dept_name_length',
-            'has_plaza_in_name',
-            'has_center_in_name',
-            'has_mall_in_name',
-            
-            # Location features
-            'is_almaty',
-            'is_astana',
-            'is_shymkent',
-
-            # Outlier flag (replaces destructive winsorize)
-            'is_outlier_day',
-
-            # Operational metadata (manual UI-entered) — sparse for unenriched depts.
-            # Brand one-hot
-            'is_brand_tary',
-            'is_brand_sandyq',
-            'is_brand_madlen',
-            'is_brand_shopan',
-            # Location type one-hot
-            'is_loc_city_center',
-            'is_loc_mall',
-            'is_loc_business_district',
-            'is_loc_resort_mountain',
-            'is_loc_resort_lake',
-            'is_loc_visit_center',
-            'is_loc_other',
-            # Operational flags
-            'is_tourist_dependent',
-            'is_24_7',
-            'working_hours_count',
-            # Lifecycle
-            'days_since_opening',
-            'is_new_department',
-            # Seasonality
-            'seasonality_score',
-            'is_in_season',
-        ]
-    
     def get_target_column(self) -> str:
         """Get target column name"""
         return 'total_sales'
@@ -672,10 +542,12 @@ class TrainingDataService:
             'is_summer',
             'is_autumn',
             
-            # Holiday features
+            # Holiday features (единый kz_calendar, P1-3/P2-7)
             'is_holiday',
             'is_pre_holiday',
             'is_post_holiday',
+            'is_ramadan',
+            'is_payday_window',
             'days_from_new_year',
             'days_to_new_year',
             
@@ -848,57 +720,16 @@ class TrainingDataService:
         else:  # [9, 10, 11]
             return 'autumn'
     
+    # Праздничные методы делегируют в единый kz_calendar (P1-3). Оставлены
+    # для обратной совместимости вызовов; новый код зовёт kz_calendar напрямую.
     def _is_kazakhstan_holiday(self, date: pd.Timestamp) -> bool:
-        """Check if date is a Kazakhstan holiday"""
-        month = date.month
-        day = date.day
-        year = date.year
-        
-        # Fixed holidays
-        fixed_holidays = [
-            (1, 1),   # New Year's Day
-            (1, 2),   # New Year's Day (extended)
-            (3, 8),   # International Women's Day
-            (3, 21),  # Nauryz Holiday
-            (3, 22),  # Nauryz Holiday
-            (3, 23),  # Nauryz Holiday
-            (5, 1),   # Unity Day of the People of Kazakhstan
-            (5, 7),   # Defender of the Fatherland Day
-            (5, 9),   # Victory Day
-            (7, 6),   # Capital City Day
-            (8, 30),  # Constitution Day
-            (12, 1),  # First President Day
-            (12, 16), # Independence Day
-            (12, 17)  # Independence Day (extended)
-        ]
-        
-        if (month, day) in fixed_holidays:
-            return True
-            
-        # Kurban Ait (variable date - approximate)
-        # This is a simplified version, in reality it follows lunar calendar
-        if year >= 2022:
-            kurban_dates = {
-                2022: (7, 10),
-                2023: (6, 29),
-                2024: (6, 17),
-                2025: (6, 7),
-                2026: (5, 27)
-            }
-            if year in kurban_dates and (month, day) == kurban_dates[year]:
-                return True
-        
-        return False
-    
+        return kz_calendar.is_holiday(date)
+
     def _is_pre_holiday(self, date: pd.Timestamp) -> bool:
-        """Check if date is day before a holiday"""
-        next_day = date + pd.Timedelta(days=1)
-        return self._is_kazakhstan_holiday(next_day)
-    
+        return kz_calendar.is_pre_holiday(date)
+
     def _is_post_holiday(self, date: pd.Timestamp) -> bool:
-        """Check if date is day after a holiday"""
-        prev_day = date - pd.Timedelta(days=1)
-        return self._is_kazakhstan_holiday(prev_day)
+        return kz_calendar.is_post_holiday(date)
 
 
 def get_training_data_service(db: Session = None) -> TrainingDataService:

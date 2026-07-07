@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, Tuple
 
 from ..services.training_service import TrainingDataService
 from ..services.forecast_metrics import wape, median_ape
+from ..services import kz_calendar
 from ..models.branch import SalesSummary, Department
 from ..db import get_db
 
@@ -439,10 +440,12 @@ class SalesForecasterAgent:
         features['is_summer'] = 1 if season == 'summer' else 0
         features['is_autumn'] = 1 if season == 'autumn' else 0
         
-        # Holiday features (Kazakhstan holidays)
-        features['is_holiday'] = 1 if self._is_kazakhstan_holiday(forecast_datetime) else 0
-        features['is_pre_holiday'] = 1 if self._is_pre_holiday(forecast_datetime) else 0
-        features['is_post_holiday'] = 1 if self._is_post_holiday(forecast_datetime) else 0
+        # Holiday features (единый kz_calendar, P1-3 — идентично обучению)
+        features['is_holiday'] = 1 if kz_calendar.is_holiday(forecast_datetime) else 0
+        features['is_pre_holiday'] = 1 if kz_calendar.is_pre_holiday(forecast_datetime) else 0
+        features['is_post_holiday'] = 1 if kz_calendar.is_post_holiday(forecast_datetime) else 0
+        features['is_ramadan'] = 1 if kz_calendar.is_ramadan(forecast_datetime) else 0
+        features['is_payday_window'] = 1 if kz_calendar.is_payday_window(forecast_datetime) else 0
         
         # Days from/to important dates
         new_year = pd.to_datetime(f"{forecast_datetime.year}-01-01")
@@ -624,32 +627,16 @@ class SalesForecasterAgent:
         else:
             return 'autumn'
     
+    # Праздничные методы делегируют в единый kz_calendar (P1-3) — устраняет
+    # прежнее расхождение с обучением (Наурыз 21-24 vs 21-23, без Курбан-айта).
     def _is_kazakhstan_holiday(self, date_val) -> bool:
-        """Check if date is a Kazakhstan holiday"""
-        month_day = (date_val.month, date_val.day)
-        holidays = [
-            (1, 1), (1, 2),  # New Year
-            (3, 8),          # International Women's Day
-            (3, 21), (3, 22), (3, 23), (3, 24),  # Nauryz
-            (5, 1),          # Unity Day
-            (5, 7),          # Defender of the Fatherland Day
-            (5, 9),          # Victory Day
-            (7, 6),          # Capital City Day
-            (8, 30),         # Constitution Day
-            (12, 1),         # First President Day
-            (12, 16), (12, 17), (12, 18)  # Independence Day
-        ]
-        return month_day in holidays
-    
+        return kz_calendar.is_holiday(date_val)
+
     def _is_pre_holiday(self, date_val) -> bool:
-        """Check if date is before a holiday"""
-        next_day = date_val + timedelta(days=1)
-        return self._is_kazakhstan_holiday(next_day)
-    
+        return kz_calendar.is_pre_holiday(date_val)
+
     def _is_post_holiday(self, date_val) -> bool:
-        """Check if date is after a holiday"""
-        prev_day = date_val - timedelta(days=1)
-        return self._is_kazakhstan_holiday(prev_day)
+        return kz_calendar.is_post_holiday(date_val)
     
     def _calculate_mape(self, y_true, y_pred) -> float:
         """Calculate Mean Absolute Percentage Error"""

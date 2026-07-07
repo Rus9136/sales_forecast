@@ -463,25 +463,9 @@ class ForecastPostprocessingService:
         return False
     
     def _is_kazakhstan_holiday(self, date_obj: date) -> bool:
-        """Check if date is a Kazakhstan holiday"""
-        month = date_obj.month
-        day = date_obj.day
-        
-        # Fixed holidays
-        fixed_holidays = [
-            (1, 1), (1, 2),   # New Year
-            (3, 8),           # Women's Day
-            (3, 21), (3, 22), (3, 23),  # Nauryz
-            (5, 1),           # Unity Day
-            (5, 7),           # Defender's Day
-            (5, 9),           # Victory Day
-            (7, 6),           # Capital Day
-            (8, 30),          # Constitution Day
-            (12, 1),          # First President Day
-            (12, 16), (12, 17) # Independence Day
-        ]
-        
-        return (month, day) in fixed_holidays
+        """Единый kz_calendar (P1-3) — согласовано с обучением и инференсом."""
+        from . import kz_calendar
+        return kz_calendar.is_holiday(date_obj)
 
 
 def get_forecast_postprocessing_service(db: Session) -> ForecastPostprocessingService:
