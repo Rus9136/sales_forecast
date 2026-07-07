@@ -6,6 +6,7 @@ transform, pickle persistence, train/predict/forecast API.
 
 import logging
 import os
+import threading
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -65,7 +66,12 @@ class SkuForecasterAgent:
             train_df, val_df, test_df = svc.split_train_validation_test(df)
             self.feature_columns = svc.get_feature_columns()
             target_col = svc.get_target_column()
+            # Encodings из train-датасета уезжают в .pkl и переиспользуются
+            # инференсом (аудит P0-5d)
+            self._encoding_maps = svc.encoding_maps
         else:
+            # Pre-split путь (retrain-цикл): encoding_maps выставляет вызывающая
+            # сторона (agent._encoding_maps = svc.encoding_maps) ДО train_model
             self.feature_columns = SkuTrainingDataService.get_feature_columns()
             target_col = SkuTrainingDataService.get_target_column()
 
@@ -80,11 +86,13 @@ class SkuForecasterAgent:
                     split_df[c] = 0
             available_features = self.feature_columns
 
-        X_train = train_df[available_features].astype(float)
+        # float32: LightGBM работает с ним нативно, а память датасета
+        # сокращается вдвое (аудит P0-2a — воскресный OOM всего API)
+        X_train = train_df[available_features].astype(np.float32)
         y_train = train_df[target_col].astype(float)
-        X_val = val_df[available_features].astype(float)
+        X_val = val_df[available_features].astype(np.float32)
         y_val = val_df[target_col].astype(float)
-        X_test = test_df[available_features].astype(float)
+        X_test = test_df[available_features].astype(np.float32)
         y_test = test_df[target_col].astype(float)
 
         y_train_t = np.log1p(y_train)
@@ -172,62 +180,119 @@ class SkuForecasterAgent:
         save_to_db: bool = False,
         order_by: str = "qty",
     ) -> List[dict]:
-        """Batch-predict qty for all active SKUs at a department for one date."""
+        """Batch-predict qty for all active SKUs at a department for one date.
+
+        С Фазы 2.1 признаки строит ТОТ ЖЕ feature-builder, что и обучение
+        (аудит P0-5): календарная сетка с нулями за INFERENCE_WINDOW_DAYS,
+        rolling строго внутри групп, реальные метаданные и стабильные
+        encodings из .pkl. Паритет закреплён тестом test_sku_feature_parity.
+        """
         if self.model is None:
             raise RuntimeError("SKU model not loaded")
 
-        active_skus = db.execute(text("""
-            SELECT DISTINCT sds.product_id, p.name, p.type,
-                   ng.name AS group_name, nc.name AS category_name,
-                   p.default_sale_price
+        from ..services.sku_feature_builder import (
+            INFERENCE_WINDOW_DAYS,
+            build_features,
+            build_inference_grid,
+        )
+        from ..services.sku_training_service import SkuTrainingDataService
+
+        # Активные SKU точки за 30 дней до прогнозной даты
+        active_rows = db.execute(text("""
+            SELECT DISTINCT sds.product_id
             FROM sku_daily_sales sds
             JOIN product p ON p.id = sds.product_id
-            LEFT JOIN nomenclature_group ng ON ng.id = p.group_id
-            LEFT JOIN nomenclature_category nc ON nc.id = p.category_id
             WHERE sds.department_id = :dept_id
               AND sds.sale_date >= :cutoff
+              AND sds.sale_date < :target
               AND p.is_deleted = false
         """), {
             "dept_id": department_id,
             "cutoff": forecast_date - timedelta(days=30),
+            "target": forecast_date,
         }).fetchall()
-
-        if not active_skus:
+        if not active_rows:
             return []
 
-        history = db.execute(text("""
-            SELECT sds.product_id, sds.sale_date, sds.total_qty, sds.total_sum,
-                   p.type AS product_type, p.default_sale_price, p.weight_kg,
-                   p.is_included_in_menu, p.group_id, p.category_id,
-                   ng.name AS group_name, nc.name AS category_name,
-                   d.name AS department_name, d.code AS department_code,
-                   d.type AS department_type, d.segment_type, d.parent_id,
-                   d.brand, d.location_type, d.tourist_traffic_dependent,
-                   d.is_24_7, d.opening_hour, d.closing_hour,
-                   d.seasonality_intensity, d.city, d.opened_date,
-                   d.season_start_month, d.season_end_month
+        active_pairs = pd.DataFrame({
+            "department_id": str(department_id),
+            "product_id": [r[0] for r in active_rows],
+        })
+
+        # История qty/sum подразделения за окно билдера (без метаданных)
+        value_rows = db.execute(text("""
+            SELECT sds.department_id, sds.product_id, sds.sale_date AS date,
+                   sds.total_qty, sds.total_sum
             FROM sku_daily_sales sds
-            JOIN product p ON p.id = sds.product_id
-            LEFT JOIN nomenclature_group ng ON ng.id = p.group_id
-            LEFT JOIN nomenclature_category nc ON nc.id = p.category_id
-            JOIN departments d ON d.id = sds.department_id
             WHERE sds.department_id = :dept_id
               AND sds.sale_date >= :start
-              AND sds.sale_date <= :end
-              AND p.is_deleted = false
-            ORDER BY sds.product_id, sds.sale_date
+              AND sds.sale_date < :target
         """), {
             "dept_id": department_id,
-            "start": forecast_date - timedelta(days=45),
-            "end": forecast_date - timedelta(days=1),
+            "start": forecast_date - timedelta(days=INFERENCE_WINDOW_DAYS),
+            "target": forecast_date,
         }).fetchall()
-
-        if not history:
+        if not value_rows:
             return []
 
-        results = self._batch_predict_from_history(
-            history, active_skus, forecast_date, department_id, db,
+        raw_values = pd.DataFrame(value_rows, columns=[
+            "department_id", "product_id", "date", "total_qty", "total_sum",
+        ])
+        raw_values["department_id"] = raw_values["department_id"].astype(str)
+        raw_values["total_qty"] = raw_values["total_qty"].astype("float32")
+        raw_values["total_sum"] = raw_values["total_sum"].astype("float32")
+
+        # Метаданные — теми же загрузчиками, что и train
+        svc = SkuTrainingDataService(db)
+        product_meta = svc._load_product_meta()
+        dept_meta = svc._load_dept_meta()
+
+        grid = build_inference_grid(raw_values, active_pairs, forecast_date)
+        feats, _ = build_features(
+            grid, product_meta, dept_meta,
+            encoding_maps=self._encoding_maps or None,
         )
+
+        target_rows = feats[feats["date"] == pd.Timestamp(forecast_date)].copy()
+        if target_rows.empty:
+            return []
+
+        missing = [c for c in self.feature_columns if c not in target_rows.columns]
+        for c in missing:
+            target_rows[c] = 0
+        if missing:
+            logger.warning(f"SKU inference: missing features filled with 0: {missing}")
+
+        X = (
+            target_rows[self.feature_columns]
+            .astype(np.float32)
+            .fillna(0)
+            .replace([np.inf, -np.inf], 0)
+        )
+        preds = self.predict(X)
+
+        meta_idx = product_meta.drop_duplicates("product_id").set_index("product_id")
+        results = []
+        for (_, row), raw_qty in zip(target_rows.iterrows(), preds):
+            pid = row["product_id"]
+            qty = 0.0 if (np.isnan(raw_qty) or np.isinf(raw_qty)) else round(float(raw_qty), 1)
+            m = meta_idx.loc[pid] if pid in meta_idx.index else None
+            price_val = None
+            if m is not None and pd.notna(m["default_sale_price"]):
+                try:
+                    price_val = float(m["default_sale_price"])
+                except (TypeError, ValueError):
+                    price_val = None
+            results.append({
+                "product_id": int(pid),
+                "product_name": m["product_name"] if m is not None else None,
+                "product_type": m["product_type"] if m is not None else None,
+                "group_name": m["group_name"] if m is not None else None,
+                "category_name": m["category_name"] if m is not None else None,
+                "predicted_qty": qty,
+                "avg_price": round(price_val, 2) if price_val else None,
+                "estimated_revenue": round(qty * price_val, 2) if price_val and qty else None,
+            })
 
         # order_by='revenue' — топ по прогнозному обороту (Фаза 1.4: ежедневная
         # джоба сохраняет топ-50 SKU по обороту); 'qty' — legacy для UI
@@ -243,236 +308,6 @@ class SkuForecasterAgent:
 
         return results
 
-    def _batch_predict_from_history(
-        self, history_rows, active_skus, forecast_date, department_id, db,
-    ) -> List[dict]:
-        """Build feature matrix for all active SKUs and predict in one call."""
-        from ..services.training_service import TrainingDataService
-
-        hist_cols = [
-            'product_id', 'sale_date', 'total_qty', 'total_sum',
-            'product_type', 'default_sale_price', 'weight_kg',
-            'is_included_in_menu', 'group_id', 'category_id',
-            'group_name', 'category_name', 'department_name', 'department_code',
-            'department_type', 'segment_type', 'parent_id', 'brand',
-            'location_type', 'tourist_traffic_dependent', 'is_24_7',
-            'opening_hour', 'closing_hour', 'seasonality_intensity', 'city',
-            'opened_date', 'season_start_month', 'season_end_month',
-        ]
-        hist_df = pd.DataFrame(history_rows, columns=hist_cols)
-        hist_df['total_qty'] = hist_df['total_qty'].astype(float)
-        hist_df['total_sum'] = hist_df['total_sum'].astype(float)
-
-        dept_svc = TrainingDataService(db)
-
-        sku_map = {
-            row[0]: {
-                'product_name': row[1], 'product_type': row[2],
-                'group_name': row[3], 'category_name': row[4],
-                'default_sale_price': float(row[5]) if row[5] else None,
-            }
-            for row in active_skus
-        }
-
-        feature_rows = []
-        for pid, info in sku_map.items():
-            sku_hist = hist_df[hist_df['product_id'] == pid].sort_values('sale_date')
-            features = self._build_sku_features(
-                forecast_date, sku_hist, hist_df, dept_svc, pid, info,
-            )
-            features['_product_id'] = pid
-            features['_product_name'] = info['product_name']
-            features['_product_type'] = info['product_type']
-            features['_group_name'] = info['group_name']
-            features['_category_name'] = info['category_name']
-            features['_default_sale_price'] = info['default_sale_price']
-            feature_rows.append(features)
-
-        if not feature_rows:
-            return []
-
-        X = pd.DataFrame(feature_rows)
-        meta_cols = [c for c in X.columns if c.startswith('_')]
-        feature_cols = [c for c in self.feature_columns if c in X.columns]
-        missing = set(self.feature_columns) - set(feature_cols)
-        for c in missing:
-            X[c] = 0
-        feature_cols = self.feature_columns
-
-        X_pred = X[feature_cols].astype(float).fillna(0).replace([np.inf, -np.inf], 0)
-        preds = self.predict(X_pred)
-
-        results = []
-        for i, row in X.iterrows():
-            raw_qty = float(preds[i]) if i < len(preds) else 0.0
-            qty = 0.0 if (np.isnan(raw_qty) or np.isinf(raw_qty)) else round(raw_qty, 1)
-            price = row.get('_default_sale_price')
-            try:
-                price_val = float(price) if price is not None and not np.isnan(float(price)) else None
-            except (TypeError, ValueError):
-                price_val = None
-            results.append({
-                'product_id': int(row['_product_id']),
-                'product_name': row['_product_name'],
-                'product_type': row['_product_type'],
-                'group_name': row['_group_name'],
-                'category_name': row['_category_name'],
-                'predicted_qty': qty,
-                'avg_price': round(price_val, 2) if price_val else None,
-                'estimated_revenue': round(qty * price_val, 2) if price_val and qty else None,
-            })
-        return results
-
-    def _build_sku_features(
-        self, forecast_date, sku_hist, all_hist, dept_svc, product_id, product_info,
-    ) -> dict:
-        """Build a single feature row for one SKU at forecast_date."""
-        f = {}
-        fd = pd.Timestamp(forecast_date)
-
-        python_dow = fd.dayofweek
-        dow = (python_dow + 1) % 7
-        f['day_of_week'] = dow
-        f['month'] = fd.month
-        f['day_of_month'] = fd.day
-        f['year'] = fd.year
-        f['is_weekend'] = int(dow in (0, 6))
-        f['is_friday'] = int(dow == 5)
-        f['is_monday'] = int(dow == 1)
-        f['is_saturday'] = int(dow == 6)
-        f['is_sunday'] = int(dow == 0)
-        f['weekend_multiplier'] = 1.2 if dow in (0, 6) else 1.0
-        f['quarter'] = fd.quarter
-        f['is_quarter_start'] = int(fd.is_quarter_start)
-        f['is_quarter_end'] = int(fd.is_quarter_end)
-        f['week_of_year'] = fd.isocalendar()[1]
-        f['is_month_start'] = int(fd.is_month_start)
-        f['is_month_end'] = int(fd.is_month_end)
-
-        season = dept_svc._get_season(fd.month)
-        f['is_winter'] = int(season == 'winter')
-        f['is_spring'] = int(season == 'spring')
-        f['is_summer'] = int(season == 'summer')
-        f['is_autumn'] = int(season == 'autumn')
-
-        f['is_holiday'] = int(dept_svc._is_kazakhstan_holiday(fd))
-        f['is_pre_holiday'] = int(dept_svc._is_pre_holiday(fd))
-        f['is_post_holiday'] = int(dept_svc._is_post_holiday(fd))
-
-        ny = pd.Timestamp(f"{fd.year}-01-01")
-        f['days_from_new_year'] = (fd - ny).days
-        f['days_to_new_year'] = (pd.Timestamp(f"{fd.year + 1}-01-01") - fd).days
-
-        first_row = sku_hist.iloc[0] if len(sku_hist) > 0 else all_hist.iloc[0] if len(all_hist) > 0 else None
-        if first_row is not None:
-            dept_type = first_row.get('department_type', '')
-            f['is_department'] = int(dept_type == 'DEPARTMENT')
-            f['is_organization'] = int(dept_type == 'ORGANIZATION')
-
-            seg = str(first_row.get('segment_type', '')).lower()
-            for s in ['coffeehouse', 'restaurant', 'confectionery', 'food_court',
-                       'store', 'fast_food', 'bakery', 'cafe', 'bar']:
-                f[f'is_{s}'] = int(seg == s)
-
-            f['has_parent'] = int(bool(first_row.get('parent_id')))
-            name = str(first_row.get('department_name', ''))
-            f['dept_name_length'] = len(name)
-            f['has_plaza_in_name'] = int('plaza' in name.lower() or 'PLAZA' in name)
-            f['has_center_in_name'] = int(any(x in name for x in ['Center', 'CENTER', 'Центр']))
-            f['has_mall_in_name'] = int(any(x in name for x in ['Mall', 'MALL', 'ТРЦ', 'ТРК']))
-            f['is_almaty'] = int(any(x in name for x in ['Алматы', 'Almaty']))
-            f['is_astana'] = int(any(x in name for x in ['Астана', 'Astana', 'Нур-Султан']))
-            f['is_shymkent'] = int(any(x in name for x in ['Шымкент', 'Shymkent']))
-
-            brand = str(first_row.get('brand', '')).lower()
-            for b in ['tary', 'sandyq', 'madlen', 'shopan']:
-                f[f'is_brand_{b}'] = int(brand == b)
-
-            loc = str(first_row.get('location_type', '')).lower()
-            for lt in ['city_center', 'mall', 'business_district',
-                        'resort_mountain', 'resort_lake', 'visit_center', 'other']:
-                f[f'is_loc_{lt}'] = int(loc == lt)
-
-            f['is_tourist_dependent'] = int(bool(first_row.get('tourist_traffic_dependent')))
-            f['is_24_7'] = int(bool(first_row.get('is_24_7')))
-
-            o = first_row.get('opening_hour')
-            c = first_row.get('closing_hour')
-            if f['is_24_7']:
-                f['working_hours_count'] = 24
-            elif o is not None and c is not None:
-                o, c = int(o), int(c)
-                f['working_hours_count'] = (c - o) if c > o else (24 - o + c)
-            else:
-                f['working_hours_count'] = 12
-
-            opened = first_row.get('opened_date')
-            if opened:
-                delta = (forecast_date - opened).days if hasattr(opened, 'year') else -1
-                f['days_since_opening'] = min(max(delta, -1), 1825)
-                f['is_new_department'] = int(0 <= delta < 90)
-            else:
-                f['days_since_opening'] = -1
-                f['is_new_department'] = 0
-
-            si = str(first_row.get('seasonality_intensity', 'none')).lower()
-            f['seasonality_score'] = {'none': 0, 'low': 1, 'medium': 2, 'high': 3}.get(si, 0)
-
-            ss = first_row.get('season_start_month')
-            se = first_row.get('season_end_month')
-            if ss and se:
-                ss, se = int(ss), int(se)
-                m = fd.month
-                if ss <= se:
-                    f['is_in_season'] = int(ss <= m <= se)
-                else:
-                    f['is_in_season'] = int(m >= ss or m <= se)
-            else:
-                f['is_in_season'] = 1
-
-        ptype = product_info.get('product_type', '')
-        f['product_type_dish'] = int(ptype == 'DISH')
-        f['product_type_goods'] = int(ptype == 'GOODS')
-        f['sku_default_price'] = float(product_info.get('default_sale_price') or 0)
-        f['sku_weight_kg'] = 0
-        f['sku_is_in_menu'] = 1
-        f['sku_group_encoded'] = 0
-        f['sku_category_encoded'] = 0
-        f['sku_group_depth'] = 1
-
-        qtys = sku_hist['total_qty'].values if len(sku_hist) > 0 else np.array([0.0])
-        f['sku_lag_1d_qty'] = float(qtys[-1]) if len(qtys) >= 1 else 0
-        f['sku_lag_7d_qty'] = float(qtys[-7]) if len(qtys) >= 7 else 0
-        f['sku_lag_14d_qty'] = float(qtys[-14]) if len(qtys) >= 14 else 0
-
-        for w, name in [(3, '3d'), (7, '7d'), (14, '14d'), (30, '30d')]:
-            window = qtys[-w:] if len(qtys) >= w else qtys
-            f[f'sku_rolling_{name}_avg_qty'] = float(np.mean(window)) if len(window) > 0 else 0
-
-        window_7 = qtys[-7:] if len(qtys) >= 7 else qtys
-        f['sku_rolling_7d_std_qty'] = float(np.std(window_7)) if len(window_7) > 1 else 0
-
-        if len(qtys) >= 7:
-            target_dow = fd.dayofweek
-            indices = [i for i in range(len(qtys)) if i % 7 == len(qtys) % 7]
-            same_dow = qtys[indices[-4:]] if indices else qtys[-4:]
-            f['sku_same_weekday_avg_qty'] = float(np.mean(same_dow))
-        else:
-            f['sku_same_weekday_avg_qty'] = float(np.mean(qtys))
-
-        nonzero = np.where(qtys > 0)[0]
-        f['sku_days_since_last_sale'] = float(len(qtys) - nonzero[-1]) if len(nonzero) > 0 else 30
-
-        all_qty_sum = all_hist['total_qty'].sum()
-        f['dept_total_qty_7d'] = float(all_hist.tail(7)['total_qty'].sum())
-        sku_sum_7d = float(sku_hist.tail(7)['total_sum'].sum()) if len(sku_hist) > 0 else 0
-        dept_sum_7d = float(all_hist.tail(7)['total_sum'].sum()) if len(all_hist) > 0 else 0
-        f['sku_revenue_share_7d'] = sku_sum_7d / dept_sum_7d if dept_sum_7d > 0 else 0
-        f['sku_rank_in_dept'] = 50
-
-        return f
-
-    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
@@ -498,6 +333,7 @@ class SkuForecasterAgent:
             payload = joblib.load(self.model_path)
             self.model = payload['model']
             self.feature_columns = payload.get('feature_columns')
+            self._trained_at = payload.get('trained_at', 'unknown')
             self._target_transform = payload.get('target_transform', 'identity')
             self._training_metrics = payload.get('training_metrics')
             self._encoding_maps = payload.get('encoding_maps', {})
@@ -530,7 +366,7 @@ class SkuForecasterAgent:
             'model_path': self.model_path,
             'n_features': len(self.feature_columns) if self.feature_columns else 0,
             'training_metrics': self._training_metrics,
-            'trained_at': (self._training_metrics or {}).get('trained_at'),
+            'trained_at': getattr(self, '_trained_at', None) or (self._training_metrics or {}).get('trained_at'),
             'target_transform': self._target_transform,
         }
 
@@ -551,10 +387,39 @@ class SkuForecasterAgent:
 # ------------------------------------------------------------------
 
 _sku_forecaster_instance: Optional[SkuForecasterAgent] = None
+_sku_forecaster_lock = threading.Lock()
 
 
 def get_sku_forecaster_agent() -> SkuForecasterAgent:
+    """Thread-safe singleton (double-checked lock)."""
     global _sku_forecaster_instance
     if _sku_forecaster_instance is None:
-        _sku_forecaster_instance = SkuForecasterAgent()
+        with _sku_forecaster_lock:
+            if _sku_forecaster_instance is None:
+                _sku_forecaster_instance = SkuForecasterAgent()
     return _sku_forecaster_instance
+
+
+def reload_sku_forecaster_agent() -> SkuForecasterAgent:
+    """Перечитать SKU-модель с диска и атомарно подменить синглтон.
+
+    Вызывается после деплоя новой модели retrain-контуром (Фаза 2.3):
+    обучение идёт в отдельном процессе/агенте и НЕ мутирует serving-синглтон
+    (раньше train_model подменял self.model на неотфитченный регрессор прямо
+    во время обучения — инференс в это окно падал).
+    """
+    global _sku_forecaster_instance
+    new_agent = SkuForecasterAgent()
+    with _sku_forecaster_lock:
+        _sku_forecaster_instance = new_agent
+    logger.info(
+        f"SKU forecaster singleton reloaded "
+        f"(trained_at={(new_agent._training_metrics or {}).get('trained_at', 'unknown')})"
+    )
+    return new_agent
+
+
+def reset_sku_forecaster_agent():
+    """Reset singleton — для тестов."""
+    global _sku_forecaster_instance
+    _sku_forecaster_instance = None

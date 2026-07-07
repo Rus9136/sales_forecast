@@ -1,46 +1,67 @@
 """Feature engineering for SKU-level quantity forecasting.
 
-Builds a DataFrame where each row = (department_id, product_id, date)
-with ~74 features and target = total_qty.
+С Фазы 2.1 (аудит P0-5) ВСЕ признаки строятся единым feature-builder'ом
+(`sku_feature_builder.build_features`) — тем же кодом, что и инференс
+SkuForecasterAgent. Здесь остались только: загрузка данных (тремя лёгкими
+запросами — значения, метаданные продуктов, метаданные подразделений),
+zero-expansion через builder и хронологический сплит.
 
-Reuses time/department/operational feature logic from the existing
-TrainingDataService (department-level revenue forecaster) and adds
-SKU-specific features on top.
+Память (аудит P0-2a): сетка 2M+ строк несёт только ключи + float32-значения;
+метаданные НЕ тащатся через cross-join (раньше это давало OOM всего API
+каждое воскресенье).
 """
 
 import logging
-from datetime import date, datetime, timedelta
-from typing import Optional, Tuple
+from datetime import date, timedelta
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .training_service import TrainingDataService
+from .sku_feature_builder import build_features, expand_zero_days
 
 logger = logging.getLogger(__name__)
 
-LOAD_SKU_SQL = text("""
+VALUES_SQL = text("""
     SELECT
         sds.department_id,
         sds.product_id,
-        sds.sale_date         AS date,
+        sds.sale_date AS date,
         sds.total_qty,
-        sds.total_sum,
-        sds.receipt_count,
-        p.name                AS product_name,
-        p.type                AS product_type,
+        sds.total_sum
+    FROM sku_daily_sales sds
+    JOIN product p ON p.id = sds.product_id
+    WHERE sds.sale_date >= :start_date
+      AND sds.sale_date <= :end_date
+      AND p.is_deleted = false
+""")
+
+PRODUCT_META_SQL = text("""
+    SELECT
+        p.id AS product_id,
+        p.name AS product_name,
+        p.type AS product_type,
         p.default_sale_price,
         p.weight_kg,
         p.is_included_in_menu,
         p.group_id,
         p.category_id,
-        ng.name               AS group_name,
-        nc.name               AS category_name,
-        d.name                AS department_name,
-        d.code                AS department_code,
-        d.type                AS department_type,
+        ng.name AS group_name,
+        nc.name AS category_name
+    FROM product p
+    LEFT JOIN nomenclature_group ng ON ng.id = p.group_id
+    LEFT JOIN nomenclature_category nc ON nc.id = p.category_id
+    WHERE p.is_deleted = false
+""")
+
+DEPT_META_SQL = text("""
+    SELECT
+        d.id AS department_id,
+        d.name AS department_name,
+        d.code AS department_code,
+        d.type AS department_type,
         d.segment_type,
         d.parent_id,
         d.brand,
@@ -54,15 +75,7 @@ LOAD_SKU_SQL = text("""
         d.opened_date,
         d.season_start_month,
         d.season_end_month
-    FROM sku_daily_sales sds
-    JOIN product p ON p.id = sds.product_id
-    LEFT JOIN nomenclature_group ng ON ng.id = p.group_id
-    LEFT JOIN nomenclature_category nc ON nc.id = p.category_id
-    JOIN departments d ON d.id = sds.department_id
-    WHERE sds.sale_date >= :start_date
-      AND sds.sale_date <= :end_date
-      AND p.is_deleted = false
-    ORDER BY sds.department_id, sds.product_id, sds.sale_date
+    FROM departments d
 """)
 
 ACTIVE_SKUS_SQL = text("""
@@ -78,7 +91,9 @@ class SkuTrainingDataService:
 
     def __init__(self, db: Session):
         self.db = db
-        self._dept_svc = TrainingDataService(db)
+        # Заполняется prepare_training_data (fit на train); агент сохраняет
+        # их в .pkl и переиспользует на инференсе (P0-5d)
+        self.encoding_maps: Dict = {}
 
     def prepare_training_data(
         self,
@@ -96,8 +111,8 @@ class SkuTrainingDataService:
 
         logger.info(f"SKU training data: {start_date} → {end_date}, active_window={active_window_days}d")
 
-        raw_df = self._load_raw_data(start_date, end_date)
-        if raw_df.empty:
+        raw_values = self._load_values(start_date, end_date)
+        if raw_values.empty:
             logger.warning("No SKU sales data found")
             return pd.DataFrame()
 
@@ -106,50 +121,66 @@ class SkuTrainingDataService:
             logger.warning("No active SKU-department pairs")
             return pd.DataFrame()
 
-        logger.info(f"Raw rows: {len(raw_df)}, active pairs: {len(active_pairs)}")
+        logger.info(f"Raw rows: {len(raw_values)}, active pairs: {len(active_pairs)}")
 
-        df = self._expand_zero_days(raw_df, active_pairs, start_date, end_date)
-        logger.info(f"After zero-expansion: {len(df)} rows")
+        grid = expand_zero_days(raw_values, active_pairs, start_date, end_date)
+        logger.info(f"After zero-expansion: {len(grid)} rows")
 
-        df['date'] = pd.to_datetime(df['date'])
+        product_meta = self._load_product_meta()
+        dept_meta = self._load_dept_meta()
 
-        df = self._dept_svc._add_time_features(df)
-        df = self._dept_svc._add_department_features(df)
-        df = self._dept_svc._add_operational_features(df)
-        df = self._add_sku_static_features(df)
-        df = self._add_sku_rolling_features(df)
-        df = self._add_cross_features(df)
+        df, self.encoding_maps = build_features(
+            grid, product_meta, dept_meta, fit_encodings=True,
+        )
 
         feature_cols = self.get_feature_columns()
-        check_cols = [c for c in feature_cols if c in df.columns] + ['total_qty']
+        check_cols = [c for c in feature_cols if c in df.columns] + ["total_qty"]
         initial = len(df)
         df = df.dropna(subset=check_cols)
         logger.info(f"Dropped {initial - len(df)} NaN rows, final: {len(df)}")
 
-        df = df.sort_values(['department_id', 'product_id', 'date'])
+        df = df.sort_values(["department_id", "product_id", "date"]).reset_index(drop=True)
         return df
 
-    def _load_raw_data(self, start_date: date, end_date: date) -> pd.DataFrame:
-        rows = self.db.execute(LOAD_SKU_SQL, {"start_date": start_date, "end_date": end_date}).fetchall()
+    # ------------------------------------------------------------------
+    # Загрузка (три лёгких запроса вместо одного тяжёлого с метаданными)
+    # ------------------------------------------------------------------
+
+    def _load_values(self, start_date: date, end_date: date) -> pd.DataFrame:
+        rows = self.db.execute(
+            VALUES_SQL, {"start_date": start_date, "end_date": end_date}
+        ).fetchall()
         if not rows:
             return pd.DataFrame()
-
         df = pd.DataFrame(rows, columns=[
-            'department_id', 'product_id', 'date', 'total_qty', 'total_sum',
-            'receipt_count', 'product_name', 'product_type', 'default_sale_price',
-            'weight_kg', 'is_included_in_menu', 'group_id', 'category_id',
-            'group_name', 'category_name', 'department_name', 'department_code',
-            'department_type', 'segment_type', 'parent_id', 'brand',
-            'location_type', 'tourist_traffic_dependent', 'is_24_7',
-            'opening_hour', 'closing_hour', 'seasonality_intensity', 'city',
-            'opened_date', 'season_start_month', 'season_end_month',
+            "department_id", "product_id", "date", "total_qty", "total_sum",
         ])
-        df['department_id'] = df['department_id'].astype(str)
-        df['total_qty'] = df['total_qty'].astype(float)
-        df['total_sum'] = df['total_sum'].astype(float)
-        df['tourist_traffic_dependent'] = df['tourist_traffic_dependent'].fillna(False).astype(bool)
-        df['is_24_7_flag'] = df['is_24_7'].fillna(False).astype(bool)
-        df['seasonality_intensity'] = df['seasonality_intensity'].fillna('none')
+        df["department_id"] = df["department_id"].astype(str)
+        df["total_qty"] = df["total_qty"].astype("float32")
+        df["total_sum"] = df["total_sum"].astype("float32")
+        return df
+
+    def _load_product_meta(self) -> pd.DataFrame:
+        rows = self.db.execute(PRODUCT_META_SQL).fetchall()
+        return pd.DataFrame(rows, columns=[
+            "product_id", "product_name", "product_type", "default_sale_price",
+            "weight_kg", "is_included_in_menu", "group_id", "category_id",
+            "group_name", "category_name",
+        ])
+
+    def _load_dept_meta(self) -> pd.DataFrame:
+        rows = self.db.execute(DEPT_META_SQL).fetchall()
+        df = pd.DataFrame(rows, columns=[
+            "department_id", "department_name", "department_code",
+            "department_type", "segment_type", "parent_id", "brand",
+            "location_type", "tourist_traffic_dependent", "is_24_7",
+            "opening_hour", "closing_hour", "seasonality_intensity", "city",
+            "opened_date", "season_start_month", "season_end_month",
+        ])
+        df["department_id"] = df["department_id"].astype(str)
+        df["tourist_traffic_dependent"] = df["tourist_traffic_dependent"].fillna(False).astype(bool)
+        df["is_24_7_flag"] = df["is_24_7"].fillna(False).astype(bool)
+        df["seasonality_intensity"] = df["seasonality_intensity"].fillna("none")
         return df
 
     def _get_active_pairs(self, end_date: date, window_days: int) -> pd.DataFrame:
@@ -157,176 +188,13 @@ class SkuTrainingDataService:
         rows = self.db.execute(ACTIVE_SKUS_SQL, {"cutoff_date": cutoff, "end_date": end_date}).fetchall()
         if not rows:
             return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=['department_id', 'product_id'])
-        df['department_id'] = df['department_id'].astype(str)
+        df = pd.DataFrame(rows, columns=["department_id", "product_id"])
+        df["department_id"] = df["department_id"].astype(str)
         return df
 
-    def _expand_zero_days(
-        self, raw_df: pd.DataFrame, active_pairs: pd.DataFrame,
-        start_date: date, end_date: date,
-    ) -> pd.DataFrame:
-        """For each active (dept, product) pair, ensure every date has a row (fill 0 for missing days)."""
-        all_dates = pd.date_range(start_date, end_date, freq='D')
-        date_df = pd.DataFrame({'date': all_dates})
-        date_df['date'] = date_df['date'].dt.date
-
-        skeleton = active_pairs.merge(date_df, how='cross')
-
-        raw_df['date'] = pd.to_datetime(raw_df['date']).dt.date
-
-        meta_cols = [
-            'product_name', 'product_type', 'default_sale_price', 'weight_kg',
-            'is_included_in_menu', 'group_id', 'category_id', 'group_name',
-            'category_name', 'department_name', 'department_code', 'department_type',
-            'segment_type', 'parent_id', 'brand', 'location_type',
-            'tourist_traffic_dependent', 'is_24_7_flag', 'opening_hour',
-            'closing_hour', 'seasonality_intensity', 'city', 'opened_date',
-            'season_start_month', 'season_end_month',
-        ]
-
-        product_meta = raw_df.drop_duplicates('product_id')[['product_id'] + [
-            c for c in meta_cols if c in [
-                'product_name', 'product_type', 'default_sale_price', 'weight_kg',
-                'is_included_in_menu', 'group_id', 'category_id', 'group_name',
-                'category_name',
-            ]
-        ]]
-
-        dept_meta = raw_df.drop_duplicates('department_id')[['department_id'] + [
-            c for c in meta_cols if c in [
-                'department_name', 'department_code', 'department_type',
-                'segment_type', 'parent_id', 'brand', 'location_type',
-                'tourist_traffic_dependent', 'is_24_7_flag', 'opening_hour',
-                'closing_hour', 'seasonality_intensity', 'city', 'opened_date',
-                'season_start_month', 'season_end_month',
-            ]
-        ]]
-
-        value_cols = ['total_qty', 'total_sum', 'receipt_count']
-        raw_values = raw_df[['department_id', 'product_id', 'date'] + value_cols]
-
-        merged = skeleton.merge(
-            raw_values,
-            on=['department_id', 'product_id', 'date'],
-            how='left',
-        )
-        for c in value_cols:
-            merged[c] = merged[c].fillna(0)
-
-        merged = merged.merge(product_meta, on='product_id', how='left')
-        merged = merged.merge(dept_meta, on='department_id', how='left')
-
-        return merged
-
-    def _add_sku_static_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        df['product_type_dish'] = (df['product_type'] == 'DISH').astype(int)
-        df['product_type_goods'] = (df['product_type'] == 'GOODS').astype(int)
-
-        df['sku_default_price'] = pd.to_numeric(df['default_sale_price'], errors='coerce')
-        median_price = df.loc[df['sku_default_price'] > 0, 'sku_default_price'].median()
-        df['sku_default_price'] = df['sku_default_price'].fillna(median_price if median_price else 0)
-
-        df['sku_weight_kg'] = pd.to_numeric(df['weight_kg'], errors='coerce').fillna(0)
-
-        df['sku_is_in_menu'] = df['is_included_in_menu'].fillna(True).astype(int)
-
-        df['sku_group_encoded'] = pd.Categorical(df['group_id']).codes
-        df['sku_category_encoded'] = pd.Categorical(df['category_id']).codes
-
-        group_depth = {}
-        if 'group_name' in df.columns:
-            for gid in df['group_id'].dropna().unique():
-                group_depth[gid] = 1
-        df['sku_group_depth'] = df['group_id'].map(group_depth).fillna(0).astype(int)
-
-        return df
-
-    def _add_sku_rolling_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Per-(department, product) rolling/lag features on total_qty."""
-        df = df.copy()
-        df = df.sort_values(['department_id', 'product_id', 'date'])
-
-        group_cols = ['department_id', 'product_id']
-        grouped = df.groupby(group_cols, sort=False)
-
-        qty = grouped['total_qty']
-        past_qty = qty.shift(1)
-
-        df['sku_lag_1d_qty'] = qty.shift(1)
-        df['sku_lag_7d_qty'] = qty.shift(7)
-        df['sku_lag_14d_qty'] = qty.shift(14)
-
-        df['sku_rolling_3d_avg_qty'] = past_qty.transform(lambda x: x.rolling(3, min_periods=1).mean())
-        df['sku_rolling_7d_avg_qty'] = past_qty.transform(lambda x: x.rolling(7, min_periods=1).mean())
-        df['sku_rolling_14d_avg_qty'] = past_qty.transform(lambda x: x.rolling(14, min_periods=1).mean())
-        df['sku_rolling_30d_avg_qty'] = past_qty.transform(lambda x: x.rolling(30, min_periods=1).mean())
-
-        df['sku_rolling_7d_std_qty'] = past_qty.transform(lambda x: x.rolling(7, min_periods=1).std())
-
-        def same_weekday_avg(group):
-            result = pd.Series(np.nan, index=group.index)
-            vals = group.values
-            for i in range(len(vals)):
-                if i < 7:
-                    result.iloc[i] = np.nan
-                else:
-                    lookback = vals[max(0, i - 28):i]
-                    dow_vals = lookback[np.arange(len(lookback)) % 7 == (len(lookback) - 1) % 7]
-                    if len(dow_vals) > 0:
-                        result.iloc[i] = dow_vals.mean()
-            return result
-
-        df['sku_same_weekday_avg_qty'] = qty.transform(same_weekday_avg)
-
-        def days_since_last_sale(group):
-            result = pd.Series(0, index=group.index, dtype=float)
-            vals = group.values
-            last_sold = -1
-            for i in range(len(vals)):
-                if i > 0 and vals[i - 1] > 0:
-                    last_sold = i - 1
-                if last_sold >= 0:
-                    result.iloc[i] = i - last_sold
-                else:
-                    result.iloc[i] = 30
-            return result
-
-        df['sku_days_since_last_sale'] = qty.transform(days_since_last_sale)
-
-        rolling_cols = [c for c in df.columns if c.startswith('sku_') and ('rolling' in c or 'lag' in c or 'weekday' in c)]
-        for c in rolling_cols:
-            df[c] = df[c].fillna(0)
-
-        return df
-
-    def _add_cross_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Features combining department-level and SKU-level signals."""
-        df = df.copy()
-
-        dept_daily = df.groupby(['department_id', 'date'])['total_qty'].transform('sum')
-        df['dept_total_qty_day'] = dept_daily
-
-        dept_past = df.sort_values(['department_id', 'date']).groupby('department_id')['total_qty']
-        df['dept_total_qty_7d'] = dept_past.transform(
-            lambda x: x.shift(1).rolling(7, min_periods=1).sum()
-        ).fillna(0)
-
-        sku_sum_7d = df.sort_values(['department_id', 'product_id', 'date']).groupby(
-            ['department_id', 'product_id']
-        )['total_sum'].transform(lambda x: x.shift(1).rolling(7, min_periods=1).sum()).fillna(0)
-        dept_sum_7d = df.sort_values(['department_id', 'date']).groupby(
-            'department_id'
-        )['total_sum'].transform(lambda x: x.shift(1).rolling(7, min_periods=1).sum()).fillna(0)
-        df['sku_revenue_share_7d'] = np.where(
-            dept_sum_7d > 0, sku_sum_7d / dept_sum_7d, 0
-        )
-
-        df['sku_rank_in_dept'] = df.groupby('department_id')['total_sum'].rank(
-            ascending=False, method='dense'
-        ).fillna(999).clip(upper=100).astype(int)
-
-        return df
+    # ------------------------------------------------------------------
+    # Схема
+    # ------------------------------------------------------------------
 
     @staticmethod
     def get_feature_columns() -> list:
