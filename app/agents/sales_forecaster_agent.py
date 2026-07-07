@@ -951,18 +951,6 @@ class SalesForecasterAgent:
             logger.info(f"No saved model found at {self.model_path}")
             self._training_metrics = None
     
-    def retrain_model(self, db: Session) -> Dict[str, float]:
-        """
-        Retrain model with latest data
-        
-        This is a convenience method that calls train_model with default parameters
-        """
-        logger.info("Retraining model with latest data...")
-        metrics = self.train_model(db, save_model=True)
-        # Обновляем метрики в памяти после переобучения
-        self._training_metrics = metrics
-        return metrics
-    
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the loaded model"""
         if self.model is None and not self.segment_models:
