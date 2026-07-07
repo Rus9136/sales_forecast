@@ -75,7 +75,11 @@ class SkuForecasterAgent:
             self.feature_columns = SkuTrainingDataService.get_feature_columns()
             target_col = SkuTrainingDataService.get_target_column()
 
-        self._target_transform = "log1p"
+        # objective: 'log1p' (fit на log1p(qty), inverse expm1) — текущий;
+        # 'tweedie' (нативный LightGBM objective для интермиттент-спроса,
+        # предсказание сразу на исходной шкале) — эксперимент 2.5.
+        objective = getattr(self, "_objective", "log1p")
+        self._target_transform = "log1p" if objective == "log1p" else "identity"
 
         available_features = [c for c in self.feature_columns if c in train_df.columns]
         missing = set(self.feature_columns) - set(available_features)
@@ -95,17 +99,22 @@ class SkuForecasterAgent:
         X_test = test_df[available_features].astype(np.float32)
         y_test = test_df[target_col].astype(float)
 
-        y_train_t = np.log1p(y_train)
-        y_val_t = np.log1p(y_val)
+        if objective == "log1p":
+            y_train_t = np.log1p(y_train)
+            y_val_t = np.log1p(y_val)
+        else:  # tweedie — на исходной шкале
+            y_train_t = y_train
+            y_val_t = y_val
 
         n_unique_skus = train_df['product_id'].nunique() if 'product_id' in train_df.columns else 0
         n_unique_depts = train_df['department_id'].nunique() if 'department_id' in train_df.columns else 0
         logger.info(
             f"Train={len(X_train)}, Val={len(X_val)}, Test={len(X_test)}, "
-            f"SKUs={n_unique_skus}, Depts={n_unique_depts}, Features={len(available_features)}"
+            f"SKUs={n_unique_skus}, Depts={n_unique_depts}, Features={len(available_features)}, "
+            f"objective={objective}"
         )
 
-        self.model = lgb.LGBMRegressor(
+        lgb_params = dict(
             n_estimators=600,
             learning_rate=0.03,
             max_depth=7,
@@ -117,6 +126,12 @@ class SkuForecasterAgent:
             n_jobs=-1,
             verbosity=-1,
         )
+        if objective == "tweedie":
+            lgb_params["objective"] = "tweedie"
+            lgb_params["tweedie_variance_power"] = float(
+                getattr(self, "_tweedie_power", 1.3)
+            )
+        self.model = lgb.LGBMRegressor(**lgb_params)
         self.model.fit(
             X_train, y_train_t,
             eval_set=[(X_val, y_val_t)],
@@ -124,8 +139,11 @@ class SkuForecasterAgent:
             callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)],
         )
 
-        y_val_pred = np.maximum(np.expm1(self.model.predict(X_val)), 0.0)
-        y_test_pred = np.maximum(np.expm1(self.model.predict(X_test)), 0.0)
+        def _inv(raw):
+            return np.maximum(np.expm1(raw) if objective == "log1p" else raw, 0.0)
+
+        y_val_pred = _inv(self.model.predict(X_val))
+        y_test_pred = _inv(self.model.predict(X_test))
 
         metrics = {
             'train_samples': len(X_train),
@@ -147,11 +165,20 @@ class SkuForecasterAgent:
             'test_r2': float(r2_score(y_test, y_test_pred)),
             'test_rmse': float(np.sqrt(mean_squared_error(y_test, y_test_pred))),
         }
+        # Intermittent demand (аудит 2.4): _mape/WAPE считаются по y>0 и прячут
+        # главную сложность — большинство (dept, product, day) строк нулевые
+        # после zero-expansion. Отдельно замеряем качество на нулевых и
+        # ненулевых днях, чтобы видеть, не «размазывает» ли модель ненулевой
+        # прогноз по пустым дням (ложные продажи) и не занижает ли живой спрос.
+        metrics.update(self._intermittent_metrics(y_test.values, y_test_pred))
         self._training_metrics = metrics
         logger.info(
             f"SKU model trained — test WAPE={metrics['test_wape']:.2f}%, "
             f"test MAPE={metrics['test_mape']:.2f}%, "
-            f"test MAE={metrics['test_mae']:.2f}, test R²={metrics['test_r2']:.4f}"
+            f"test MAE={metrics['test_mae']:.2f}, test R²={metrics['test_r2']:.4f} | "
+            f"zero-days={metrics['test_zero_day_share']:.0%} "
+            f"(false-qty/day={metrics['test_zero_day_mean_pred']:.2f}), "
+            f"nonzero WAPE={metrics['test_nonzero_wape']:.1f}%"
         )
 
         if save_model:
@@ -316,10 +343,11 @@ class SkuForecasterAgent:
         payload = {
             'model': self.model,
             'feature_columns': self.feature_columns,
-            'version': '1.0',
+            'version': '2.0',  # Фаза 2: единый feature-builder + encodings
             'trained_at': pd.Timestamp.now().isoformat(),
             'training_metrics': metrics,
             'target_transform': self._target_transform,
+            'objective': getattr(self, '_objective', 'log1p'),
             'encoding_maps': self._encoding_maps,
         }
         joblib.dump(payload, self.model_path)
@@ -380,6 +408,31 @@ class SkuForecasterAgent:
         if mask.sum() == 0:
             return 0.0
         return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
+
+    @staticmethod
+    def _intermittent_metrics(y_true, y_pred) -> Dict[str, float]:
+        """Раздельное качество на нулевых/ненулевых днях (аудит 2.4).
+
+        - zero_day_*: строки, где фактических продаж не было. Идеальный
+          прогноз здесь = 0; mean_pred > 0 = «ложные продажи» (модель
+          назначает спрос пустым дням).
+        - nonzero_*: строки с реальными продажами. WAPE/MAE здесь — честная
+          точность по живому спросу (не размытая массой нулей).
+        """
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        zero = y_true == 0
+        nonzero = ~zero
+        n = len(y_true)
+        nz_true, nz_pred = y_true[nonzero], y_pred[nonzero]
+        return {
+            'test_zero_day_share': float(zero.mean()) if n else 0.0,
+            'test_zero_day_mean_pred': float(y_pred[zero].mean()) if zero.any() else 0.0,
+            'test_zero_day_mae': float(np.mean(np.abs(y_pred[zero]))) if zero.any() else 0.0,
+            'test_nonzero_wape': _wape(nz_true, nz_pred) if nonzero.any() else 0.0,
+            'test_nonzero_mae': float(np.mean(np.abs(nz_true - nz_pred))) if nonzero.any() else 0.0,
+            'test_nonzero_bias': float((nz_pred - nz_true).mean()) if nonzero.any() else 0.0,
+        }
 
 
 # ------------------------------------------------------------------

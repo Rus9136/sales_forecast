@@ -27,7 +27,7 @@ from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregat
 from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation, run_pricing_weekly_report, run_pricing_monthly_report, run_recommendation_explanations
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
-from .services.sku_model_retraining_service import run_sku_auto_retrain  # noqa: F401 — job временно отключён (audit P0-2, см. Фазу 2.2)
+from .services.sku_model_retraining_service import run_sku_auto_retrain
 from .services.scheduled_forecast_job import run_daily_forecast_sweep
 from .services.model_monitoring_service import get_model_monitoring_service
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -94,23 +94,20 @@ async def lifespan(app: FastAPI):
             replace_existing=True
         )
 
-        # ВРЕМЕННО ОТКЛЮЧЕНО (ML_AUDIT_REPORT.md P0-2, Фаза 0.4):
-        # SKU-retrain в этом же процессе строит сетку ~2.1M строк
-        # (zero-expansion 11.5k пар × 181 день) и каждое воскресенье 03:45
-        # OOM-убивает весь API (kern.log 2026-07-05: uvicorn RSS 3.3GB при
-        # 3.8GB на хосте). Побочный эффект рестарта — загрузка перезаписанной
-        # dept-модели (P0-1). Возврат — в Фазе 2.2: обучение выносится в
-        # отдельный процесс с mem_limit + downcast типов.
-        # scheduler.add_job(
-        #     func=run_sku_auto_retrain,
-        #     trigger="cron",
-        #     day_of_week=6,  # Sunday
-        #     hour=3,
-        #     minute=45,
-        #     id='weekly_sku_model_retrain',
-        #     name='Weekly SKU Model Retraining',
-        #     replace_existing=True
-        # )
+        # SKU-retrain снова включён (Фаза 2.2): run_sku_auto_retrain теперь
+        # запускает ОТДЕЛЬНЫЙ процесс `python -m app.jobs.sku_retrain` с
+        # RLIMIT_AS — его OOM изолирован от API (в отличие от прежнего
+        # in-process обучения, что каждое воскресенье убивало uvicorn, P0-2).
+        scheduler.add_job(
+            func=run_sku_auto_retrain,
+            trigger="cron",
+            day_of_week=6,  # Sunday
+            hour=3,
+            minute=45,
+            id='weekly_sku_model_retrain',
+            name='Weekly SKU Model Retraining (out-of-process)',
+            replace_existing=True
+        )
 
         scheduler.add_job(
             func=run_menu_clustering,
@@ -302,7 +299,7 @@ async def lifespan(app: FastAPI):
         logger.info(
             "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
             "Receipts 2:15, Waiter sales 2:30, Retrain Sun 3:00, Menu clustering Sun 3:15, Catalog price 3:20, "
-            "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain DISABLED (audit P0-2), Metrics 4:00, Pricing analytics 4:30, Forecast sweep 6:00, "
+            "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain Sun 3:45 (out-of-process), Metrics 4:00, Pricing analytics 4:30, Forecast sweep 6:00, "
             "Price optimization 5:00, Outcome evaluation 5:30, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
         )
 

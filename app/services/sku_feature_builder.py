@@ -189,11 +189,12 @@ def _add_dynamic_features(grid: pd.DataFrame) -> pd.DataFrame:
         grid.groupby(GROUP_COLS, sort=False)["_past_sum"]
         .rolling(7, min_periods=1).sum().droplevel(list(range(len(GROUP_COLS))))
     )
-    grid["sku_revenue_share_7d"] = np.where(
-        grid["_dept_sum_7d"].values > 0,
-        grid["_sku_sum_7d"].values / grid["_dept_sum_7d"].values,
-        0.0,
-    )
+    dept_sum_7d = grid["_dept_sum_7d"].to_numpy()
+    sku_sum_7d = grid["_sku_sum_7d"].to_numpy()
+    safe = dept_sum_7d > 0
+    share = np.zeros(len(grid), dtype="float32")
+    np.divide(sku_sum_7d, dept_sum_7d, out=share, where=safe)
+    grid["sku_revenue_share_7d"] = share
 
     # Ранг SKU в подразделении по выручке ПРОШЛОЙ недели (P0-5c: раньше —
     # ранг по total_sum текущего дня за весь датасет = утечка таргета,
@@ -284,9 +285,16 @@ def _add_calendar_and_dept_features(grid: pd.DataFrame, dept_meta: pd.DataFrame)
     dept_frame["date"] = pd.to_datetime(dept_frame["date"])
     dept_frame = dept_svc._add_department_features(dept_frame)
     dept_frame = dept_svc._add_operational_features(dept_frame)
+    # Отбираем dept/operational ФИЧИ по авторитетному списку, а НЕ по разнице
+    # с сырыми колонками: имена вроде `is_24_7` есть и в сырых метаданных, и
+    # среди operational-фичей — set-difference молча терял их (баг, найден в
+    # эксперименте 2.5: «Missing features: is_24_7»).
+    from .sku_training_service import SkuTrainingDataService
+    wanted = set(SkuTrainingDataService.get_feature_columns())
+    already = set(grid.columns)
     dept_feature_cols = [
         c for c in dept_frame.columns
-        if c not in dm.columns and c not in ("department_id", "date")
+        if c in wanted and c not in already and c not in ("department_id", "date")
     ]
     grid = grid.merge(
         dept_frame[["department_id", "date"] + dept_feature_cols],
@@ -319,4 +327,11 @@ def build_features(
     grid = _add_dynamic_features(grid)
     grid = _add_static_sku_features(grid, product_meta, encoding_maps)
     grid = _add_calendar_and_dept_features(grid, dept_meta)
+
+    # Память (P0-2a): календарные/департаментные merge приходят float64/int64.
+    # Даункастим числовые признаки до float32 — на 2M+ строках это экономит
+    # ~половину RAM матрицы фичей без потери точности для LightGBM.
+    from .sku_training_service import SkuTrainingDataService
+    feature_cols = [c for c in SkuTrainingDataService.get_feature_columns() if c in grid.columns]
+    grid[feature_cols] = grid[feature_cols].astype("float32")
     return grid, encoding_maps

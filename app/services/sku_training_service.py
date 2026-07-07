@@ -139,6 +139,14 @@ class SkuTrainingDataService:
         df = df.dropna(subset=check_cols)
         logger.info(f"Dropped {initial - len(df)} NaN rows, final: {len(df)}")
 
+        # Проекция только нужных колонок ДО возврата (P0-2a): split делает
+        # 3 копии кадра — тащить через них total_sum, helper- и meta-колонки
+        # значит утроить лишнюю память. Оставляем фичи + таргет + ключи/дату.
+        keep = [c for c in feature_cols if c in df.columns] + [
+            "total_qty", "date", "department_id", "product_id",
+        ]
+        df = df[[c for c in keep if c in df.columns]].copy()
+
         df = df.sort_values(["department_id", "product_id", "date"]).reset_index(drop=True)
         return df
 
