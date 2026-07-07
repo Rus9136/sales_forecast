@@ -115,4 +115,75 @@ docker exec -w /app -e PYTHONPATH=/app sales-forecast-app python -m pytest /tmp/
 | Тесты | ✅ **284 passed, 18 skipped** (полный набор в контейнере, включая 10 новых) |
 | Backtest 3+ окна | ✅ 4 окна, база зафиксирована выше |
 
-## Фаза 2 — SKU-модель (не начата, ждёт подтверждения Фазы 1)
+## Фаза 2 — SKU-модель ✅ (ожидает подтверждения)
+
+### 2.1 Единый SKU feature-builder — `2e5f403`
+
+`app/services/sku_feature_builder.py` — ОДИН код строит фичи для train и inference. Устранены все 8 расхождений из P0-5:
+| # | Было (train ≠ inference) | Стало |
+|---|---|---|
+| a | inference без zero-fill дней | сетка с нулями за 45д и на inference |
+| b | rolling через `Series.transform` поверх границ групп | `groupby().rolling()`/`shift()` строго внутри (dept,product) |
+| c | `sku_rank_in_dept` по `total_sum` текущего дня (утечка) / 50 на inference | ранг по выручке ПРОШЛОЙ недели с shift |
+| d | `Categorical.codes` (нестабильны) / 0 на inference | `fit_encoding_maps` на train → в .pkl → на inference |
+| e | константы weight/in_menu/depth на inference | реальные значения из product_meta |
+| f | сломанный позиционный `same_weekday` | shift 7/14/21/28 по дню недели |
+| g | `dept_total_qty_7d` по строкам product-day | по 7 календарным дням |
+| h | `days_since_last_sale` по строкам | по календарным дням, cap 30 |
+
+`sku_training_service.py` переписан на builder (3 лёгких запроса вместо тяжёлого с метаданными). **Тест-инвариант `tests/unit/test_sku_feature_parity.py`: train==inference на 20 случайных точках + 6 точечных свойств — 7 passed.**
+
+### 2.2 Вынос retrain + память — `8d7b863`
+
+`app/jobs/sku_retrain.py` — retrain как ОТДЕЛЬНЫЙ процесс (`python -m app.jobs.sku_retrain`). Проверено: при RLIMIT_AS=3GB джоб упал с MemoryError, **API остался жив** — изоляция работает. Пик RSS снижен **3.3GB → 2.2GB**:
+- float32 на матрице фичей; окно 90д (~1M строк вместо 2.1M); проекция нужных колонок до сплита (сплит делает 3 копии); `del df` + gc до обучения.
+- **⚠ Замечание по хосту:** этот сервер — 3.8GB RAM с baseline ~2GB. Пик 2.2GB проходит (headroom +12% к бюджету 2500MB), но margin тонкий. Первичная гарантия — изоляция субпроцесса (OOM убьёт джоб, не API), а не RLIMIT_AS (он лимитирует виртуальную память ≈2× резидентной, потому дефолт щедрый 6GB как backstop). Если появится запас — можно вернуть окно к 120-180д.
+
+`run_sku_auto_retrain` спавнит субпроцесс (exit 0/2/1) и reload'ит синглтон. Воскресный job включён обратно (был отключён в 0.4).
+
+### 2.3 Guardrails — `8d7b863`
+
+`app/services/sku_model_comparison.py`: like-for-like на общем hold-out (общая сетка фактов, признаки каждой модели своими encodings), критерий WAPE + MedAPE-толеранс, sanity WAPE>80% → reject; temp-path → архив старого ДО замены → `os.replace`. **Обе ветки проверены на реальных данных:** deploy (старая майская модель 388% WAPE → новая 70%), reject (не-лучший кандидат оставил прод). Unit: `test_sku_deployment_guardrail.py` (4 ветки).
+
+### 2.4 Intermittent-метрики — `8d7b863`
+
+`_intermittent_metrics` в `train_model`: раздельно качество на нулевых днях (`false-qty/day`) и ненулевых (`nonzero_wape` — живой спрос). `_mape` по y>0 это прятал (68% строк — нулевые после zero-expansion).
+
+### 2.5 Эксперимент tweedie vs log1p — `8d7b863`
+
+`scripts/sku_objective_experiment.py`, общий hold-out:
+
+| objective | holdout WAPE | MedAPE | nonzero WAPE | zero false-qty/day |
+|---|---|---|---|---|
+| **log1p** | **70.27%** | 60.00% | 55.59% | 0.318 |
+| tweedie | 75.23% | 50.71% | 49.74% | 0.552 |
+
+**Вывод: оставлен log1p** (лучше по headline WAPE). Intermittent-метрики объясняют: tweedie точнее на живых днях (nonzero 49.7 vs 55.6), но размазывает вдвое больше фантомного спроса по 68% нулевых дней → это доминирует в WAPE. `train_model` поддерживает оба objective (переключается через `_objective`).
+
+### 📌 Результат Фазы 2: SKU-модель ожила
+
+| | До (майская, сломанный inference) | После (v2.0, единый builder) |
+|---|---|---|
+| test R² | 0.10 | **0.453** |
+| hold-out WAPE (recent 21д) | **388%** | **69.79%** |
+| inference | рассинхрон фичей (8 багов) | = train (закреплено тестом) |
+| retrain | OOM всего API каждое вс | отдельный процесс, 2.2GB, guardrails |
+
+Побочно: найден и исправлен потерянный признак `is_24_7` (коллизия имени с сырой колонкой БД в set-difference отборе) — дал WAPE 70.20%→69.79%.
+
+### Проверки Фазы 2
+
+| Проверка | Результат |
+|---|---|
+| Инвариант train==inference | ✅ 7 passed (20 точек + 6 свойств) |
+| Изоляция OOM (job vs API) | ✅ RLIMIT 3GB → MemoryError джоба, API жив |
+| Пик RSS retrain | ✅ 2.2GB (было 3.3GB → OOM); headroom +12% |
+| Guardrail deploy | ✅ 388%→70% модель задеплоена атомарно, старая в архиве |
+| Guardrail reject | ✅ не-лучший кандидат отклонён, прод сохранён |
+| Деплоенная модель | ✅ v2.0, test R² 0.453 (было 0.10), encoding_maps на месте |
+| SKU inference (daily sweep) | ✅ 41 dept, 2011 строк, 0 ошибок, прогнозы не вырождены |
+| Полный тест-набор | ✅ 586 passed, 36 skipped (unit+integration) |
+
+**⚠ Реальное изменение прода:** `models/sku_lgbm_model.pkl` заменён на v2.0 (старая заархивирована `sku_archive/sku_lgbm_model_20260707.pkl`). Модель честно лучше (R² 0.45 vs 0.10, корректные фичи), но это боевая подмена — при желании откат тривиален (файл в архиве).
+
+## Фаза 3 — точность dept-модели (не начата, ждёт подтверждения Фазы 2)
