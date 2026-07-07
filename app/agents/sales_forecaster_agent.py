@@ -456,16 +456,22 @@ class SalesForecasterAgent:
         # 2. Rolling features (20 features)
         sales_values = historical_df['total_sales'].values
         
-        # Rolling averages
-        features['rolling_3d_avg_sales'] = np.mean(sales_values[-3:]) if len(sales_values) >= 3 else np.mean(sales_values)
-        features['rolling_7d_avg_sales'] = np.mean(sales_values[-7:]) if len(sales_values) >= 7 else np.mean(sales_values)
-        features['rolling_14d_avg_sales'] = np.mean(sales_values[-14:]) if len(sales_values) >= 14 else np.mean(sales_values)
-        features['rolling_30d_avg_sales'] = np.mean(sales_values)
-        
-        # Rolling standard deviations
-        features['rolling_3d_std_sales'] = np.std(sales_values[-3:]) if len(sales_values) >= 3 else 0
-        features['rolling_7d_std_sales'] = np.std(sales_values[-7:]) if len(sales_values) >= 7 else 0
-        features['rolling_14d_std_sales'] = np.std(sales_values[-14:]) if len(sales_values) >= 14 else 0
+        # Rolling averages — окна [-N:] (совпадает с train past_sales.rolling(N)
+        # при min_periods=1: если истории <N, [-N:] вернёт всё имеющееся).
+        # P1-6: rolling_30d раньше усреднял ВСЮ историю (до 45 дней в long-term
+        # запросе), а train — последние 30 → расхождение фичи.
+        features['rolling_3d_avg_sales'] = np.mean(sales_values[-3:])
+        features['rolling_7d_avg_sales'] = np.mean(sales_values[-7:])
+        features['rolling_14d_avg_sales'] = np.mean(sales_values[-14:])
+        features['rolling_30d_avg_sales'] = np.mean(sales_values[-30:])
+
+        # Rolling std — ddof=1 как pandas .std() в train (P1-6: было np.std
+        # ddof=0). std одного значения → 0 (train fillna(0) после rolling.std()).
+        def _std(window):
+            return float(np.std(window, ddof=1)) if len(window) >= 2 else 0.0
+        features['rolling_3d_std_sales'] = _std(sales_values[-3:])
+        features['rolling_7d_std_sales'] = _std(sales_values[-7:])
+        features['rolling_14d_std_sales'] = _std(sales_values[-14:])
         
         # Rolling sums
         features['rolling_7d_sum_sales'] = np.sum(sales_values[-7:]) if len(sales_values) >= 7 else np.sum(sales_values)
@@ -497,16 +503,14 @@ class SalesForecasterAgent:
         features['rolling_7d_min_sales'] = np.min(sales_values[-7:]) if len(sales_values) >= 7 else np.min(sales_values)
         features['rolling_7d_max_sales'] = np.max(sales_values[-7:]) if len(sales_values) >= 7 else np.max(sales_values)
         
-        # Sales momentum
-        if len(sales_values) >= 14:
-            features['sales_momentum_7d'] = np.mean(sales_values[-7:]) - np.mean(sales_values[-14:-7])
-        else:
-            features['sales_momentum_7d'] = 0
-            
-        if len(sales_values) >= 28:
-            features['sales_momentum_14d'] = np.mean(sales_values[-14:]) - np.mean(sales_values[-28:-14])
-        else:
-            features['sales_momentum_14d'] = 0
+        # Sales momentum — частичные окна как в train (min_periods=1): пустое
+        # окно → 0, иначе mean доступного. P1-6: раньше был жёсткий отсёк
+        # (0 при <14/<28 дней), а train считал частичное → расхождение на
+        # подразделениях с короткой историей (14-27 дней).
+        def _wmean(arr):
+            return float(np.mean(arr)) if len(arr) > 0 else 0.0
+        features['sales_momentum_7d'] = _wmean(sales_values[-7:]) - _wmean(sales_values[-14:-7])
+        features['sales_momentum_14d'] = _wmean(sales_values[-14:]) - _wmean(sales_values[-28:-14])
         
         # 3. Department features (18 features)
         # Department type

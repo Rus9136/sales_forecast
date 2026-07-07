@@ -107,12 +107,14 @@ class ModelRetrainingService:
                     "current_mape": current_mape
                 }
             
-            # 3. Prepare training data
+            # 3. Prepare training data — единая политика выбросов (P1-2):
+            # flag-only, без winsorize. Клиппинг таргета делал test-метрики
+            # несравнимыми с ручным /retrain и портил обучение на реальных
+            # пиках (праздники/зарплата). Решение о деплое — на честном hold-out.
             training_service = TrainingDataService(db)
             training_data = training_service.prepare_training_data(
                 days=365,  # Use last year of data
-                handle_outliers=True,
-                outlier_method='winsorize'
+                handle_outliers=False,
             )
             
             if training_data.empty or len(training_data) < 1000:
@@ -177,7 +179,7 @@ class ModelRetrainingService:
                 "n_features": len(new_forecaster.feature_columns or []),
                 "n_samples": len(training_data),
                 "training_days": 365,
-                "outlier_method": "winsorize",
+                "outlier_method": "flag",
                 "hyperparameters": new_forecaster.model.get_params() if hasattr(new_forecaster.model, 'get_params') else {},
                 # Ключи метрик агента: val_* / test_* (аудит P0-4 — раньше
                 # искались несуществующие 'validation_mape'/'train_mape')

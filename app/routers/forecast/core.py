@@ -23,8 +23,12 @@ router = APIRouter()
 
 
 class RetrainRequest(BaseModel):
-    handle_outliers: Optional[bool] = True
-    outlier_method: Optional[str] = 'winsorize'
+    # Единая политика выбросов (аудит P1-2): flag-only по умолчанию — как
+    # auto-retrain и как документированный no-body /retrain. Winsorize клиппит
+    # и test-таргет (завышая метрики) — доступен только явным запросом для
+    # ablation. is_outlier_day-флаг добавляется всегда, таргет не портится.
+    handle_outliers: Optional[bool] = False
+    outlier_method: Optional[str] = 'flag'
     days: Optional[int] = None
 
 
