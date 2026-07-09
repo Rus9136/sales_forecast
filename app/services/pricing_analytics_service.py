@@ -118,7 +118,9 @@ SKU_WEEKLY_SQL = text("""
             ri.product_id,
             r.department_id,
             date_trunc('week', ri.open_date)::date AS week_start,
-            SUM(COALESCE(ri.cost_price, 0) * ri.qty) AS total_cost,
+            -- cost_price из iiko (ProductCostBase.ProductCost) — себестоимость ВСЕЙ строки
+            -- чека целиком (за все qty), а не за единицу. Умножать на qty нельзя — двойной учёт.
+            SUM(COALESCE(ri.cost_price, 0)) AS total_cost,
             ROUND(
                 SUM(CASE WHEN ri.cost_price IS NOT NULL THEN 1 ELSE 0 END)::numeric
                 / GREATEST(COUNT(*)::numeric, 1), 4
@@ -193,7 +195,9 @@ DEPT_WEEKLY_SQL = text("""
         SELECT
             r.department_id,
             date_trunc('week', ri.open_date)::date AS week_start,
-            SUM(COALESCE(ri.cost_price, 0) * ri.qty) AS total_cost,
+            -- cost_price из iiko (ProductCostBase.ProductCost) — себестоимость ВСЕЙ строки
+            -- чека целиком (за все qty), а не за единицу. Умножать на qty нельзя — двойной учёт.
+            SUM(COALESCE(ri.cost_price, 0)) AS total_cost,
             ROUND(
                 SUM(CASE WHEN ri.cost_price IS NOT NULL THEN 1 ELSE 0 END)::numeric
                 / GREATEST(COUNT(*)::numeric, 1), 4
