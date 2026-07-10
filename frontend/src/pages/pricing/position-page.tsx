@@ -583,9 +583,15 @@ export function PricingPositionPage() {
                     <TableHead>Дата</TableHead>
                     <TableHead className="text-right">Тек. цена</TableHead>
                     <TableHead className="text-right">Реком.</TableHead>
-                    <TableHead className="text-right">Δ%</TableHead>
-                    <TableHead className="text-right">Ожид. ΔGP</TableHead>
-                    <TableHead className="text-center">ε</TableHead>
+                    <TableHead className="text-right">
+                      <Term tip={GLOSSARY.deltaPct}>Δ%</Term>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <Term tip={GLOSSARY.deltaGp}>Ожид. ΔGP</Term>
+                    </TableHead>
+                    <TableHead className="text-center">
+                      <Term tip={GLOSSARY.elasticity}>ε</Term>
+                    </TableHead>
                     <TableHead className="text-center">Статус</TableHead>
                   </TableRow>
                 </TableHeader>
