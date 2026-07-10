@@ -27,6 +27,7 @@ import {
   useOverrideMenuRole, useSkuRecommendations, useSkuOutcomes, usePricingRules,
 } from '@/hooks/use-pricing'
 import { Term, GLOSSARY } from '@/components/shared/term'
+import { LlmExplanation } from '@/components/shared/llm-explanation'
 import { gradeWord } from '@/lib/pricing-labels'
 import { useProduct, useProductRecipe } from '@/hooks/use-menu'
 import { apiErrorMessage } from '@/lib/api-client'
@@ -632,11 +633,7 @@ export function PricingPositionPage() {
                 <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">
                   Обоснование (ИИ)
                 </div>
-                {openRec.llm_explanation ? (
-                  <p className="text-sm whitespace-pre-wrap">{openRec.llm_explanation}</p>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Обоснование ещё не сгенерировано.</p>
-                )}
+                <LlmExplanation rec={openRec} />
               </div>
             )}
           </div>
