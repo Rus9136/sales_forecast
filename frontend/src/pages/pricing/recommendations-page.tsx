@@ -434,7 +434,9 @@ export function PricingRecommendationsPage() {
                 </TableHead>
                 <TableHead className="w-[28px]" />
                 <TableHead>Позиция</TableHead>
-                <TableHead>Изменение цены</TableHead>
+                <TableHead>
+                  <Term tip={GLOSSARY.deltaPct}>Изменение цены</Term>
+                </TableHead>
                 <TableHead className="text-right">
                   <Term tip={GLOSSARY.deltaGp}>Прибыль/нед</Term>
                 </TableHead>
@@ -646,9 +648,9 @@ function RecRow({
                 )}
               </div>
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                <span>Себестоимость <b className="tabular" style={{ color: 'var(--text)' }}>{rec.cogs != null ? formatCurrency(rec.cogs) : '—'}</b></span>
+                <span><Term tip={GLOSSARY.cogs}>Себестоимость</Term> <b className="tabular" style={{ color: 'var(--text)' }}>{rec.cogs != null ? formatCurrency(rec.cogs) : '—'}</b></span>
                 <span>Прогноз спроса <b className="tabular" style={{ color: 'var(--text)' }}>{rec.current_qty_forecast ?? '—'} → {rec.new_qty_forecast ?? '—'} шт/нед</b></span>
-                <span>Прибыль/нед <b className="tabular" style={{ color: 'var(--text)' }}>{rec.current_gp != null ? formatCurrency(rec.current_gp) : '—'} → {rec.expected_gp != null ? formatCurrency(rec.expected_gp) : '—'}</b></span>
+                <span><Term tip={GLOSSARY.gpNowVsNew}>Прибыль/нед</Term> <b className="tabular" style={{ color: 'var(--text)' }}>{rec.current_gp != null ? formatCurrency(rec.current_gp) : '—'} → {rec.expected_gp != null ? formatCurrency(rec.expected_gp) : '—'}</b></span>
                 <span>
                   <Term tip={GLOSSARY.elasticity}>Чувствительность спроса</Term>{' '}
                   <b className="tabular" style={{ color: 'var(--text)' }}>{rec.elasticity_used ?? '—'}</b>{' '}
