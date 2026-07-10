@@ -399,6 +399,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/sales/summary` — Дневные итоги
 - `/api/sales/hourly` — Почасовые данные
 - `/api/sales/by-waiter` — Продажи по официантам (фильтры: department_id, employee_id, waiter_name, период)
+- `/api/sales/avg-check-by-waiter` — Средний чек по официанту из `receipt` (checks_count, revenue, avg_check, guests_count, avg_per_guest; фильтры: department_id опц., from_date, to_date, waiter_name)
 - `/api/sales/sync-waiters` — Синхронизация продаж по официантам (OLAP)
 - `/api/sales/stats` — Статистика
 - `/api/sales/auto-sync/status` — Статус автозагрузок

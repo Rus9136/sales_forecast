@@ -405,6 +405,73 @@ def get_sales_by_waiter(
     ]
 
 
+@router.get("/avg-check-by-waiter")
+def get_avg_check_by_waiter(
+    department_id: Optional[str] = Query(None, description="Department UUID (optional)"),
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD), inclusive"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD), inclusive"),
+    waiter_name: Optional[str] = Query(None, description="Filter by waiter name (ILIKE)"),
+    db: Session = Depends(get_db),
+    api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass),
+):
+    """Average check per waiter, computed from `receipt` headers.
+
+    Unlike `sales_by_waiter` (revenue only), this aggregates real check headers,
+    so it can divide revenue by check count.
+
+    - `avg_check` = AVG(total_sum) over closed checks in range.
+    - `avg_per_guest` = revenue / total guests; `null` when no receipts carry
+      guest data.
+    - Checks are bucketed by accounting day (`open_date`) for partition pruning.
+    - Ordered by revenue desc.
+    """
+    if department_id is not None:
+        try:
+            uuidlib.UUID(department_id)
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(status_code=400, detail="department_id must be a valid UUID")
+    if to_date < from_date:
+        raise HTTPException(status_code=400, detail="to_date must be >= from_date")
+
+    rows = db.execute(text("""
+        SELECT waiter_name,
+               MAX(CAST(waiter_employee_id AS text)) AS employee_id,
+               COUNT(*) AS checks_count,
+               SUM(total_sum) AS revenue,
+               AVG(total_sum) AS avg_check,
+               SUM(guest_num) AS guests_count
+        FROM receipt
+        WHERE open_date BETWEEN :from_date AND :to_date
+          AND (:dept IS NULL OR department_id = CAST(:dept AS uuid))
+          AND (:wname IS NULL OR waiter_name ILIKE :wname_like)
+        GROUP BY waiter_name
+        ORDER BY revenue DESC
+    """), {
+        "from_date": from_date,
+        "to_date": to_date,
+        "dept": department_id,
+        "wname": waiter_name,
+        "wname_like": f"%{waiter_name}%" if waiter_name else None,
+    }).fetchall()
+
+    return [
+        {
+            "waiter_name": r.waiter_name,
+            "employee_id": r.employee_id,
+            "checks_count": int(r.checks_count),
+            "revenue": round(float(r.revenue), 2) if r.revenue is not None else 0.0,
+            "avg_check": round(float(r.avg_check), 2) if r.avg_check is not None else None,
+            "guests_count": int(r.guests_count) if r.guests_count is not None else None,
+            "avg_per_guest": (
+                round(float(r.revenue) / float(r.guests_count), 2)
+                if r.guests_count and float(r.guests_count) > 0 and r.revenue is not None
+                else None
+            ),
+        }
+        for r in rows
+    ]
+
+
 @router.post("/sync-waiters")
 async def sync_waiter_sales(
     from_date: Optional[date] = Query(None, description="Start date (default: yesterday)"),
