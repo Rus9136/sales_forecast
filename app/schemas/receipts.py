@@ -35,6 +35,7 @@ class ReceiptResponse(BaseModel):
     department_name: Optional[str] = None
     open_date: date
     order_num: int
+    open_time: Optional[datetime] = None
     close_time: datetime
     order_type: Optional[str] = None
     table_num: Optional[str] = None

@@ -36,6 +36,7 @@ def _serialize_receipt(r: Receipt, dept_name: Optional[str] = None) -> dict:
         "department_name": dept_name,
         "open_date": r.open_date,
         "order_num": r.order_num,
+        "open_time": r.open_time,
         "close_time": r.close_time,
         "order_type": r.order_type,
         "table_num": r.table_num,

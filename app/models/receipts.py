@@ -20,6 +20,7 @@ class Receipt(Base):
     department_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     open_date = Column(Date, primary_key=True, nullable=False)
     order_num = Column(Integer, nullable=False)
+    open_time = Column(DateTime)
     close_time = Column(DateTime, nullable=False)
     order_type = Column(Text)
     table_num = Column(Text)

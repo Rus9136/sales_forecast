@@ -54,7 +54,8 @@ class IikoReceiptsLoaderService:
             body = {
                 "reportType": "SALES",
                 "groupByRowFields": [
-                    "Department.Id", "OpenDate.Typed", "OrderNum", "CloseTime",
+                    "Department.Id", "OpenDate.Typed", "OrderNum",
+                    "OpenTime", "CloseTime",
                     "OrderType", "TableNum", "WaiterName",
                     "DishId", "DishName", "DishCode",
                     "DishGroup", "DishCategory",
@@ -131,6 +132,7 @@ class IikoReceiptsLoaderService:
                 "department_id": dept_id,
                 "open_date": open_date_str,
                 "order_num": order_num,
+                "open_time": first.get("OpenTime"),
                 "close_time": first.get("CloseTime"),
                 "order_type": first.get("OrderType"),
                 "table_num": str(first.get("TableNum", "")) if first.get("TableNum") is not None else None,
@@ -264,6 +266,7 @@ class IikoReceiptsLoaderService:
                         r["department_id"],
                         r["open_date"],
                         r["order_num"],
+                        r.get("open_time"),
                         r["close_time"],
                         r.get("order_type"),
                         r.get("table_num"),
@@ -281,12 +284,13 @@ class IikoReceiptsLoaderService:
                     cur,
                     """
                     INSERT INTO receipt (
-                        department_id, open_date, order_num, close_time,
+                        department_id, open_date, order_num, open_time, close_time,
                         order_type, table_num, waiter_name, waiter_employee_id,
                         guest_num, total_sum, discount_sum, return_sum,
                         items_count, synced_at
                     ) VALUES %s
                     ON CONFLICT (department_id, open_date, order_num) DO UPDATE SET
+                        open_time = EXCLUDED.open_time,
                         close_time = EXCLUDED.close_time,
                         order_type = EXCLUDED.order_type,
                         table_num = EXCLUDED.table_num,
@@ -301,7 +305,7 @@ class IikoReceiptsLoaderService:
                     RETURNING id, department_id, order_num
                     """,
                     receipt_rows,
-                    template="(%s::uuid, %s::date, %s, %s::timestamp, %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s, %s)",
+                    template="(%s::uuid, %s::date, %s, %s::timestamp, %s::timestamp, %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s, %s)",
                     fetch=True,
                 )
                 # Build (dept_id, date, order_num) → receipt_id map
