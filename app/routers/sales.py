@@ -156,6 +156,12 @@ def get_checks_hourly(
     department_id: str = Query(..., description="Department UUID"),
     from_date: date = Query(..., description="Start date (YYYY-MM-DD), inclusive"),
     to_date: date = Query(..., description="End date (YYYY-MM-DD), inclusive"),
+    bucket_by: str = Query(
+        "open",
+        pattern="^(open|close)$",
+        description="Bucket each check by its open hour (`open`, default — when "
+                    "guests arrive/are seated) or close hour (`close` — when paid)",
+    ),
     db: Session = Depends(get_db),
     api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass),
 ):
@@ -164,13 +170,16 @@ def get_checks_hourly(
     Built for TCO staffing calibration — revenue hides load (a 200k banquet is
     one check, 200k of retail is a queue). Counts come from `receipt` headers.
 
-    - `hour` is 0-23 in Asia/Almaty (iiko `CloseTime`, stored local; same source
-      as `sales_by_hour`). The check is bucketed by its close hour, on its
-      accounting day (`open_date`).
+    - `hour` is 0-23 in Asia/Almaty (stored local; same source as `sales_by_hour`).
+      The check is bucketed on its accounting day (`open_date`) by:
+      - `bucket_by=open` (default) — hour of `open_time` (when guests are seated;
+        better proxy for staffing peaks). Falls back to `close_time` for legacy
+        receipts synced before `open_time` was captured (`open_time IS NULL`).
+      - `bucket_by=close` — hour of `close_time` (when the check is paid).
     - `items_count` = number of line positions (`receipt.items_count`), not unit qty.
     - `guests_count` = sum of per-receipt guest counts; `null` when no receipt in
       the hour carries guest data.
-    - Hours with no closed checks are omitted (no zero-fill).
+    - Hours with no checks are omitted (no zero-fill).
     """
     try:
         uuidlib.UUID(department_id)
@@ -181,9 +190,12 @@ def get_checks_hourly(
     if (to_date - from_date).days > 31:
         raise HTTPException(status_code=400, detail="Max range is 31 days")
 
-    rows = db.execute(text("""
+    # Bucketing timestamp: open hour (fallback to close for legacy NULLs) or close hour.
+    ts_expr = "COALESCE(open_time, close_time)" if bucket_by == "open" else "close_time"
+
+    rows = db.execute(text(f"""
         SELECT open_date AS date,
-               EXTRACT(HOUR FROM close_time)::int AS hour,
+               EXTRACT(HOUR FROM {ts_expr})::int AS hour,
                COUNT(*) AS checks_count,
                COALESCE(SUM(items_count), 0) AS items_count,
                SUM(guest_num) AS guests_count,
@@ -191,7 +203,7 @@ def get_checks_hourly(
         FROM receipt
         WHERE department_id = CAST(:dept AS uuid)
           AND open_date BETWEEN :from_date AND :to_date
-        GROUP BY open_date, EXTRACT(HOUR FROM close_time)
+        GROUP BY open_date, EXTRACT(HOUR FROM {ts_expr})
         ORDER BY open_date, hour
     """), {"dept": department_id, "from_date": from_date, "to_date": to_date}).fetchall()
 
