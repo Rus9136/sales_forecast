@@ -1,9 +1,11 @@
 export interface SalesSummary {
   id: number
   department_id: string
+  department_name: string | null
   date: string
   total_sales: number          // прайс (DishSumInt)
   total_paid: number | null    // к оплате (DishDiscountSumInt); null до бэкфилла
+  discount: number | null      // прайс − к оплате (>0 скидка, <0 наценка/сервис)
   created_at: string
   updated_at: string
   synced_at: string

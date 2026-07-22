@@ -74,6 +74,7 @@ export function DailySalesPage() {
                 <TableHead>Дата</TableHead>
                 <TableHead className="text-right">Прайс</TableHead>
                 <TableHead className="text-right">К оплате</TableHead>
+                <TableHead className="text-right">Скидка</TableHead>
                 <TableHead>Создано</TableHead>
                 <TableHead>Синхронизировано</TableHead>
               </TableRow>
@@ -87,6 +88,13 @@ export function DailySalesPage() {
                   <TableCell className="text-right font-mono">{formatCurrency(row.total_sales)}</TableCell>
                   <TableCell className="text-right font-mono">
                     {row.total_paid != null ? formatCurrency(row.total_paid) : '—'}
+                  </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {row.discount == null || Math.abs(row.discount) < 0.005
+                      ? '—'
+                      : row.discount > 0
+                        ? formatCurrency(row.discount)
+                        : <span style={{ color: 'var(--pos)' }}>+{formatCurrency(-row.discount)}</span>}
                   </TableCell>
                   <TableCell className="text-xs">{formatDateTime(row.created_at)}</TableCell>
                   <TableCell className="text-xs">{formatDateTime(row.synced_at)}</TableCell>

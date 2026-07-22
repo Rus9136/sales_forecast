@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import date, datetime, timedelta
 import uuid as uuidlib
 from ..db import get_db
-from ..models.branch import SalesSummary as SalesSummaryModel, SalesByHour as SalesByHourModel, AutoSyncLog
+from ..models.branch import SalesSummary as SalesSummaryModel, SalesByHour as SalesByHourModel, AutoSyncLog, Department
 from ..models.employee import SalesByWaiter as SalesByWaiterModel, Employee as EmployeeModel
 from ..schemas.branch import SalesSummary, SalesByHour
 from ..services.iiko_sales_loader import IikoSalesLoaderService
@@ -28,28 +28,37 @@ def get_sales_summary(
     api_key: Optional[ApiKey] = Depends(get_api_key_or_bypass)
 ):
     """Get sales summary data with optional filtering"""
-    query = db.query(SalesSummaryModel)
-    
+    query = db.query(SalesSummaryModel, Department.name).outerjoin(
+        Department, SalesSummaryModel.department_id == Department.id
+    )
+
     if department_id:
         query = query.filter(SalesSummaryModel.department_id == department_id)
-    
+
     if from_date:
         query = query.filter(SalesSummaryModel.date >= from_date)
-    
+
     if to_date:
         query = query.filter(SalesSummaryModel.date <= to_date)
-    
-    sales_summary = query.order_by(SalesSummaryModel.date.desc()).offset(skip).limit(limit).all()
-    
+
+    rows = query.order_by(SalesSummaryModel.date.desc()).offset(skip).limit(limit).all()
+
     # Convert to response format
     result = []
-    for sale in sales_summary:
+    for sale, dept_name in rows:
+        # Скидка/наценка = прайс − к оплате (>0 скидка, <0 сервисный сбор). None если paid неизвестен.
+        discount = (
+            round(float(sale.total_sales) - float(sale.total_paid), 2)
+            if sale.total_paid is not None else None
+        )
         sale_dict = {
             "id": sale.id,
             "department_id": str(sale.department_id),
+            "department_name": dept_name,
             "date": sale.date,
             "total_sales": sale.total_sales,   # прайс (DishSumInt)
             "total_paid": sale.total_paid,     # к оплате (DishDiscountSumInt); NULL до бэкфилла
+            "discount": discount,              # прайс − к оплате
             "created_at": sale.created_at,
             "updated_at": sale.updated_at,
             "synced_at": sale.synced_at
