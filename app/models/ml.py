@@ -36,6 +36,8 @@ class ModelVersion(Base):
     created_by = Column(String(50), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    revenue_basis = Column(String(20), nullable=True)  # 'price' | 'paid' — база выручки, на которой обучена модель
+
 
 class ModelRetrainingLog(Base):
     __tablename__ = "model_retraining_log"

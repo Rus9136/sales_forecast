@@ -35,7 +35,8 @@ class IikoSalesLoaderService:
                     "OrderNum"
                 ],
                 "aggregateFields": [
-                    "DishSumInt"
+                    "DishSumInt",          # прайс
+                    "DishDiscountSumInt"   # к оплате (со скидкой/сервисом)
                 ],
                 "filters": {
                     "OpenDate.Typed": {
@@ -121,33 +122,41 @@ class IikoSalesLoaderService:
         df['CloseTime'] = pd.to_datetime(df['CloseTime'], format='mixed')
         df['date'] = df['CloseTime'].dt.date
         df['hour'] = df['CloseTime'].dt.hour
-        
+
+        # Фактическая выручка (paid). Домен/старая выгрузка может не вернуть поле —
+        # тогда paid = NULL (None), прайс-путь не страдает.
+        has_paid = 'DishDiscountSumInt' in df.columns
+
         # Group by department and date for daily summary
-        sales_summary = df.groupby(['Department.Id', 'date']).agg(
-            total_sales=('DishSumInt', 'sum')
-        ).reset_index()
-        
+        summary_agg = {'total_sales': ('DishSumInt', 'sum')}
+        if has_paid:
+            summary_agg['total_paid'] = ('DishDiscountSumInt', 'sum')
+        sales_summary = df.groupby(['Department.Id', 'date']).agg(**summary_agg).reset_index()
+
         # Group by department, date, and hour for hourly summary
-        sales_by_hour = df.groupby(['Department.Id', 'date', 'hour']).agg(
-            sales_amount=('DishSumInt', 'sum')
-        ).reset_index()
-        
+        hourly_agg = {'sales_amount': ('DishSumInt', 'sum')}
+        if has_paid:
+            hourly_agg['paid_amount'] = ('DishDiscountSumInt', 'sum')
+        sales_by_hour = df.groupby(['Department.Id', 'date', 'hour']).agg(**hourly_agg).reset_index()
+
         # Convert to dictionaries
         summary_records = []
         for _, row in sales_summary.iterrows():
             summary_records.append({
                 'department_id': row['Department.Id'],
                 'date': row['date'],
-                'total_sales': float(row['total_sales'])
+                'total_sales': float(row['total_sales']),
+                'total_paid': float(row['total_paid']) if has_paid else None,
             })
-        
+
         hourly_records = []
         for _, row in sales_by_hour.iterrows():
             hourly_records.append({
                 'department_id': row['Department.Id'],
                 'date': row['date'],
                 'hour': int(row['hour']),
-                'sales_amount': float(row['sales_amount'])
+                'sales_amount': float(row['sales_amount']),
+                'paid_amount': float(row['paid_amount']) if has_paid else None,
             })
         
         logger.info(f"Processed {len(summary_records)} daily summary records and {len(hourly_records)} hourly records")
@@ -186,6 +195,17 @@ class IikoSalesLoaderService:
             if total_sales == 0.0 and record.get('total_sales'):
                 total_sales = record['total_sales']
 
+            # Same roll-up for paid (к оплате). Plain SUM preserves NULL: a day with no
+            # known paid data stays NULL (unknown ≠ 0), keeping invariant total_paid == SUM(paid_amount).
+            paid_total = self.db.query(func.sum(SalesByHour.paid_amount)).filter(
+                SalesByHour.department_id == record['department_id'],
+                SalesByHour.date == record['date'],
+            ).scalar()
+            total_paid = float(paid_total) if paid_total is not None else None
+            # Fallback to the fetch value only if no hourly paid exists at all.
+            if total_paid is None and record.get('total_paid') is not None:
+                total_paid = record['total_paid']
+
             # Check if record already exists
             existing_record = self.db.query(SalesSummary).filter(
                 SalesSummary.department_id == record['department_id'],
@@ -195,6 +215,7 @@ class IikoSalesLoaderService:
             if existing_record:
                 # Update existing record
                 existing_record.total_sales = total_sales
+                existing_record.total_paid = total_paid
                 existing_record.updated_at = datetime.utcnow()
                 existing_record.synced_at = datetime.utcnow()
                 updated_count += 1
@@ -204,6 +225,7 @@ class IikoSalesLoaderService:
                     department_id=record['department_id'],
                     date=record['date'],
                     total_sales=total_sales,
+                    total_paid=total_paid,
                     synced_at=datetime.utcnow()
                 )
                 self.db.add(new_record)
@@ -233,8 +255,9 @@ class IikoSalesLoaderService:
             ).first()
             
             if existing_record:
-                # Update existing record
+                # Update existing record (full replace of BOTH measures together — idempotent)
                 existing_record.sales_amount = record['sales_amount']
+                existing_record.paid_amount = record.get('paid_amount')
                 existing_record.updated_at = datetime.utcnow()
                 existing_record.synced_at = datetime.utcnow()
                 updated_count += 1
@@ -245,6 +268,7 @@ class IikoSalesLoaderService:
                     date=record['date'],
                     hour=record['hour'],
                     sales_amount=record['sales_amount'],
+                    paid_amount=record.get('paid_amount'),
                     synced_at=datetime.utcnow()
                 )
                 self.db.add(new_record)

@@ -13,6 +13,7 @@ from typing import Optional, Dict, List, Tuple, Any
 import logging
 import numpy as np
 
+from ..config import settings
 from ..db import get_db
 from ..models.branch import Department, SalesSummary, ForecastAccuracyLog, Forecast, ModelPerformanceMetrics
 from ..agents.sales_forecaster_agent import get_forecaster_agent
@@ -62,18 +63,22 @@ class ModelMonitoringService:
             # 1. Get all forecasts and actuals for the date using raw SQL to handle UUID casting.
             # horizon_days (миграция 030): t+1 и t+7 прогнозы на одну дату
             # оцениваются раздельно — виден спад качества по горизонту.
-            forecasts_actuals = db.execute(text("""
+            # Пункт B: факт сравниваем в той же базе, что и прогноз (флаг REVENUE_BASIS).
+            # NULL-actual (нет paid) исключаем, чтобы не смешивать базы.
+            actual_col = "s.total_paid" if settings.REVENUE_BASIS == 'paid' else "s.total_sales"
+            forecasts_actuals = db.execute(text(f"""
                 SELECT
                     f.branch_id,
                     f.predicted_amount,
                     f.horizon_days,
-                    s.total_sales as actual_amount,
+                    {actual_col} as actual_amount,
                     d.name as branch_name
                 FROM forecasts f
                 JOIN sales_summary s ON CAST(f.branch_id AS UUID) = s.department_id
                     AND f.forecast_date = s.date
                 JOIN departments d ON CAST(f.branch_id AS UUID) = d.id
                 WHERE f.forecast_date = :target_date
+                    AND {actual_col} IS NOT NULL
             """), {"target_date": target_date}).fetchall()
 
             if not forecasts_actuals:

@@ -8,6 +8,7 @@ import logging
 
 from ..models.branch import SalesSummary, Department
 from ..db import get_db
+from ..config import settings
 from . import kz_calendar
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,7 @@ class TrainingDataService:
             SalesSummary.department_id,
             SalesSummary.date,
             SalesSummary.total_sales,
+            SalesSummary.total_paid,
             Department.name.label('department_name'),
             Department.code.label('department_code'),
             Department.type.label('department_type'),
@@ -231,7 +233,14 @@ class TrainingDataService:
             )
         else:
             query = query.filter(SalesSummary.date <= end_date)
-        
+
+        # Пункт B: база выручки. При 'paid' таргет = фактическая выручка (total_paid),
+        # но имя df-колонки остаётся 'total_sales' — весь фич-инжиниринг самомасштабируется.
+        # NULL-paid строки (нет источника) исключаем, чтобы не отравить log1p/rolling.
+        use_paid = settings.REVENUE_BASIS == 'paid'
+        if use_paid:
+            query = query.filter(SalesSummary.total_paid.isnot(None))
+
         # Convert to pandas DataFrame
         results = query.all()
         
@@ -242,7 +251,8 @@ class TrainingDataService:
             {
                 'department_id': str(r.department_id),
                 'date': r.date,
-                'total_sales': float(r.total_sales),
+                # df-колонка 'total_sales' держит значения выбранной базы (прайс или paid)
+                'total_sales': float(r.total_paid if use_paid else r.total_sales),
                 'department_name': r.department_name,
                 'department_code': r.department_code,
                 'department_type': r.department_type,

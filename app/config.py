@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     RETRAIN_HOLDOUT_DAYS: int = 28
     RETRAIN_MEDAPE_TOLERANCE_PCT: float = 10.0
 
+    # Пункт B: база выручки для прогноза/отчётности.
+    #   'price' — прайс (iiko DishSumInt, sales_summary.total_sales) — историческое поведение
+    #   'paid'  — фактическая выручка к оплате (DishDiscountSumInt, sales_summary.total_paid)
+    # Переключает ML-таргет (training), сравнение факта (monitoring) и историю пост-обработки.
+    # Флаг даёт мгновенный откат без правок кода.
+    REVENUE_BASIS: str = "price"
+
     # Алерты мониторинга (аудит P0-6, Фаза 1.5): Telegram Bot API
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""

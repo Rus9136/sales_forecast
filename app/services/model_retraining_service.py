@@ -581,7 +581,8 @@ class ModelRetrainingService:
                 model_path=metadata['model_path'],
                 model_size_mb=metadata.get('model_size_mb'),
                 status=metadata['status'],
-                created_by=metadata['created_by']
+                created_by=metadata['created_by'],
+                revenue_basis=settings.REVENUE_BASIS,  # 'price'|'paid' — база выручки модели
             )
             
             db.add(model_version)

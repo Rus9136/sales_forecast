@@ -15,6 +15,7 @@ from ...db import get_db
 from ...agents.sales_forecaster_agent import get_forecaster_agent
 from ...models.branch import Department, SalesSummary
 from ...auth import get_api_key_or_bypass, ApiKey, log_api_usage
+from ...config import settings
 from ..department import INACTIVE_THRESHOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -201,18 +202,23 @@ async def get_forecast_comparison(
                 logger.warning(f"Failed to get prediction for {sale.date}, {sale.department_id}: {pred_error}")
                 prediction = None
 
+            # Факт сравниваем в базе прогноза (флаг REVENUE_BASIS)
+            actual = sale.total_paid if settings.REVENUE_BASIS == 'paid' else sale.total_sales
+
             error = None
             error_percentage = None
-            if prediction and sale.total_sales:
-                error = prediction - sale.total_sales
-                error_percentage = (abs(error) / sale.total_sales) * 100
+            if prediction and actual:
+                error = prediction - actual
+                error_percentage = (abs(error) / actual) * 100
 
             results.append({
                 "date": sale.date.isoformat(),
                 "department_id": str(sale.department_id),
                 "department_name": department.name if department else "Unknown",
                 "predicted_sales": round(prediction, 2) if prediction else None,
-                "actual_sales": sale.total_sales,
+                "actual_sales": actual,
+                "actual_price": sale.total_sales,
+                "actual_paid": sale.total_paid,
                 "error": round(error, 2) if error else None,
                 "error_percentage": round(error_percentage, 2) if error_percentage else None
             })

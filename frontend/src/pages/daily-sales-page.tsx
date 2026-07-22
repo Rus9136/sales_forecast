@@ -72,7 +72,8 @@ export function DailySalesPage() {
                 <TableHead>ID</TableHead>
                 <TableHead>Подразделение</TableHead>
                 <TableHead>Дата</TableHead>
-                <TableHead className="text-right">Сумма продаж</TableHead>
+                <TableHead className="text-right">Прайс</TableHead>
+                <TableHead className="text-right">К оплате</TableHead>
                 <TableHead>Создано</TableHead>
                 <TableHead>Синхронизировано</TableHead>
               </TableRow>
@@ -84,6 +85,9 @@ export function DailySalesPage() {
                   <TableCell className="font-medium">{deptMap.get(row.department_id) || row.department_id}</TableCell>
                   <TableCell>{formatDate(row.date)}</TableCell>
                   <TableCell className="text-right font-mono">{formatCurrency(row.total_sales)}</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {row.total_paid != null ? formatCurrency(row.total_paid) : '—'}
+                  </TableCell>
                   <TableCell className="text-xs">{formatDateTime(row.created_at)}</TableCell>
                   <TableCell className="text-xs">{formatDateTime(row.synced_at)}</TableCell>
                 </TableRow>

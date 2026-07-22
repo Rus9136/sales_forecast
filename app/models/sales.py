@@ -11,7 +11,8 @@ class SalesSummary(Base):
     id = Column(Integer, primary_key=True, index=True)
     department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
-    total_sales = Column(Float, nullable=False)
+    total_sales = Column(Float, nullable=False)          # iiko DishSumInt — прайс
+    total_paid = Column(Float, nullable=True)            # iiko DishDiscountSumInt — к оплате (скидка/сервис); NULL до бэкфилла
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     synced_at = Column(DateTime, default=datetime.utcnow)
@@ -30,7 +31,8 @@ class SalesByHour(Base):
     department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
     hour = Column(Integer, nullable=False, index=True)
-    sales_amount = Column(Float, nullable=False)
+    sales_amount = Column(Float, nullable=False)         # iiko DishSumInt — прайс
+    paid_amount = Column(Float, nullable=True)           # iiko DishDiscountSumInt — к оплате; NULL до бэкфилла
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     synced_at = Column(DateTime, default=datetime.utcnow)

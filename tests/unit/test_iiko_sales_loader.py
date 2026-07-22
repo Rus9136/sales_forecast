@@ -123,7 +123,7 @@ class TestFetchSalesFromSingleDomain:
                 "CloseTime",
                 "OrderNum",
             ]
-            assert sent["aggregateFields"] == ["DishSumInt"]
+            assert sent["aggregateFields"] == ["DishSumInt", "DishDiscountSumInt"]
             # Deleted-orders filters present.
             assert sent["filters"]["OrderDeleted"]["values"] == ["NOT_DELETED"]
             assert sent["filters"]["DeletedWithWriteoff"]["values"] == ["NOT_DELETED"]

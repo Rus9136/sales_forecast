@@ -22,6 +22,7 @@ import warnings
 from scipy import stats
 from sklearn.metrics import mean_absolute_error
 
+from ..config import settings
 from ..models.branch import SalesSummary, Department, ForecastAccuracyLog
 from ..agents.sales_forecaster_agent import get_forecaster_agent
 
@@ -194,14 +195,21 @@ class ForecastPostprocessingService:
         start_date = forecast_date - timedelta(days=days_back)
         end_date = forecast_date - timedelta(days=1)
 
+        # Пункт B: история в той же базе, что и прогноз (флаг REVENUE_BASIS), иначе
+        # floor/ceiling/сглаживание масштабируются не в тех единицах (~10% ошибка).
+        # df-колонка остаётся 'total_sales'. NULL-paid дни исключаем.
+        use_paid = settings.REVENUE_BASIS == 'paid'
+        revenue_col = SalesSummary.total_paid if use_paid else SalesSummary.total_sales
+
         query = self.db.query(
             SalesSummary.date,
-            SalesSummary.total_sales
+            revenue_col.label('total_sales')
         ).filter(
             and_(
                 SalesSummary.department_id == branch_id,
                 SalesSummary.date >= start_date,
-                SalesSummary.date <= end_date
+                SalesSummary.date <= end_date,
+                revenue_col.isnot(None)
             )
         ).order_by(SalesSummary.date)
 

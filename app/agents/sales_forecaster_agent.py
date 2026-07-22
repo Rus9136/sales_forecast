@@ -15,6 +15,7 @@ from ..services.training_service import TrainingDataService
 from ..services.forecast_metrics import wape, median_ape
 from ..services import kz_calendar
 from ..models.branch import SalesSummary, Department
+from ..config import settings
 from ..db import get_db
 
 logger = logging.getLogger(__name__)
@@ -299,10 +300,16 @@ class SalesForecasterAgent:
                 start_date = end_date - timedelta(days=45)
                 logger.info(f"Long-term forecast ({days_ahead} days ahead): using extended approach")
             
+            # Пункт B: на инференсе история строится в той же базе, что и таргет модели
+            # (флаг REVENUE_BASIS), иначе лаги/rolling разойдутся с paid-моделью на ~10%.
+            # df-колонка остаётся 'total_sales'. NULL-paid дни исключаем (как в обучении).
+            use_paid = settings.REVENUE_BASIS == 'paid'
+            revenue_col = SalesSummary.total_paid if use_paid else SalesSummary.total_sales
+
             # Query historical sales with department info (incl. operational metadata)
             sales_query = db.query(
                 SalesSummary.date,
-                SalesSummary.total_sales,
+                revenue_col.label('total_sales'),
                 Department.name.label('department_name'),
                 Department.code.label('department_code'),
                 Department.type.label('department_type'),
@@ -325,7 +332,8 @@ class SalesForecasterAgent:
                 and_(
                     SalesSummary.department_id == branch_id,
                     SalesSummary.date >= start_date,
-                    SalesSummary.date <= end_date
+                    SalesSummary.date <= end_date,
+                    revenue_col.isnot(None) if use_paid else True
                 )
             ).order_by(SalesSummary.date)
 
@@ -705,12 +713,16 @@ class SalesForecasterAgent:
             python_dow = forecast_datetime.dayofweek
             postgres_dow = (python_dow + 1) % 7
             
+            # Базовая линия сглаживания — в той же базе выручки, что и прогноз (флаг REVENUE_BASIS).
+            _use_paid = settings.REVENUE_BASIS == 'paid'
+            _revenue_col = SalesSummary.total_paid if _use_paid else SalesSummary.total_sales
             # Ищем продажи за последние 4 недели для расчета базовой линии
-            recent_sales = db.query(SalesSummary.total_sales, SalesSummary.date).filter(
+            recent_sales = db.query(_revenue_col.label('total_sales'), SalesSummary.date).filter(
                 and_(
                     SalesSummary.department_id == branch_id,
                     SalesSummary.date >= forecast_date - timedelta(days=28),  # 4 недели назад
-                    SalesSummary.date < forecast_date
+                    SalesSummary.date < forecast_date,
+                    _revenue_col.isnot(None) if _use_paid else True
                 )
             ).order_by(SalesSummary.date.desc()).all()
             

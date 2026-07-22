@@ -48,13 +48,14 @@ def get_sales_summary(
             "id": sale.id,
             "department_id": str(sale.department_id),
             "date": sale.date,
-            "total_sales": sale.total_sales,
+            "total_sales": sale.total_sales,   # прайс (DishSumInt)
+            "total_paid": sale.total_paid,     # к оплате (DishDiscountSumInt); NULL до бэкфилла
             "created_at": sale.created_at,
             "updated_at": sale.updated_at,
             "synced_at": sale.synced_at
         }
         result.append(sale_dict)
-    
+
     return result
 
 
@@ -94,13 +95,14 @@ def get_sales_by_hour(
             "department_id": str(sale.department_id),
             "date": sale.date,
             "hour": sale.hour,
-            "sales_amount": sale.sales_amount,
+            "sales_amount": sale.sales_amount,   # прайс
+            "paid_amount": sale.paid_amount,     # к оплате; NULL до бэкфилла
             "created_at": sale.created_at,
             "updated_at": sale.updated_at,
             "synced_at": sale.synced_at
         }
         result.append(sale_dict)
-    
+
     return result
 
 
@@ -125,6 +127,7 @@ def get_sales_hourly_heatmap(
         dow_expr.label('dow'),
         SalesByHourModel.hour.label('hour'),
         func.sum(SalesByHourModel.sales_amount).label('total'),
+        func.sum(SalesByHourModel.paid_amount).label('total_paid'),
     )
 
     if department_id:
@@ -136,18 +139,21 @@ def get_sales_hourly_heatmap(
 
     rows = query.group_by('dow', SalesByHourModel.hour).all()
 
-    grid = [[0.0 for _ in range(24)] for _ in range(7)]
-    for dow, hour, total in rows:
+    grid = [[0.0 for _ in range(24)] for _ in range(7)]        # прайс
+    grid_paid = [[0.0 for _ in range(24)] for _ in range(7)]   # к оплате
+    for dow, hour, total, total_paid in rows:
         d = int(dow)
         h = int(hour)
         if 0 <= d < 7 and 0 <= h < 24:
             grid[d][h] = float(total or 0)
+            grid_paid[d][h] = float(total_paid or 0)
 
     return {
         "from_date": from_date,
         "to_date": to_date,
         "department_id": department_id,
         "grid": grid,
+        "grid_paid": grid_paid,
     }
 
 
@@ -199,7 +205,8 @@ def get_checks_hourly(
                COUNT(*) AS checks_count,
                COALESCE(SUM(items_count), 0) AS items_count,
                SUM(guest_num) AS guests_count,
-               AVG(total_sum) AS avg_check
+               AVG(total_sum) AS avg_check,
+               AVG(paid_sum) AS avg_check_paid
         FROM receipt
         WHERE department_id = CAST(:dept AS uuid)
           AND open_date BETWEEN :from_date AND :to_date
@@ -215,6 +222,7 @@ def get_checks_hourly(
             "items_count": int(r.items_count),
             "guests_count": int(r.guests_count) if r.guests_count is not None else None,
             "avg_check": round(float(r.avg_check), 2) if r.avg_check is not None else None,
+            "avg_check_paid": round(float(r.avg_check_paid), 2) if r.avg_check_paid is not None else None,
         }
         for r in rows
     ]
@@ -318,16 +326,18 @@ def get_sales_stats(
         
         hourly_count = hourly_query.count()
         
-        # Get total sales amount
+        # Get total sales amount (прайс + к оплате)
         total_sales = db.query(func.sum(SalesSummaryModel.total_sales)).scalar() or 0
-        
+        total_paid = db.query(func.sum(SalesSummaryModel.total_paid)).scalar() or 0
+
         # Get latest sync date
         latest_sync = db.query(func.max(SalesSummaryModel.synced_at)).scalar()
-        
+
         return {
             "summary_records": summary_count,
             "hourly_records": hourly_count,
             "total_sales_amount": float(total_sales),
+            "total_paid_amount": float(total_paid),
             "latest_sync": latest_sync,
             "date_range": {
                 "from": from_date,
@@ -451,6 +461,8 @@ def get_avg_check_by_waiter(
                COUNT(*) AS checks_count,
                SUM(total_sum) AS revenue,
                AVG(total_sum) AS avg_check,
+               SUM(paid_sum) AS revenue_paid,
+               AVG(paid_sum) AS avg_check_paid,
                SUM(guest_num) AS guests_count
         FROM receipt
         WHERE open_date BETWEEN :from_date AND :to_date
@@ -473,6 +485,8 @@ def get_avg_check_by_waiter(
             "checks_count": int(r.checks_count),
             "revenue": round(float(r.revenue), 2) if r.revenue is not None else 0.0,
             "avg_check": round(float(r.avg_check), 2) if r.avg_check is not None else None,
+            "revenue_paid": round(float(r.revenue_paid), 2) if r.revenue_paid is not None else 0.0,
+            "avg_check_paid": round(float(r.avg_check_paid), 2) if r.avg_check_paid is not None else None,
             "guests_count": int(r.guests_count) if r.guests_count is not None else None,
             "avg_per_guest": (
                 round(float(r.revenue) / float(r.guests_count), 2)

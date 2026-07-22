@@ -150,7 +150,8 @@ export function HourlySalesPage() {
                 <TableHead>Подразделение</TableHead>
                 <TableHead>Дата</TableHead>
                 <TableHead>Час</TableHead>
-                <TableHead className="text-right">Сумма продаж</TableHead>
+                <TableHead className="text-right">Прайс</TableHead>
+                <TableHead className="text-right">К оплате</TableHead>
                 <TableHead>Создано</TableHead>
                 <TableHead>Синхронизировано</TableHead>
               </TableRow>
@@ -163,6 +164,9 @@ export function HourlySalesPage() {
                   <TableCell>{formatDate(row.date)}</TableCell>
                   <TableCell>{`${row.hour}:00`}</TableCell>
                   <TableCell className="text-right font-mono">{formatCurrency(row.sales_amount)}</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {row.paid_amount != null ? formatCurrency(row.paid_amount) : '—'}
+                  </TableCell>
                   <TableCell className="text-xs">{formatDateTime(row.created_at)}</TableCell>
                   <TableCell className="text-xs">{formatDateTime(row.synced_at)}</TableCell>
                 </TableRow>
