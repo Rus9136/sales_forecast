@@ -18,8 +18,9 @@ class ReceiptItemResponse(BaseModel):
     dish_category: Optional[str] = None
     qty: float
     price_per_unit: Optional[float] = None
-    dish_sum: float
-    discount_sum: float
+    dish_sum: float          # сумма по прайсу (DishSumInt)
+    paid_sum: float          # сумма к оплате со скидкой/сервисом (DishDiscountSumInt)
+    discount: float          # dish_sum - paid_sum (>0 скидка, <0 наценка/сервис)
     return_sum: float
     cost_price: Optional[float] = None
     food_cost_percent: Optional[float] = None
@@ -41,8 +42,9 @@ class ReceiptResponse(BaseModel):
     table_num: Optional[str] = None
     waiter_name: Optional[str] = None
     guest_num: Optional[int] = None
-    total_sum: float
-    discount_sum: float
+    total_sum: float         # сумма по прайсу (DishSumInt)
+    paid_sum: float          # сумма к оплате со скидкой/сервисом (DishDiscountSumInt)
+    discount: float          # total_sum - paid_sum (>0 скидка, <0 наценка/сервис)
     return_sum: float
     items_count: int
     synced_at: datetime

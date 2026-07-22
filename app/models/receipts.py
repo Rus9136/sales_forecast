@@ -27,8 +27,8 @@ class Receipt(Base):
     waiter_name = Column(Text)
     waiter_employee_id = Column(UUID(as_uuid=True))
     guest_num = Column(Integer)
-    total_sum = Column(Numeric(14, 2), nullable=False, default=0)
-    discount_sum = Column(Numeric(14, 2), nullable=False, default=0)
+    total_sum = Column(Numeric(14, 2), nullable=False, default=0)  # iiko DishSumInt — сумма по прайсу
+    paid_sum = Column(Numeric(14, 2), nullable=False, default=0)   # iiko DishDiscountSumInt — сумма к оплате (со скидкой/сервисом)
     return_sum = Column(Numeric(14, 2), nullable=False, default=0)
     items_count = Column(Integer, nullable=False, default=0)
     synced_at = Column(DateTime, nullable=False, server_default=func.now())
@@ -50,8 +50,8 @@ class ReceiptItem(Base):
     dish_category = Column(Text)
     qty = Column(Numeric(12, 3), nullable=False)
     price_per_unit = Column(Numeric(14, 2))
-    dish_sum = Column(Numeric(14, 2), nullable=False, default=0)
-    discount_sum = Column(Numeric(14, 2), nullable=False, default=0)
+    dish_sum = Column(Numeric(14, 2), nullable=False, default=0)  # iiko DishSumInt — сумма строки по прайсу
+    paid_sum = Column(Numeric(14, 2), nullable=False, default=0)  # iiko DishDiscountSumInt — сумма к оплате (со скидкой/сервисом)
     return_sum = Column(Numeric(14, 2), nullable=False, default=0)
     cost_price = Column(Numeric(14, 2))
     food_cost_percent = Column(Numeric(7, 4))

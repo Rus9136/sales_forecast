@@ -383,8 +383,8 @@ CREATE TABLE receipt (
   waiter_name TEXT,
   waiter_employee_id UUID REFERENCES employees(id),
   guest_num INTEGER,
-  total_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
-  discount_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  total_sum NUMERIC(14,2) NOT NULL DEFAULT 0,   -- iiko DishSumInt: сумма по прайсу
+  paid_sum NUMERIC(14,2) NOT NULL DEFAULT 0,    -- iiko DishDiscountSumInt: сумма к оплате (со скидкой/сервисом); скидка = total_sum - paid_sum
   return_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
   items_count INTEGER NOT NULL DEFAULT 0,
   synced_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -407,8 +407,8 @@ CREATE TABLE receipt_item (
   dish_category TEXT,
   qty NUMERIC(12,3) NOT NULL,
   price_per_unit NUMERIC(14,2),
-  dish_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
-  discount_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
+  dish_sum NUMERIC(14,2) NOT NULL DEFAULT 0,   -- iiko DishSumInt: сумма строки по прайсу
+  paid_sum NUMERIC(14,2) NOT NULL DEFAULT 0,   -- iiko DishDiscountSumInt: сумма к оплате (со скидкой/сервисом)
   return_sum NUMERIC(14,2) NOT NULL DEFAULT 0,
   PRIMARY KEY (id, open_date)
 ) PARTITION BY RANGE (open_date);

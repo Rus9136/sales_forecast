@@ -95,7 +95,7 @@ class TestParseOlapRows:
         assert r["department_id"] == "dept-1"
         assert r["order_num"] == 1
         assert r["total_sum"] == 1500.0
-        assert r["discount_sum"] == 100.0
+        assert r["paid_sum"] == 100.0  # DishDiscountSumInt — сумма к оплате, не величина скидки
         assert r["items_count"] == 2
         assert r["waiter_name"] == "Иванов"
         assert r["guest_num"] == 1

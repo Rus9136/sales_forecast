@@ -44,6 +44,13 @@ import {
 const ALL = '__all__'
 const PAGE_SIZE = 100
 
+/** Скидка = прайс − к оплате. >0 — скидка, <0 — сервисный сбор/наценка. */
+function DiscountCell({ value }: { value: number }) {
+  if (Math.abs(value) < 0.005) return <span className="text-muted-foreground">—</span>
+  if (value > 0) return <span>{formatCurrency(value)}</span>
+  return <span style={{ color: 'var(--pos)' }}>+{formatCurrency(-value)}</span>
+}
+
 export function ReceiptsPage() {
   const [fromDate, setFromDate] = useState(daysAgo(7))
   const [toDate, setToDate] = useState(toISODate(new Date()))
@@ -74,9 +81,10 @@ export function ReceiptsPage() {
 
   const totals = useMemo(() => {
     const sum = receipts.reduce((a, r) => a + r.total_sum, 0)
-    const disc = receipts.reduce((a, r) => a + r.discount_sum, 0)
+    const paid = receipts.reduce((a, r) => a + r.paid_sum, 0)
+    const disc = receipts.reduce((a, r) => a + r.discount, 0)
     const items = receipts.reduce((a, r) => a + r.items_count, 0)
-    return { sum, disc, items, count: receipts.length }
+    return { sum, paid, disc, items, count: receipts.length }
   }, [receipts])
 
   const onSync = async () => {
@@ -185,16 +193,16 @@ export function ReceiptsPage() {
             <span className="kpi__value">{totals.count}</span>
           </div>
           <div className="kpi">
-            <span className="kpi__label">Сумма</span>
+            <span className="kpi__label">Прайс</span>
             <span className="kpi__value">{formatCurrency(totals.sum)}</span>
           </div>
           <div className="kpi">
-            <span className="kpi__label">Скидки</span>
-            <span className="kpi__value">{formatCurrency(totals.disc)}</span>
+            <span className="kpi__label">К оплате</span>
+            <span className="kpi__value">{formatCurrency(totals.paid)}</span>
           </div>
           <div className="kpi">
-            <span className="kpi__label">Позиций</span>
-            <span className="kpi__value">{totals.items.toLocaleString('ru-RU')}</span>
+            <span className="kpi__label">Скидка</span>
+            <span className="kpi__value">{formatCurrency(totals.disc)}</span>
           </div>
         </div>
       )}
@@ -214,7 +222,8 @@ export function ReceiptsPage() {
                 <TableHead>Подразделение</TableHead>
                 <TableHead>Официант</TableHead>
                 <TableHead className="text-center">Гостей</TableHead>
-                <TableHead className="text-right">Сумма</TableHead>
+                <TableHead className="text-right">Прайс</TableHead>
+                <TableHead className="text-right">К оплате</TableHead>
                 <TableHead className="text-right">Скидка</TableHead>
                 <TableHead className="text-center">Позиций</TableHead>
               </TableRow>
@@ -235,8 +244,9 @@ export function ReceiptsPage() {
                   <TableCell className="text-sm">{r.waiter_name || '—'}</TableCell>
                   <TableCell className="text-center tabular">{r.guest_num ?? '—'}</TableCell>
                   <TableCell className="text-right tabular">{formatCurrency(r.total_sum)}</TableCell>
+                  <TableCell className="text-right tabular">{formatCurrency(r.paid_sum)}</TableCell>
                   <TableCell className="text-right tabular">
-                    {r.discount_sum > 0 ? formatCurrency(r.discount_sum) : '—'}
+                    <DiscountCell value={r.discount} />
                   </TableCell>
                   <TableCell className="text-center">
                     <Badge variant="secondary">{r.items_count}</Badge>
@@ -318,9 +328,21 @@ export function ReceiptsPage() {
                   {detail.data.guest_num ?? '—'}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Итого:</span>{' '}
-                  <b>{formatCurrency(detail.data.total_sum)}</b>
+                  <span className="text-muted-foreground">Прайс:</span>{' '}
+                  {formatCurrency(detail.data.total_sum)}
                 </div>
+                <div>
+                  <span className="text-muted-foreground">К оплате:</span>{' '}
+                  <b>{formatCurrency(detail.data.paid_sum)}</b>
+                </div>
+                {Math.abs(detail.data.discount) >= 0.005 && (
+                  <div>
+                    <span className="text-muted-foreground">
+                      {detail.data.discount > 0 ? 'Скидка:' : 'Сервис/наценка:'}
+                    </span>{' '}
+                    {formatCurrency(Math.abs(detail.data.discount))}
+                  </div>
+                )}
               </div>
 
               <Table>
@@ -330,7 +352,8 @@ export function ReceiptsPage() {
                     <TableHead>Группа</TableHead>
                     <TableHead className="text-right">Кол-во</TableHead>
                     <TableHead className="text-right">Цена</TableHead>
-                    <TableHead className="text-right">Сумма</TableHead>
+                    <TableHead className="text-right">Прайс</TableHead>
+                    <TableHead className="text-right">К оплате</TableHead>
                     <TableHead className="text-right">Себест.</TableHead>
                     <TableHead className="text-right">Маржа</TableHead>
                     <TableHead className="text-right">FC%</TableHead>
@@ -351,6 +374,7 @@ export function ReceiptsPage() {
                         {it.price_per_unit != null ? formatCurrency(it.price_per_unit) : '—'}
                       </TableCell>
                       <TableCell className="text-right tabular">{formatCurrency(it.dish_sum)}</TableCell>
+                      <TableCell className="text-right tabular">{formatCurrency(it.paid_sum)}</TableCell>
                       <TableCell className="text-right tabular">
                         {it.cost_price != null ? formatCurrency(it.cost_price) : '—'}
                       </TableCell>

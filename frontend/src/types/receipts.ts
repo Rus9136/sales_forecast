@@ -8,8 +8,9 @@ export interface ReceiptItem {
   dish_category: string | null
   qty: number
   price_per_unit: number | null
-  dish_sum: number
-  discount_sum: number
+  dish_sum: number        // сумма по прайсу (DishSumInt)
+  paid_sum: number        // сумма к оплате со скидкой/сервисом (DishDiscountSumInt)
+  discount: number        // dish_sum - paid_sum (>0 скидка, <0 наценка/сервис)
   return_sum: number
   cost_price: number | null
   food_cost_percent: number | null
@@ -27,8 +28,9 @@ export interface Receipt {
   table_num: string | null
   waiter_name: string | null
   guest_num: number | null
-  total_sum: number
-  discount_sum: number
+  total_sum: number       // сумма по прайсу (DishSumInt)
+  paid_sum: number        // сумма к оплате со скидкой/сервисом (DishDiscountSumInt)
+  discount: number        // total_sum - paid_sum (>0 скидка, <0 наценка/сервис)
   return_sum: number
   items_count: number
   synced_at: string

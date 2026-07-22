@@ -124,7 +124,8 @@ class IikoReceiptsLoaderService:
         for (dept_id, open_date_str, order_num), lines in grouped.items():
             first = lines[0]
             total_sum = sum(self._to_float(ln.get("DishSumInt", 0)) for ln in lines)
-            discount = sum(self._to_float(ln.get("DishDiscountSumInt", 0)) for ln in lines)
+            # DishDiscountSumInt — сумма к оплате (со скидкой и сервисным сбором), НЕ величина скидки
+            paid_sum = sum(self._to_float(ln.get("DishDiscountSumInt", 0)) for ln in lines)
             return_sum = sum(self._to_float(ln.get("DishReturnSum", 0)) for ln in lines)
             guest_num = max((ln.get("GuestNum") or 0) for ln in lines)
 
@@ -139,7 +140,7 @@ class IikoReceiptsLoaderService:
                 "waiter_name": first.get("WaiterName"),
                 "guest_num": guest_num if guest_num > 0 else None,
                 "total_sum": total_sum,
-                "discount_sum": discount,
+                "paid_sum": paid_sum,
                 "return_sum": return_sum,
                 "items_count": len(lines),
                 "domain": domain,
@@ -161,7 +162,7 @@ class IikoReceiptsLoaderService:
                     "qty": qty,
                     "price_per_unit": ppu,
                     "dish_sum": dish_sum,
-                    "discount_sum": self._to_float(ln.get("DishDiscountSumInt", 0)),
+                    "paid_sum": self._to_float(ln.get("DishDiscountSumInt", 0)),
                     "return_sum": self._to_float(ln.get("DishReturnSum", 0)),
                     "cost_price": self._to_float(ln.get("ProductCostBase.ProductCost")) or None,
                     "food_cost_percent": self._to_float(ln.get("ProductCostBase.Percent")) or None,
@@ -274,7 +275,7 @@ class IikoReceiptsLoaderService:
                         emp_id,
                         r.get("guest_num"),
                         r["total_sum"],
-                        r["discount_sum"],
+                        r["paid_sum"],
                         r["return_sum"],
                         r["items_count"],
                         now,
@@ -286,7 +287,7 @@ class IikoReceiptsLoaderService:
                     INSERT INTO receipt (
                         department_id, open_date, order_num, open_time, close_time,
                         order_type, table_num, waiter_name, waiter_employee_id,
-                        guest_num, total_sum, discount_sum, return_sum,
+                        guest_num, total_sum, paid_sum, return_sum,
                         items_count, synced_at
                     ) VALUES %s
                     ON CONFLICT (department_id, open_date, order_num) DO UPDATE SET
@@ -298,7 +299,7 @@ class IikoReceiptsLoaderService:
                         waiter_employee_id = EXCLUDED.waiter_employee_id,
                         guest_num = EXCLUDED.guest_num,
                         total_sum = EXCLUDED.total_sum,
-                        discount_sum = EXCLUDED.discount_sum,
+                        paid_sum = EXCLUDED.paid_sum,
                         return_sum = EXCLUDED.return_sum,
                         items_count = EXCLUDED.items_count,
                         synced_at = EXCLUDED.synced_at
@@ -343,7 +344,7 @@ class IikoReceiptsLoaderService:
                             it["qty"],
                             it.get("price_per_unit"),
                             it["dish_sum"],
-                            it["discount_sum"],
+                            it["paid_sum"],
                             it["return_sum"],
                             it.get("cost_price"),
                             it.get("food_cost_percent"),
@@ -356,7 +357,7 @@ class IikoReceiptsLoaderService:
                         INSERT INTO receipt_item (
                             receipt_id, open_date, product_id, iiko_dish_id,
                             dish_name, dish_code, dish_group, dish_category,
-                            qty, price_per_unit, dish_sum, discount_sum, return_sum,
+                            qty, price_per_unit, dish_sum, paid_sum, return_sum,
                             cost_price, food_cost_percent
                         ) VALUES %s
                         """,

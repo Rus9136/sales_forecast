@@ -43,7 +43,8 @@ def _serialize_receipt(r: Receipt, dept_name: Optional[str] = None) -> dict:
         "waiter_name": r.waiter_name,
         "guest_num": r.guest_num,
         "total_sum": float(r.total_sum or 0),
-        "discount_sum": float(r.discount_sum or 0),
+        "paid_sum": float(r.paid_sum or 0),
+        "discount": round(float(r.total_sum or 0) - float(r.paid_sum or 0), 2),
         "return_sum": float(r.return_sum or 0),
         "items_count": r.items_count or 0,
         "synced_at": r.synced_at,
@@ -52,6 +53,7 @@ def _serialize_receipt(r: Receipt, dept_name: Optional[str] = None) -> dict:
 
 def _serialize_item(it: ReceiptItem) -> dict:
     dish_sum = float(it.dish_sum or 0)
+    paid_sum = float(it.paid_sum or 0)
     cost = float(it.cost_price) if it.cost_price else None
     margin = round(dish_sum - cost, 2) if cost is not None else None
     return {
@@ -65,7 +67,8 @@ def _serialize_item(it: ReceiptItem) -> dict:
         "qty": float(it.qty or 0),
         "price_per_unit": float(it.price_per_unit) if it.price_per_unit else None,
         "dish_sum": dish_sum,
-        "discount_sum": float(it.discount_sum or 0),
+        "paid_sum": paid_sum,
+        "discount": round(dish_sum - paid_sum, 2),
         "return_sum": float(it.return_sum or 0),
         "cost_price": cost,
         "food_cost_percent": float(it.food_cost_percent) if it.food_cost_percent else None,
@@ -157,7 +160,7 @@ def stats_by_product(
             ri.dish_category,
             SUM(ri.qty) AS total_qty,
             SUM(ri.dish_sum) AS total_sum,
-            SUM(ri.discount_sum) AS total_discount,
+            SUM(ri.dish_sum - ri.paid_sum) AS total_discount,
             SUM(ri.cost_price) AS total_cost,
             COUNT(DISTINCT ri.receipt_id) AS receipts_count
         FROM receipt_item ri
