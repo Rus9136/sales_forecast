@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
   Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { ArrowRight, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -82,15 +81,6 @@ export function WriteoffsPage() {
           <span className="sub">
             Что уходит в убыток вместо кассы — по складам, причинам и позициям
           </span>
-        </div>
-        <div className="page__actions">
-          {hasDept && (
-            <Button variant="outline" asChild>
-              <Link to="/inventory/order">
-                Собрать заявку <ArrowRight className="ml-1 h-4 w-4" />
-              </Link>
-            </Button>
-          )}
         </div>
       </div>
 

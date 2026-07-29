@@ -13,7 +13,6 @@ export type SectionKey =
   | 'receipts.list'
   | 'receipts.stats'
   | 'inventory.writeoffs'
-  | 'inventory.order'
   | 'ai.recommendations'
   | 'pricing.dashboard'
   | 'pricing.recommendations'

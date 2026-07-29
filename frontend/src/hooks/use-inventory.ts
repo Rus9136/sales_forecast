@@ -3,7 +3,6 @@ import { api } from '@/lib/api-client'
 import type {
   InventoryStore,
   InventorySupplier,
-  OrderRecommendation,
   SupplyLoopRow,
   WriteoffProductRow,
   WriteoffSummary,
@@ -93,33 +92,6 @@ export function useInventoryStores(departmentId?: string) {
       return api.get<InventoryStore[]>(`/api/inventory/stores?${params}`)
     },
     enabled: Boolean(departmentId),
-  })
-}
-
-export function useOrderRecommendation(
-  filters: {
-    department_id: string
-    target_date: string
-    supplier_id?: string
-    lookback_days?: number
-    min_supplied_sum?: number
-  },
-  enabled = true,
-) {
-  return useQuery<OrderRecommendation>({
-    queryKey: ['inventory', 'order-recommendation', filters],
-    queryFn: () => {
-      const params = new URLSearchParams()
-      params.set('department_id', filters.department_id)
-      params.set('target_date', filters.target_date)
-      if (filters.supplier_id) params.set('supplier_id', filters.supplier_id)
-      if (filters.lookback_days) params.set('lookback_days', String(filters.lookback_days))
-      if (filters.min_supplied_sum !== undefined) {
-        params.set('min_supplied_sum', String(filters.min_supplied_sum))
-      }
-      return api.get<OrderRecommendation>(`/api/inventory/order-recommendation?${params}`)
-    },
-    enabled: enabled && Boolean(filters.department_id),
   })
 }
 
