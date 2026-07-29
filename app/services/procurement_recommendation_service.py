@@ -57,6 +57,9 @@ MAX_SERVICE_LEVEL = 0.95            # и не гонимся за 100% покр�
 # Насколько раньше закрытия точки должна оборваться продажа позиции, чтобы
 # считать это дефицитом, а не естественным затуханием спроса к вечеру.
 STOCKOUT_GAP_HOURS = 3.0
+# Доля дней недели с поставкой, ниже которой дневной объём заказа перестаёт
+# быть корректной величиной: заказ должен покрывать спрос до следующего завоза.
+MIN_DELIVERY_SHARE = 0.4
 
 
 def _quantile(values: Sequence[float], q: float) -> float:
@@ -368,6 +371,12 @@ class ProcurementRecommendationService:
         current_practice = self._current_practice(same_weekday, supply)
         delta = recommended - current_practice if current_practice is not None else None
 
+        # «Возим сейчас» усреднено по дням с поставкой, а рекомендация покрывает
+        # один день. Если в этот день недели возят редко, сравнение неравноценно:
+        # заказ должен покрывать спрос до следующего завоза, а не до вечера.
+        supply_days_same_weekday = sum(1 for d in same_weekday if supply.get(d, 0.0) > 0)
+        delivery_share = supply_days_same_weekday / observations if observations else 0.0
+
         written_qty = sum(writeoff.values())
         weekday_share = observations / len(open_days) if open_days else 0.0
         saving = upside = None
@@ -398,6 +407,7 @@ class ProcurementRecommendationService:
             "demand_median": round(_quantile(demand_series, 0.5), 3),
             "demand_max": round(max(demand_series), 3) if demand_series else 0.0,
             "stockout_days": stockout_days,
+            "delivery_share": round(delivery_share, 2),
             "written_qty_period": round(written_qty, 3),
             "loss_rate": (
                 round(written_qty / product["supplied_amount"], 4)
@@ -405,8 +415,10 @@ class ProcurementRecommendationService:
             ),
             "saving_from_reduction": saving,
             "upside_from_increase": upside,
-            "confidence": self._confidence(observations, censoring),
-            "reason": self._reason(recommended, current_practice, written_qty, stockout_days),
+            "confidence": self._confidence(observations, censoring, delivery_share),
+            "reason": self._reason(
+                recommended, current_practice, written_qty, stockout_days, delivery_share,
+            ),
         }
 
     @staticmethod
@@ -451,11 +463,13 @@ class ProcurementRecommendationService:
         return round(qty, 2)
 
     @staticmethod
-    def _confidence(observations: int, censoring: float) -> str:
+    def _confidence(observations: int, censoring: float, delivery_share: float) -> str:
         if observations < MIN_OBSERVATIONS:
             return "low"
         if censoring > 0.5:
             return "low"          # спрос сильно цензурирован, оценка снизу
+        if delivery_share < MIN_DELIVERY_SHARE:
+            return "low"          # возят редко: заказ должен покрывать не один день
         if observations < 6 or censoring > 0.25:
             return "medium"
         return "high"
@@ -463,8 +477,10 @@ class ProcurementRecommendationService:
     @staticmethod
     def _reason(
         recommended: float, current: Optional[float],
-        written_qty: float, stockout_days: int,
+        written_qty: float, stockout_days: int, delivery_share: float,
     ) -> str:
+        if delivery_share < MIN_DELIVERY_SHARE:
+            return "Возят в этот день недели редко — объём на один день здесь занижен"
         if stockout_days:
             return f"Дефицит в {stockout_days} дн. — спрос выше поставки, стоит увеличить"
         if current is None:

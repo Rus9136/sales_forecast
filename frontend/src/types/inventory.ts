@@ -99,6 +99,7 @@ export interface OrderRecommendationItem {
   demand_median: number
   demand_max: number
   stockout_days: number
+  delivery_share: number
   written_qty_period: number
   loss_rate: number | null
   saving_from_reduction: number | null

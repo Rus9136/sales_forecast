@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     # Флаг даёт мгновенный откат без правок кода.
     REVENUE_BASIS: str = "price"
 
+    # Складской контур: какие точки грузит ежедневная джоба.
+    # Пусто = вся сеть (десятки МБ XML на недельный срез) — для пилота
+    # перечисляются конкретные UUID через запятую.
+    INVENTORY_SYNC_DEPARTMENTS: str = ""
+    # Скользящее окно перезагрузки: документы правят задним числом.
+    INVENTORY_SYNC_LOOKBACK_DAYS: int = 7
+
     # Алерты мониторинга (аудит P0-6, Фаза 1.5): Telegram Bot API
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""

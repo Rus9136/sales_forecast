@@ -34,7 +34,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (21 задача: nomenclature, employees, sales, receipts, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, recommendation LLM explanations, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
+- **Scheduler**: APScheduler (22 задачи: nomenclature, employees, sales, receipts, inventory documents, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, recommendation LLM explanations, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -145,6 +145,7 @@ sales_forecast/
 │       ├── scheduled_waiter_loader.py    # Scheduler wrappers for employees + waiter sales
 │       ├── iiko_receipts_loader.py       # Receipts OLAP sync (DishId→product, batch upsert)
 │       ├── scheduled_receipts_loader.py  # Scheduler wrappers for receipts sync + gap check
+│       ├── scheduled_inventory_loader.py  # Ежедневный синк складских документов (скользящее окно)
 │       ├── branch_loader.py              # Branch loading
 │       ├── training_service.py           # ML data preparation + feature engineering (dept-level)
 │       ├── sku_training_service.py      # SKU-level feature engineering (~74 features)
@@ -485,6 +486,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **02:00** — Daily sales auto-sync
 - **02:15** — Daily receipts sync (per-dish OLAP)
 - **02:30** — Daily waiter sales sync (per-waiter OLAP)
+- **02:45** — Daily inventory documents sync (списания + приходные накладные, скользящее окно `INVENTORY_SYNC_LOOKBACK_DAYS`)
 - **03:00 Sun** — Weekly model retraining (department-level)
 - **03:15 Sun** — Weekly menu role clustering (KMeans → sku_menu_role)
 - **03:20** — Daily catalog price sync (iiko orders → sku_catalog_price) + детекция applied-рекомендаций

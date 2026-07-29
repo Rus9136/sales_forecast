@@ -285,6 +285,16 @@ class IikoInventoryLoaderService:
             return True
         return dept_id is not None and dept_id in department_ids
 
+    def _domain_has_wanted(self, domain: str, wanted: Optional[set]) -> bool:
+        """Есть ли в домене склады нужных точек.
+
+        Без этой проверки бэкфилл качает многомегабайтный XML со всех доменов
+        на каждом недельном срезе, даже если целевая точка живёт в одном из них.
+        """
+        if wanted is None:
+            return True
+        return any(dept in wanted for dept in self._store_map(domain).values() if dept)
+
     # ==================================================================
     # Акты списания
     # ==================================================================
@@ -300,6 +310,9 @@ class IikoInventoryLoaderService:
 
         for base_url in self.domains:
             host = _domain_host(base_url)
+            if not self._domain_has_wanted(host, wanted):
+                logger.info("%s: нет складов нужных подразделений — домен пропущен", host)
+                continue
             try:
                 token = await IikoAuthService(base_url)._refresh_token()
                 async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -482,6 +495,9 @@ class IikoInventoryLoaderService:
 
         for base_url in self.domains:
             host = _domain_host(base_url)
+            if not self._domain_has_wanted(host, wanted):
+                logger.info("%s: нет складов нужных подразделений — домен пропущен", host)
+                continue
             try:
                 token = await IikoAuthService(base_url)._refresh_token()
                 store_map = self._store_map(host)
