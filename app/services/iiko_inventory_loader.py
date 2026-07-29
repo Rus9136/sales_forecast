@@ -285,6 +285,44 @@ class IikoInventoryLoaderService:
             return True
         return dept_id is not None and dept_id in department_ids
 
+    def _excluded_product_ids(self) -> set:
+        """Номенклатуры из групп `INVENTORY_EXCLUDED_GROUPS` и всех их подгрупп.
+
+        Непродаваемые расходники (хозтовары, упаковка) искажают обе метрики,
+        ради которых строился контур: долю потерь считать не от чего, а в
+        заявку они попадать не должны — их закупают не по спросу гостей.
+        """
+        names = [n.strip() for n in (settings.INVENTORY_EXCLUDED_GROUPS or "").split(",") if n.strip()]
+        if not names:
+            return set()
+
+        found = self.db.execute(
+            text("SELECT name, COUNT(*) FROM nomenclature_group WHERE name = ANY(:names) GROUP BY name"),
+            {"names": names},
+        ).fetchall()
+        found_map = {r[0]: r[1] for r in found}
+        for n in names:
+            if n not in found_map:
+                logger.warning("INVENTORY_EXCLUDED_GROUPS: группа %r не найдена в справочнике", n)
+            elif found_map[n] > 1:
+                logger.warning(
+                    "INVENTORY_EXCLUDED_GROUPS: имя %r принадлежит %d группам — исключены все",
+                    n, found_map[n],
+                )
+
+        rows = self.db.execute(
+            text("""
+                WITH RECURSIVE tree AS (
+                    SELECT id FROM nomenclature_group WHERE name = ANY(:names)
+                    UNION ALL
+                    SELECT g.id FROM nomenclature_group g JOIN tree t ON g.parent_id = t.id
+                )
+                SELECT p.id FROM product p JOIN tree t ON t.id = p.group_id
+            """),
+            {"names": names},
+        ).fetchall()
+        return {r[0] for r in rows}
+
     def _domain_has_wanted(self, domain: str, wanted: Optional[set]) -> bool:
         """Есть ли в домене склады нужных точек.
 
@@ -368,6 +406,7 @@ class IikoInventoryLoaderService:
 
         product_ids = {i["productId"] for d in kept for i in d.get("items", []) if i.get("productId")}
         product_map = self._product_map(domain, list(product_ids))
+        excluded = self._excluded_product_ids()
 
         docs: List[dict] = []
         items: List[dict] = []
@@ -378,7 +417,14 @@ class IikoInventoryLoaderService:
             if dt is None:
                 logger.warning("Списание %s без разбираемой даты — пропущено", doc.get("id"))
                 continue
-            doc_items = doc.get("items") or []
+            # Позиции исключённых групп отбрасываются до подсчёта итогов, иначе
+            # шапка документа осталась бы с суммой, которой нет в позициях.
+            doc_items = [
+                i for i in (doc.get("items") or [])
+                if product_map.get(i.get("productId")) not in excluded
+            ]
+            if not doc_items:
+                continue
             total_cost = sum(_f(i.get("cost")) or 0.0 for i in doc_items)
             docs.append({
                 "id": doc["id"],
@@ -644,22 +690,34 @@ class IikoInventoryLoaderService:
             i["iiko_product_id"] for d in raw_docs for i in d["items"] if i.get("iiko_product_id")
         }
         product_map = self._product_map(domain, list(product_ids))
+        excluded = self._excluded_product_ids()
 
         docs: List[dict] = []
         items: List[dict] = []
         unresolved = 0
 
         for d in raw_docs:
-            doc = {k: v for k, v in d.items() if k != "items"}
-            doc["domain"] = domain
-            docs.append(doc)
+            kept_items: List[dict] = []
             for it in d["items"]:
                 pid = it.get("iiko_product_id")
                 mapped = product_map.get(pid) if pid else None
+                if mapped in excluded:
+                    continue
                 if pid and mapped is None:
                     unresolved += 1
                 it["product_id"] = mapped
-                items.append(it)
+                kept_items.append(it)
+
+            if not kept_items:
+                continue
+
+            doc = {k: v for k, v in d.items() if k != "items"}
+            doc["domain"] = domain
+            # Итоги шапки пересчитываются по оставшимся позициям
+            doc["items_count"] = len(kept_items)
+            doc["total_sum"] = sum(i["line_sum"] or 0.0 for i in kept_items)
+            docs.append(doc)
+            items.extend(kept_items)
 
         return docs, items, unresolved
 

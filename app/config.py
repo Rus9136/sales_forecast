@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     INVENTORY_SYNC_DEPARTMENTS: str = ""
     # Скользящее окно перезагрузки: документы правят задним числом.
     INVENTORY_SYNC_LOOKBACK_DAYS: int = 7
+    # Группы номенклатуры, которые не грузятся в складской контур вместе с
+    # вложенными подгруппами: непродаваемые расходники искажают и долю потерь,
+    # и рекомендацию заказа. Пусто = грузить всё.
+    INVENTORY_EXCLUDED_GROUPS: str = ""
 
     # Алерты мониторинга (аудит P0-6, Фаза 1.5): Telegram Bot API
     TELEGRAM_BOT_TOKEN: str = ""
