@@ -33,6 +33,8 @@ import { MenuProductsPage } from '@/pages/menu/products-page'
 import { MenuGroupsPage } from '@/pages/menu/groups-page'
 import { ReceiptsPage } from '@/pages/receipts/receipts-page'
 import { StatsByProductPage } from '@/pages/receipts/stats-by-product-page'
+import { WriteoffsPage } from '@/pages/inventory/writeoffs-page'
+import { OrderRecommendationPage } from '@/pages/inventory/order-recommendation-page'
 import { UsersPage } from '@/pages/users-page'
 import { RolesPage } from '@/pages/roles-page'
 
@@ -131,6 +133,12 @@ export default function App() {
                   </Route>
                   <Route element={<ProtectedRoute section="receipts.list" />}>
                     <Route path="/receipts" element={<ReceiptsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="inventory.writeoffs" />}>
+                    <Route path="/inventory/writeoffs" element={<WriteoffsPage />} />
+                  </Route>
+                  <Route element={<ProtectedRoute section="inventory.order" />}>
+                    <Route path="/inventory/order" element={<OrderRecommendationPage />} />
                   </Route>
                   <Route element={<ProtectedRoute section="receipts.stats" />}>
                     <Route path="/receipts/stats" element={<StatsByProductPage />} />

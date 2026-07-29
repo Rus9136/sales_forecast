@@ -23,6 +23,8 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   'menu.groups': 'Меню — группы',
   'receipts.list': 'Чеки — журнал',
   'receipts.stats': 'Чеки — по блюдам',
+  'inventory.writeoffs': 'Склад — списания',
+  'inventory.order': 'Склад — заявка на цех',
   'ai.recommendations': 'Рекомендации ИИ',
   'pricing.dashboard': 'Ценообразование — дашборд',
   'pricing.recommendations': 'Ценообразование — рекомендации',

@@ -11,7 +11,7 @@ from .logging_config import setup_logging
 from .db import engine, Base
 from .routers import branch, department, sales, forecast, monitoring, auth, employee
 from .routers import ai_recommendations, menu, receipts, pricing_analytics, pricing_engine
-from .routers import labor_demand
+from .routers import labor_demand, inventory
 from .routers.users_ui import ui_auth_router, ui_users_router
 from .auth_ui import bootstrap_admin, seed_default_roles
 from .db import SessionLocal
@@ -24,7 +24,7 @@ from .services.scheduled_waiter_loader import (
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregation, run_menu_clustering
-from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation, run_pricing_weekly_report, run_pricing_monthly_report, run_recommendation_explanations
+from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation, run_pricing_weekly_report, run_pricing_monthly_report
 from .services.scheduled_recipe_loader import run_recipe_sync
 from .services.model_retraining_service import run_auto_retrain
 from .services.sku_model_retraining_service import run_sku_auto_retrain
@@ -190,16 +190,6 @@ async def lifespan(app: FastAPI):
             minute=0,
             id='daily_price_optimization',
             name='Daily Price Optimization',
-            replace_existing=True
-        )
-
-        scheduler.add_job(
-            func=run_recommendation_explanations,
-            trigger="cron",
-            hour=5,
-            minute=45,
-            id='daily_recommendation_explanations',
-            name='Daily Recommendation LLM Explanations (C4\')',
             replace_existing=True
         )
 
@@ -372,6 +362,7 @@ app.include_router(receipts.router, prefix="/api")
 app.include_router(pricing_analytics.router, prefix="/api")
 app.include_router(pricing_engine.router, prefix="/api")
 app.include_router(labor_demand.router, prefix="/api")
+app.include_router(inventory.router, prefix="/api")
 app.include_router(ui_auth_router, prefix="/api")
 app.include_router(ui_users_router, prefix="/api")
 

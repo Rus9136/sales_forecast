@@ -155,6 +155,9 @@ sales_forecast/
 │       ├── model_monitoring_service.py       # Performance monitoring
 │       ├── forecast_postprocessing_service.py # Post-processing rules
 │       ├── error_analysis_service.py         # Error analysis
+│       ├── iiko_inventory_loader.py         # Списания (JSON) + приходные накладные (XML, потоково)
+│       ├── inventory_analytics_service.py   # Аналитика списаний + петля поставка→продажа→списание
+│       ├── procurement_recommendation_service.py # Заявка на цех (newsvendor)
 │       ├── pricing_analytics_service.py     # A2: price history + weekly summary aggregation
 │       ├── menu_clustering_service.py       # B1: KMeans menu role classification (5 roles)
 │       ├── scheduled_pricing_analytics.py   # Scheduler wrappers for A2 + B1
@@ -194,7 +197,7 @@ sales_forecast/
 - **Recharts 3** — графики (BarChart, LineChart)
 - **pnpm** — пакетный менеджер
 
-### Роутинг (22 страницы)
+### Роутинг (24 страницы)
 | Путь | Страница | API |
 |------|----------|-----|
 | `/departments` | Подразделения (CRUD + фильтры) | GET/POST/PUT/DELETE `/api/departments/` |
@@ -208,6 +211,8 @@ sales_forecast/
 | `/menu/groups` | Группы номенклатуры (дерево) | GET `/api/menu/groups/tree` |
 | `/receipts` | Журнал чеков + диалог деталей | GET `/api/receipts`, GET `/api/receipts/{id}` |
 | `/receipts/stats` | Продажи по блюдам (топ) | GET `/api/receipts/stats/by-product` |
+| `/inventory/writeoffs` | Списания: склад × причина, топ позиций, динамика | `/api/inventory/writeoffs/*` |
+| `/inventory/order` | Заявка на цех (рекомендуемый объём заказа) | GET `/api/inventory/order-recommendation` |
 | `/sync` | Синхронизация данных | POST `/api/sales/sync`, GET `/api/sales/auto-sync/status` |
 | `/ai-recommendations` | Мультиагентный анализ (Sales/Optimization/Narrative) + редактор промптов + история | `/api/ai-recommendations/*` (8 endpoints) |
 | `/pricing/dashboard` | Дашборд ценообразования (KPI, динамика) | GET `/api/pricing-analytics/department-weekly`, `/api/pricing-engine/recommendations/summary` |
@@ -336,8 +341,8 @@ CLAUDE_MODEL=claude-sonnet-4-20250514
 
 Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
 
-### Section keys (24 шт)
-`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `ai.recommendations`, `pricing.dashboard`, `pricing.recommendations`, `pricing.rules`, `pricing.position_detail`, `pricing.outcomes`, `pricing.analytics`, `pricing.reports`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + `roles-page.tsx` (лейбл) + `home-redirect.tsx` (map+priority) + `App.tsx` (route) + `sidebar.tsx`. ⚠️ Системные роли (admin/manager) автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`); **несистемные роли** (pricing-роли C5) — НЕ мерджат, новый key им добавляется ручным SQL.
+### Section keys (26 шт)
+`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `inventory.writeoffs`, `inventory.order`, `ai.recommendations`, `pricing.dashboard`, `pricing.recommendations`, `pricing.rules`, `pricing.position_detail`, `pricing.outcomes`, `pricing.analytics`, `pricing.reports`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + `roles-page.tsx` (лейбл) + `home-redirect.tsx` (map+priority) + `App.tsx` (route) + `sidebar.tsx`. ⚠️ Системные роли (admin/manager) автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`); **несистемные роли** (pricing-роли C5) — НЕ мерджат, новый key им добавляется ручным SQL.
 
 ### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
 - `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
@@ -386,6 +391,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 | `receipts.py` | Receipt, ReceiptItem | Чеки + позиции (партиционировано по open_date) |
 | `sku_forecast.py` | SkuDailySales, SkuForecast | Агрегированные продажи по SKU + хранение прогнозов |
 | `pricing_analytics.py` | SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole, SkuCatalogPrice, PricingReport | Ценовые события, недельные агрегаты, роли меню, каталожные цены, LLM-отчёты (C4) |
+| `inventory.py` | Store, IikoAccount, Supplier, MeasureUnit, WriteoffDocument, WriteoffItem, IncomingInvoice, IncomingInvoiceItem, InventorySyncLog | Складской контур: акты списания и приходные накладные iiko |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -462,6 +468,11 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/pricing-engine/audit-log` — Append-only журнал действий ценообразования (GET)
 - `/api/pricing-engine/reports` — Weekly/Monthly LLM-отчёты (C4): GET список, GET `/{id}` детали, POST `/generate` (report_type weekly/monthly, department_id?, period?)
 - `/api/pricing-engine/jobs/{id}` — Статус фоновых джобов (`?background=true` на estimate/backfill)
+- `/api/inventory/writeoffs/summary|by-product|trend` — Аналитика списаний (склад × причина, топ позиций с долей потерь, понедельная динамика)
+- `/api/inventory/supply-loop` — По каждому SKU: поставлено → продано → списано за период
+- `/api/inventory/order-recommendation` — Рекомендуемая заявка на цех (newsvendor: уровень сервиса = наценка позиции)
+- `/api/inventory/suppliers|stores` — Поставщики точки за период, склады подразделения
+- `/api/inventory/sync` — Загрузка списаний и накладных из iiko (POST, from_date, to_date, department_id?)
 - `/api/labor-demand/{department_id}/menu-mix` — Сигнал для TCO: роли меню, топ-блюда, загрузка цехов (GET, from_date, to_date, top_n)
 - `/api/labor-demand/{department_id}/forecast` — Сигнал для TCO: дневной спрос + почасовая кривая (GET, from_date, to_date)
 - `/api/labor-demand/{department_id}/elasticity-signal` — Сигнал для TCO: эластичность флагманов (GET, grade)

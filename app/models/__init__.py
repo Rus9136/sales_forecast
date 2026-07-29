@@ -13,6 +13,11 @@ from .receipts import Receipt, ReceiptItem  # noqa: F401
 from .recipe import Recipe, RecipeIngredient  # noqa: F401
 from .sku_forecast import SkuDailySales, SkuForecast  # noqa: F401
 from .pricing_analytics import SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole, SkuCatalogPrice, PricingReport  # noqa: F401
+from .inventory import (  # noqa: F401
+    Store, IikoAccount, Supplier, MeasureUnit,
+    WriteoffDocument, WriteoffItem,
+    IncomingInvoice, IncomingInvoiceItem, InventorySyncLog,
+)
 from .pricing_engine import (  # noqa: F401
     SkuElasticity, PricingRule, PriceRecommendation,
     PriceRecommendationOutcome, PricingBaselineKpi, PricingAuditLog,

@@ -12,6 +12,8 @@ export type SectionKey =
   | 'menu.groups'
   | 'receipts.list'
   | 'receipts.stats'
+  | 'inventory.writeoffs'
+  | 'inventory.order'
   | 'ai.recommendations'
   | 'pricing.dashboard'
   | 'pricing.recommendations'

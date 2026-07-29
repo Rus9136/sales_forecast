@@ -3,7 +3,7 @@ import {
   Building2, CalendarDays, Clock, TrendingUp, GitCompare, RefreshCw,
   UserRound, Users, Sparkles, BookOpen, FolderTree, Receipt, BarChart3,
   Shield, UserCog, LogOut, Settings, LayoutDashboard, UtensilsCrossed,
-  BadgePercent,
+  BadgePercent, PackageMinus, ClipboardList,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
@@ -81,6 +81,13 @@ export const navSections: NavSection[] = [
     items: [
       { path: '/receipts', label: 'Журнал чеков', icon: Receipt, section: 'receipts.list' },
       { path: '/receipts/stats', label: 'Продажи по блюдам', icon: BarChart3, section: 'receipts.stats' },
+    ],
+  },
+  {
+    label: 'Склад',
+    items: [
+      { path: '/inventory/writeoffs', label: 'Списания', icon: PackageMinus, section: 'inventory.writeoffs' },
+      { path: '/inventory/order', label: 'Заявка на цех', icon: ClipboardList, section: 'inventory.order' },
     ],
   },
   {
