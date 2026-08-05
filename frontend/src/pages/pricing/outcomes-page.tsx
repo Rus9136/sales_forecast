@@ -41,19 +41,20 @@ function fmtNum(v: number | null | undefined): string {
   return v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
 }
 
-/** Порог, за которым эффект перестаёт быть отличим от обычного разброса продаж. */
-const SIGNIFICANCE_Z = 2
-
-function isSignificant(o: PriceOutcome): boolean {
-  return o.significance_z != null && Math.abs(o.significance_z) >= SIGNIFICANCE_Z
+/** Интервал не накрывает ноль — знак эффекта установлен. */
+function isConfirmed(o: PriceOutcome): boolean {
+  if (o.effect_ci_low == null || o.effect_ci_high == null) return false
+  return o.effect_ci_low > 0 || o.effect_ci_high < 0
 }
 
-/** Вывод словами: как очищенный эффект соотносится с планом. */
+/** Вывод словами. Сначала — можно ли вообще что-то утверждать. */
 function verdictOf(o: PriceOutcome): { label: string; cls: string } {
+  if (o.measurable === false) return { label: 'Не измеримо', cls: 'verdict--muted' }
   if (o.incremental_delta_gp == null) return { label: 'В окне измерения', cls: 'verdict--muted' }
-  // Сначала — хватило ли продаж. Штучный торт с разницей в 3 шт. за две недели
-  // даёт красивую цифру, за которой нет ничего, кроме случайности.
-  if (!isSignificant(o)) return { label: 'Не подтверждено', cls: 'verdict--muted' }
+  // Штучный торт с разницей в 3 шт. за две недели даёт красивую цифру, за
+  // которой нет ничего, кроме случайности. Пока интервал накрывает ноль —
+  // не установлен даже знак эффекта.
+  if (!isConfirmed(o)) return { label: 'Не подтверждено', cls: 'verdict--muted' }
   const expected = o.expected_delta_gp ?? 0
   if (o.incremental_delta_gp >= expected) return { label: 'Лучше плана', cls: 'verdict--pos' }
   if (o.incremental_delta_gp >= 0) return { label: 'В плюсе, ниже плана', cls: 'verdict--warn' }
@@ -61,13 +62,17 @@ function verdictOf(o: PriceOutcome): { label: string; cls: string } {
 }
 
 function outcomeTooltip(o: PriceOutcome): string {
+  if (o.measurable === false) {
+    return `Эффект не оценивался: ${o.not_measurable_reason ?? 'не прошли ворота качества'}`
+  }
   const parts = [
-    `Δ продаж за день (скорр.): ${fmtPctSigned(o.adj_qty_change_pct != null ? o.adj_qty_change_pct * 100 : null)}`,
+    `интервал: ${o.effect_ci_low != null ? formatCurrency(o.effect_ci_low) : '—'} … ${o.effect_ci_high != null ? formatCurrency(o.effect_ci_high) : '—'}`,
+    `Δ продаж за день (очищ.): ${fmtPctSigned(o.adj_qty_change_pct != null ? o.adj_qty_change_pct * 100 : null)}`,
     `в кассе: ${o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}`,
     `рабочих дней: ${o.days_before ?? '—'} → ${o.days_after ?? '—'}`,
-    `контроль: ${o.n_control_skus ?? '—'} позиций той же категории`,
+    `контроль: тот же товар в ${o.n_control_stores ?? '—'} точках`,
   ]
-  if (o.significance_z != null) parts.push(`запас надёжности: ${o.significance_z.toFixed(1)}σ`)
+  if (o.p_negative != null) parts.push(`вероятность минуса: ${Math.round(o.p_negative * 100)}%`)
   return parts.join(' · ')
 }
 
@@ -219,14 +224,15 @@ export function PricingOutcomesPage() {
           </div>
           <div
             className="kpi__value"
-            style={{ color: s && s.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)' }}
+            style={{ color: s && s.batch_effect_gp >= 0 ? 'var(--pos)' : 'var(--neg)' }}
           >
-            {s ? formatCurrency(s.incremental_delta_gp) : '—'}
+            {s ? formatCurrency(s.batch_effect_gp) : '—'}
           </div>
           <div className="kpi__foot">
             <span style={{ fontSize: 11 }}>
-              ожидали {s ? formatCurrency(s.expected_delta_gp) : '—'}
-              {effectVsExpected != null && ` (${effectVsExpected >= 0 ? '+' : ''}${formatCurrency(effectVsExpected)})`}
+              {s
+                ? `от ${formatCurrency(s.batch_ci_low)} до ${formatCurrency(s.batch_ci_high)}`
+                : 'по приказам целиком'}
             </span>
           </div>
         </div>
@@ -244,6 +250,7 @@ export function PricingOutcomesPage() {
               {s && s.significant_outcomes > 0
                 ? `надёжный эффект ${formatCurrency(s.significant_delta_gp)}`
                 : 'по остальным продаж слишком мало'}
+              {s && s.not_measurable > 0 && `, ${fmtNum(s.not_measurable)} без контроля`}
             </span>
           </div>
         </div>
@@ -314,8 +321,8 @@ export function PricingOutcomesPage() {
             <div>
               <div className="card__title">Измеренные результаты</div>
               <div className="card__sub">
-                Эффект очищен от фона категории и приведён к равному числу рабочих дней.
-                «Не подтверждено» — продаж мало, цифра в пределах обычного разброса
+                Сравнение с теми же блюдами в других точках, где цену не меняли.
+                Под суммой — интервал; «Не подтверждено» значит, что он накрывает ноль
               </div>
             </div>
           </div>
@@ -364,16 +371,19 @@ export function PricingOutcomesPage() {
                         <TableCell
                           className="text-right tabular"
                           style={{
-                            color: o.incremental_delta_gp == null
+                            color: o.incremental_delta_gp == null || !isConfirmed(o)
                               ? 'var(--text-muted)'
-                              : !isSignificant(o)
-                                ? 'var(--text-muted)'
-                                : o.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)',
-                            fontWeight: isSignificant(o) ? 600 : 400,
+                              : o.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)',
+                            fontWeight: isConfirmed(o) ? 600 : 400,
                           }}
                           title={outcomeTooltip(o)}
                         >
                           {o.incremental_delta_gp != null ? formatCurrency(o.incremental_delta_gp) : '—'}
+                          {o.effect_ci_low != null && o.effect_ci_high != null && (
+                            <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontWeight: 400 }}>
+                              {formatCurrency(o.effect_ci_low)} … {formatCurrency(o.effect_ci_high)}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           <span className={`verdict ${v.cls}`} title={outcomeTooltip(o)}>

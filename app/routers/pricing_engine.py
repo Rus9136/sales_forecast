@@ -857,6 +857,18 @@ async def list_outcomes(
             "counterfactual_qty": _f(r.counterfactual_qty),
             "incremental_delta_gp": _f(r.incremental_delta_gp),
             "significance_z": _f(r.significance_z),
+            "control_method": r.control_method,
+            "measurable": r.measurable,
+            "not_measurable_reason": r.not_measurable_reason,
+            "n_control_stores": r.n_control_stores,
+            "control_qty_before": _f(r.control_qty_before),
+            "control_qty_after": _f(r.control_qty_after),
+            "control_trend": _f(r.control_trend),
+            "store_trend_adj": _f(r.store_trend_adj),
+            "effect_ci_low": _f(r.effect_ci_low),
+            "effect_ci_high": _f(r.effect_ci_high),
+            "p_negative": _f(r.p_negative),
+            "concept": r.concept,
         }
         for r in rows
     ]
@@ -874,6 +886,8 @@ async def outcomes_summary(
         dept_filter = "WHERE department_id = CAST(:dept_id AS uuid)"
         params["dept_id"] = department_id
 
+    # «Подтверждено» = интервал не накрывает ноль. Раньше тут стоял порог по
+    # z-оценке; интервал честнее — он показывает и знак, и величину сомнения.
     row = db.execute(
         text(f"""
             SELECT COUNT(*),
@@ -882,27 +896,105 @@ async def outcomes_summary(
                    COUNT(*) FILTER (WHERE incremental_delta_gp > 0),
                    AVG(realized_elasticity),
                    COALESCE(SUM(incremental_delta_gp), 0),
-                   COUNT(*) FILTER (WHERE ABS(significance_z) >= 2),
-                   COALESCE(SUM(incremental_delta_gp) FILTER (WHERE ABS(significance_z) >= 2), 0)
+                   COUNT(*) FILTER (WHERE effect_ci_low > 0 OR effect_ci_high < 0),
+                   COALESCE(SUM(incremental_delta_gp)
+                            FILTER (WHERE effect_ci_low > 0 OR effect_ci_high < 0), 0),
+                   COUNT(*) FILTER (WHERE measurable IS NOT TRUE)
             FROM price_recommendation_outcome
             {dept_filter}
         """),
         params,
     ).fetchone()
 
+    # dept_filter подходит обеим таблицам — колонка называется одинаково
+    batches = db.execute(
+        text(f"""
+            SELECT COUNT(*),
+                   COALESCE(SUM(effect_gp), 0),
+                   COALESCE(SUM(effect_ci_low), 0),
+                   COALESCE(SUM(effect_ci_high), 0)
+            FROM price_outcome_batch
+            {dept_filter}
+        """),
+        params,
+    ).fetchone()
+
     total = row[0]
+    measured = total - (row[8] or 0)
     return {
         "total_evaluated": total,
         "expected_delta_gp": float(row[1]),
         "actual_delta_gp": float(row[2]),
         "positive_outcomes": row[3],
-        "hit_rate": round(row[3] / total, 4) if total else None,
+        "hit_rate": round(row[3] / measured, 4) if measured else None,
         "avg_realized_elasticity": float(row[4]) if row[4] is not None else None,
-        # эффект решения о цене, очищенный от фона категории (миграция 036)
+        # эффект решения о цене: контрфакт по тем же товарам в других точках
         "incremental_delta_gp": float(row[5]),
         "significant_outcomes": row[6],
         "significant_delta_gp": float(row[7]),
+        "not_measurable": row[8] or 0,
+        # пачка решений — главная цифра: у позиций общие дни, поэтому интервал
+        # считается совместно, а не складывается
+        "batches": batches[0],
+        "batch_effect_gp": float(batches[1]),
+        "batch_ci_low": float(batches[2]),
+        "batch_ci_high": float(batches[3]),
     }
+
+
+@router.get("/outcomes/batches")
+async def list_outcome_batches(
+    department_id: Optional[str] = None,
+    concept: Optional[str] = None,
+    limit: int = Query(100, le=500),
+    db: Session = Depends(get_db),
+):
+    """Эффект приказов целиком. concept разделяет Madlen и Sandyq."""
+    conditions = ["1=1"]
+    params: dict = {"limit": limit}
+    if department_id:
+        conditions.append("b.department_id = CAST(:dept_id AS uuid)")
+        params["dept_id"] = department_id
+    if concept:
+        conditions.append("b.concept = :concept")
+        params["concept"] = concept
+
+    rows = db.execute(
+        text(f"""
+            SELECT b.*, d.name AS department_name
+            FROM price_outcome_batch b
+            JOIN departments d ON d.id = b.department_id
+            WHERE {" AND ".join(conditions)}
+            ORDER BY b.applied_at DESC, b.id DESC
+            LIMIT :limit
+        """),
+        params,
+    ).fetchall()
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    return {"items": [
+        {
+            "id": r.id,
+            "department_id": str(r.department_id),
+            "department_name": r.department_name,
+            "applied_at": str(r.applied_at),
+            "concept": r.concept,
+            "eval_window_days": r.eval_window_days,
+            "n_positions": r.n_positions,
+            "n_measurable": r.n_measurable,
+            "gp_before": _f(r.gp_before),
+            "gp_after": _f(r.gp_after),
+            "actual_delta_gp": _f(r.actual_delta_gp),
+            "expected_delta_gp": _f(r.expected_delta_gp),
+            "effect_gp": _f(r.effect_gp),
+            "effect_ci_low": _f(r.effect_ci_low),
+            "effect_ci_high": _f(r.effect_ci_high),
+            "p_negative": _f(r.p_negative),
+        }
+        for r in rows
+    ]}
 
 
 @router.post("/baseline/freeze")

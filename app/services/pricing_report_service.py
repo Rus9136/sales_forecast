@@ -66,9 +66,11 @@ class PricingReportService:
                        COALESCE(SUM(actual_delta_gp), 0) AS act_gp,
                        COALESCE(SUM(incremental_delta_gp), 0) AS inc_gp,
                        COUNT(*) FILTER (WHERE incremental_delta_gp > 0) AS positive,
-                       COUNT(*) FILTER (WHERE ABS(significance_z) >= 2) AS significant,
+                       -- «подтверждено» = интервал не накрывает ноль
+                       COUNT(*) FILTER (WHERE effect_ci_low > 0 OR effect_ci_high < 0) AS significant,
                        COALESCE(SUM(incremental_delta_gp)
-                                FILTER (WHERE ABS(significance_z) >= 2), 0) AS sig_gp,
+                                FILTER (WHERE effect_ci_low > 0 OR effect_ci_high < 0), 0) AS sig_gp,
+                       COUNT(*) FILTER (WHERE measurable IS NOT TRUE) AS not_measurable,
                        AVG(realized_elasticity) AS avg_eps
                 FROM price_recommendation_outcome
                 WHERE created_at::date BETWEEN :start AND :end
@@ -89,6 +91,8 @@ class PricingReportService:
             # сколько результатов отличимо от шума и сколько денег за ними стоит
             "significant": r["significant"] or 0,
             "significant_delta_gp": _f(r["sig_gp"]),
+            # позиции без контрольной группы: эффект не оценивался вовсе
+            "not_measurable": r["not_measurable"] or 0,
             "avg_realized_elasticity": _f(r["avg_eps"]),
         }
 
@@ -210,6 +214,7 @@ class PricingReportService:
             "actual_delta_gp": out.get("actual_delta_gp"),
             "outcomes_significant": out.get("significant", 0),
             "significant_delta_gp": out.get("significant_delta_gp"),
+            "outcomes_not_measurable": out.get("not_measurable", 0),
             "hit_rate": out.get("hit_rate"),
         }
 

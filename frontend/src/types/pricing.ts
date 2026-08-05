@@ -189,10 +189,43 @@ export interface PriceOutcome {
   days_before: number | null
   days_after: number | null
   counterfactual_qty: number | null
-  /** Эффект решения о цене: факт минус контрфакт по контрольной группе. */
+  /** Эффект решения о цене: факт минус контрфакт по тем же товарам в других точках. */
   incremental_delta_gp: number | null
-  /** |z| >= 2 — эффект отличим от шума. */
   significance_z: number | null
+  /** cross_store — контроль собран; none — не собран. */
+  control_method: string | null
+  /** false — прошли не все ворота качества, эффект не оценивался. */
+  measurable: boolean | null
+  not_measurable_reason: string | null
+  n_control_stores: number | null
+  control_qty_before: number | null
+  control_qty_after: number | null
+  control_trend: number | null
+  store_trend_adj: number | null
+  effect_ci_low: number | null
+  effect_ci_high: number | null
+  p_negative: number | null
+  concept: string | null
+}
+
+/** Эффект приказа целиком — интервал считается совместно по всем позициям. */
+export interface PriceOutcomeBatch {
+  id: number
+  department_id: string
+  department_name: string | null
+  applied_at: string
+  concept: string | null
+  eval_window_days: number
+  n_positions: number
+  n_measurable: number
+  gp_before: number | null
+  gp_after: number | null
+  actual_delta_gp: number | null
+  expected_delta_gp: number | null
+  effect_gp: number | null
+  effect_ci_low: number | null
+  effect_ci_high: number | null
+  p_negative: number | null
 }
 
 export interface PriceOutcomeResponse {
@@ -210,6 +243,11 @@ export interface OutcomeSummary {
   incremental_delta_gp: number
   significant_outcomes: number
   significant_delta_gp: number
+  not_measurable: number
+  batches: number
+  batch_effect_gp: number
+  batch_ci_low: number
+  batch_ci_high: number
 }
 
 export interface BaselineItem {

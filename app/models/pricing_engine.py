@@ -136,6 +136,51 @@ class PriceRecommendationOutcome(Base):
     counterfactual_qty = Column(Numeric(12, 3))
     incremental_delta_gp = Column(Numeric(14, 2))
     significance_z = Column(Numeric(8, 4))
+    # миграция 037: контроль «тот же товар в других точках» + интервал
+    control_method = Column(Text)
+    measurable = Column(Boolean)
+    not_measurable_reason = Column(Text)
+    n_control_stores = Column(Integer)
+    control_qty_before = Column(Numeric(14, 3))
+    control_qty_after = Column(Numeric(14, 3))
+    control_trend = Column(Numeric(10, 4))
+    store_trend_adj = Column(Numeric(10, 4))
+    effect_ci_low = Column(Numeric(14, 2))
+    effect_ci_high = Column(Numeric(14, 2))
+    p_negative = Column(Numeric(5, 4))
+    concept = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
+class PriceOutcomeBatch(Base):
+    """Эффект приказа целиком (точка × дата применения) — миграция 037.
+
+    Главная цифра пилота: отдельная штучная позиция при 1–2 продажах в день
+    неизмерима почти всегда, а приказ из полутора десятков позиций — измерим.
+    Интервал считается совместной перетасовкой дней, а не сложением интервалов
+    позиций: дни у позиций общие, ошибки скоррелированы.
+    """
+    __tablename__ = "price_outcome_batch"
+    __table_args__ = (
+        UniqueConstraint("department_id", "applied_at", "eval_window_days",
+                         name="uq_price_outcome_batch"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=False)
+    applied_at = Column(Date, nullable=False)
+    concept = Column(Text)
+    eval_window_days = Column(Integer, nullable=False)
+    n_positions = Column(Integer, nullable=False)
+    n_measurable = Column(Integer, nullable=False)
+    gp_before = Column(Numeric(14, 2))
+    gp_after = Column(Numeric(14, 2))
+    actual_delta_gp = Column(Numeric(14, 2))
+    expected_delta_gp = Column(Numeric(14, 2))
+    effect_gp = Column(Numeric(14, 2))
+    effect_ci_low = Column(Numeric(14, 2))
+    effect_ci_high = Column(Numeric(14, 2))
+    p_negative = Column(Numeric(5, 4))
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 

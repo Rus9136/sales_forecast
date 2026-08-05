@@ -20,5 +20,5 @@ from .inventory import (  # noqa: F401
 )
 from .pricing_engine import (  # noqa: F401
     SkuElasticity, PricingRule, PriceRecommendation,
-    PriceRecommendationOutcome, PricingBaselineKpi, PricingAuditLog,
+    PriceRecommendationOutcome, PriceOutcomeBatch, PricingBaselineKpi, PricingAuditLog,
 )

@@ -90,6 +90,15 @@ def compute_realized_elasticity(
 class PricingFeedbackService:
     def __init__(self, db: Session):
         self.db = db
+        self._estimator = None
+
+    @property
+    def estimator(self):
+        """Ленивая инициализация: numpy тянется только когда реально считаем."""
+        if self._estimator is None:
+            from .pricing_effect import PriceEffectEstimator
+            self._estimator = PriceEffectEstimator(self.db)
+        return self._estimator
 
     # -- 1. applied detection -------------------------------------------------
 
@@ -200,6 +209,18 @@ class PricingFeedbackService:
                 """),
                 {"window": eval_window_days},
             )
+            self.db.execute(
+                text("""
+                    DELETE FROM price_outcome_batch
+                    WHERE (department_id, applied_at) IN (
+                        SELECT pr.department_id, pr.applied_at FROM price_recommendation pr
+                        WHERE pr.status = 'applied'
+                          AND pr.applied_at IS NOT NULL
+                          AND pr.applied_at + :window <= CURRENT_DATE
+                    )
+                """),
+                {"window": eval_window_days},
+            )
 
         pending = self.db.execute(
             text("""
@@ -218,6 +239,7 @@ class PricingFeedbackService:
 
         evaluated = 0
         skipped: list[str] = []
+        batches: dict[tuple[str, date], list[dict]] = {}
         for rec in pending:
             try:
                 # SAVEPOINT: ошибка SQL на одном rec переводила транзакцию в
@@ -227,16 +249,78 @@ class PricingFeedbackService:
                     outcome = self._evaluate_single(rec, eval_window_days)
                 if outcome:
                     evaluated += 1
+                    key = (outcome["department_id"], outcome["applied_at"])
+                    batches.setdefault(key, []).append(outcome)
                 else:
                     skipped.append(f"rec {rec[0]}: no sales data in windows")
             except Exception as e:
                 skipped.append(f"rec {rec[0]}: {e}")
                 logger.warning("Outcome evaluation failed for rec %s: %s", rec[0], e)
 
+        for key, items in batches.items():
+            try:
+                with self.db.begin_nested():
+                    self._store_batch(key, items, eval_window_days)
+            except Exception as e:
+                logger.warning("Batch outcome failed for %s: %s", key, e)
+
         self.db.commit()
-        logger.info("Outcome evaluation: %d evaluated, %d skipped of %d pending",
-                    evaluated, len(skipped), len(pending))
-        return {"status": "ok", "pending": len(pending), "evaluated": evaluated, "skipped": skipped}
+        logger.info("Outcome evaluation: %d evaluated, %d skipped of %d pending, %d batches",
+                    evaluated, len(skipped), len(pending), len(batches))
+        return {"status": "ok", "pending": len(pending), "evaluated": evaluated,
+                "batches": len(batches), "skipped": skipped}
+
+    def _store_batch(self, key, items: list[dict], eval_window_days: int) -> None:
+        """Эффект приказа целиком: одна перетасовка дней на все его позиции.
+
+        Отдельный штучный торт при 1–2 шт/день неизмерим почти всегда — это
+        свойство товара, а не метода. Пачка решений измерима, и именно она
+        отвечает на вопрос «стоил ли этот приказ чего-нибудь».
+        """
+        dept_id, applied_at = key
+        panels = [i["panel"] for i in items if i["panel"] is not None]
+        batch = self.estimator.estimate_batch(panels)
+
+        self.db.execute(
+            text("""
+                INSERT INTO price_outcome_batch
+                    (department_id, applied_at, concept, eval_window_days,
+                     n_positions, n_measurable, gp_before, gp_after,
+                     actual_delta_gp, expected_delta_gp,
+                     effect_gp, effect_ci_low, effect_ci_high, p_negative)
+                VALUES
+                    (CAST(:dept AS uuid), :applied_at, :concept, :window,
+                     :n_pos, :n_meas, :gp_b, :gp_a,
+                     :actual, :expected,
+                     :effect, :ci_low, :ci_high, :p_neg)
+                ON CONFLICT (department_id, applied_at, eval_window_days) DO UPDATE SET
+                    concept = EXCLUDED.concept,
+                    n_positions = EXCLUDED.n_positions,
+                    n_measurable = EXCLUDED.n_measurable,
+                    gp_before = EXCLUDED.gp_before,
+                    gp_after = EXCLUDED.gp_after,
+                    actual_delta_gp = EXCLUDED.actual_delta_gp,
+                    expected_delta_gp = EXCLUDED.expected_delta_gp,
+                    effect_gp = EXCLUDED.effect_gp,
+                    effect_ci_low = EXCLUDED.effect_ci_low,
+                    effect_ci_high = EXCLUDED.effect_ci_high,
+                    p_negative = EXCLUDED.p_negative,
+                    created_at = now()
+            """),
+            {
+                "dept": dept_id, "applied_at": applied_at,
+                "concept": items[0].get("concept"), "window": eval_window_days,
+                "n_pos": len(items), "n_meas": len(panels),
+                "gp_b": round(sum(i["gp_before_norm"] for i in items), 2),
+                "gp_a": round(sum(i["gp_after"] for i in items), 2),
+                "actual": round(sum(i["actual_delta_gp"] for i in items), 2),
+                "expected": round(sum(i["expected_delta_gp"] or 0.0 for i in items), 2),
+                "effect": round(batch.effect_gp, 2) if batch.effect_gp is not None else None,
+                "ci_low": round(batch.ci_low, 2) if batch.ci_low is not None else None,
+                "ci_high": round(batch.ci_high, 2) if batch.ci_high is not None else None,
+                "p_neg": batch.p_negative,
+            },
+        )
 
     def _evaluate_single(self, rec, eval_window_days: int) -> Optional[dict]:
         rec_id, product_id, dept_id, applied_at, old_price, new_price, cogs, weekly_delta_gp = rec
@@ -292,40 +376,16 @@ class PricingFeedbackService:
         if days_before <= 0 or days_after <= 0:
             return None  # точка не работала в одном из окон — сравнивать нечего
 
-        # Контрольная группа: та же категория и подразделение, без изменения
-        # каталожной цены за весь период наблюдения.
-        control = self.db.execute(
-            text("""
-                WITH changed AS (
-                    SELECT DISTINCT product_id FROM sku_catalog_price
-                    WHERE department_id = CAST(:did AS uuid)
-                      AND date_from BETWEEN :bfrom AND :eto
-                      AND NOT is_stale
-                ),
-                peers AS (
-                    SELECT p2.id FROM product p2
-                    JOIN product p1 ON p1.id = :pid
-                    WHERE p2.category_id = p1.category_id
-                      AND p2.id <> p1.id
-                      AND p2.id NOT IN (SELECT product_id FROM changed)
-                )
-                SELECT
-                    SUM(total_qty) FILTER (WHERE sale_date BETWEEN :bfrom AND :bto) AS qty_before,
-                    SUM(total_qty) FILTER (WHERE sale_date BETWEEN :efrom AND :eto) AS qty_after,
-                    COUNT(DISTINCT product_id) AS n_skus
-                FROM sku_daily_sales
-                WHERE department_id = CAST(:did AS uuid)
-                  AND product_id IN (SELECT id FROM peers)
-                  AND sale_date BETWEEN :bfrom AND :eto
-            """),
-            {"pid": product_id, "did": dept_id,
-             "bfrom": baseline_from, "bto": baseline_to,
-             "efrom": eval_from, "eto": eval_to},
-        ).fetchone()
-
-        ctl_before = float(control[0] or 0)
-        ctl_after = float(control[1] or 0)
-        n_control = int(control[2] or 0)
+        # Контроль — «тот же товар в других точках той же концепции, где цену
+        # не меняли». Прежний контроль по соседним блюдам той же точки убран:
+        # сосед задет нашим же решением (переток спроса), ассортимент выпечки
+        # крутится, объёмы мизерные. Подробный разбор — в pricing_effect.py.
+        eff, panel = self.estimator.estimate(
+            product_id=product_id, dept_id=dept_id,
+            old_price=old_price, new_price=new_price, cogs=cogs,
+            baseline_from=baseline_from, baseline_to=baseline_to,
+            eval_from=eval_from, eval_to=eval_to,
+        )
 
         # Всё в среднесуточных ставках продаж: дневные множители сокращаются в
         # adj (отношение отношений), но каждое изменение по отдельности
@@ -334,32 +394,37 @@ class PricingFeedbackService:
         rate_after = qty_after / days_after
         qty_change = rate_after / rate_before - 1.0
 
-        if ctl_before > 0:
-            ctl_rate_ratio = (ctl_after / days_after) / (ctl_before / days_before)
-            control_change = ctl_rate_ratio - 1.0
+        # Фон = тренд товара по сети × поправка на тренд самой точки. Второй
+        # множитель нужен, чтобы слабый месяц у точки не записался в минус
+        # решению о цене.
+        if eff.measurable and eff.control_trend and eff.store_trend_adj:
+            control_change = eff.control_trend * eff.store_trend_adj - 1.0
+            adj_change, realized_eps = compute_realized_elasticity(
+                qty_change, control_change, old_price, new_price,
+            )
+            significance_z = compute_significance_z(
+                adj_change, qty_before, qty_after,
+                eff.control_qty_before, eff.control_qty_after,
+            )
         else:
-            ctl_rate_ratio = None
-            control_change = None
-
-        adj_change, realized_eps = compute_realized_elasticity(
-            qty_change, control_change, old_price, new_price,
-        )
-        significance_z = compute_significance_z(
-            adj_change, qty_before, qty_after, ctl_before, ctl_after,
-        )
+            # Без контроля «очищенных» чисел не существует. Раньше здесь молча
+            # подставлялось сырое изменение — и оно уезжало в отчёты как эффект.
+            control_change = adj_change = realized_eps = significance_z = None
 
         gp_before = rev_before - cogs * qty_before
         gp_after = rev_after - cogs * qty_after
 
-        # Контрфакт: сколько бы продали за оценочное окно по старой цене, если
-        # бы позиция просто повторила динамику своей категории.
-        counterfactual_qty = rate_before * (ctl_rate_ratio or 1.0) * days_after
-        gp_counterfactual = counterfactual_qty * (old_price - cogs)
-        incremental_delta_gp = gp_after - gp_counterfactual
+        counterfactual_qty = eff.counterfactual_qty
+        incremental_delta_gp = eff.effect_gp
 
         # «Что произошло в кассе», приведённое к равному числу рабочих дней.
-        # Фон категории здесь НЕ вычтен — это делает incremental_delta_gp.
+        # Фон сети здесь НЕ вычтен — это делает incremental_delta_gp.
         actual_delta_gp = gp_after - gp_before * (days_after / days_before)
+
+        concept = self.db.execute(
+            text("SELECT iiko_source_domain FROM departments WHERE id = CAST(:d AS uuid)"),
+            {"d": dept_id},
+        ).scalar()
 
         expected_delta_gp = (
             float(weekly_delta_gp) * (eval_window_days / 7.0)
@@ -377,7 +442,11 @@ class PricingFeedbackService:
                      qty_change_pct, control_qty_change_pct, adj_qty_change_pct,
                      realized_elasticity, n_control_skus,
                      days_before, days_after, counterfactual_qty,
-                     incremental_delta_gp, significance_z)
+                     incremental_delta_gp, significance_z,
+                     control_method, measurable, not_measurable_reason,
+                     n_control_stores, control_qty_before, control_qty_after,
+                     control_trend, store_trend_adj,
+                     effect_ci_low, effect_ci_high, p_negative, concept)
                 VALUES
                     (:rec_id, :pid, CAST(:did AS uuid), :applied_at,
                      :window, :bfrom, :bto, :efrom, :eto,
@@ -387,7 +456,11 @@ class PricingFeedbackService:
                      :qty_change, :ctl_change, :adj_change,
                      :realized_eps, :n_control,
                      :days_before, :days_after, :cf_qty,
-                     :incremental_dgp, :sig_z)
+                     :incremental_dgp, :sig_z,
+                     :ctl_method, :measurable, :reason,
+                     :n_ctl_stores, :ctl_qb, :ctl_qa,
+                     :ctl_trend, :store_adj,
+                     :ci_low, :ci_high, :p_neg, :concept)
                 ON CONFLICT (recommendation_id) DO NOTHING
             """),
             {
@@ -405,15 +478,33 @@ class PricingFeedbackService:
                 "ctl_change": round(control_change, 4) if control_change is not None else None,
                 "adj_change": adj_change,
                 "realized_eps": realized_eps,
-                "n_control": n_control,
+                "n_control": eff.n_control_stores,
                 "days_before": days_before,
                 "days_after": days_after,
-                "cf_qty": round(counterfactual_qty, 3),
-                "incremental_dgp": round(incremental_delta_gp, 2),
+                "cf_qty": round(counterfactual_qty, 3) if counterfactual_qty is not None else None,
+                "incremental_dgp": round(incremental_delta_gp, 2) if incremental_delta_gp is not None else None,
                 "sig_z": significance_z,
+                "ctl_method": eff.control_method,
+                "measurable": eff.measurable,
+                "reason": eff.reason,
+                "n_ctl_stores": eff.n_control_stores,
+                "ctl_qb": round(eff.control_qty_before, 3),
+                "ctl_qa": round(eff.control_qty_after, 3),
+                "ctl_trend": round(eff.control_trend, 4) if eff.control_trend is not None else None,
+                "store_adj": round(eff.store_trend_adj, 4) if eff.store_trend_adj is not None else None,
+                "ci_low": round(eff.ci_low, 2) if eff.ci_low is not None else None,
+                "ci_high": round(eff.ci_high, 2) if eff.ci_high is not None else None,
+                "p_neg": eff.p_negative,
+                "concept": concept,
             },
         )
-        return {"recommendation_id": rec_id}
+        return {
+            "recommendation_id": rec_id, "panel": panel, "concept": concept,
+            "department_id": dept_id, "applied_at": applied_at,
+            "gp_before_norm": gp_before * (days_after / days_before),
+            "gp_after": gp_after, "actual_delta_gp": actual_delta_gp,
+            "expected_delta_gp": expected_delta_gp,
+        }
 
     # -- 3. baseline freeze ----------------------------------------------------
 
