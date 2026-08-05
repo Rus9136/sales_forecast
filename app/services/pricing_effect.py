@@ -100,6 +100,12 @@ class Panel:
     ctl_tot_b: np.ndarray
     ctl_tot_a: np.ndarray
     n_control_stores: int
+    # даты нужны, чтобы показать ряды на графике: без них панель — набор
+    # безымянных чисел, и «факт против контрфакта» нарисовать нечем
+    dates_pilot_b: list[date]
+    dates_pilot_a: list[date]
+    dates_cal_b: list[date]
+    dates_cal_a: list[date]
 
 
 def _safe_div(num, den):
@@ -316,6 +322,8 @@ class PriceEffectEstimator:
             ctl_tot_b=ctx.totals(control, cal_b),
             ctl_tot_a=ctx.totals(control, cal_a),
             n_control_stores=len(control),
+            dates_pilot_b=days_b, dates_pilot_a=days_a,
+            dates_cal_b=cal_b, dates_cal_a=cal_a,
         )
         return panel, EffectResult(
             control_method="cross_store", measurable=True,
@@ -376,6 +384,58 @@ class PriceEffectEstimator:
         res.effect_gp = float(point)
         res.ci_low, res.ci_high, res.p_negative = lo, hi, p_neg
         return res, panel
+
+    # -- дневная раскладка для графика -----------------------------------
+
+    @staticmethod
+    def daily_breakdown(panel: Panel) -> list[dict]:
+        """Ряды «факт против контрфакта» по дням.
+
+        Контрфакт распределяется по дням окна пропорционально дневному ритму
+        контрольной группы, а не ровной полкой: у выпечки будни и выходные
+        отличаются вдвое, и ровная линия выглядела бы как систематический
+        промах там, где его нет. Сумма по дням в точности равна оконному
+        контрфакту — тому же числу, что идёт в расчёт эффекта.
+        """
+        n_b = len(panel.dates_pilot_b)
+        n_a = len(panel.dates_pilot_a)
+        if n_b == 0 or n_a == 0:
+            return []
+
+        rate_before = panel.pilot_qty_b.sum() / n_b
+        ctl_rate_b = _safe_div(panel.ctl_qty_b, panel.ctl_sd_b)
+        ctl_rate_a = _safe_div(panel.ctl_qty_a, panel.ctl_sd_a)
+        base_mean = np.nanmean(ctl_rate_b) if np.isfinite(ctl_rate_b).any() else np.nan
+
+        _, cf_total, _, store = effect_of(
+            panel, np.arange(n_b), np.arange(n_a),
+            np.arange(len(panel.ctl_qty_b)), np.arange(len(panel.ctl_qty_a)))
+
+        pilot_a = dict(zip(panel.dates_pilot_a, panel.pilot_qty_a))
+        ctl_shape = dict(zip(panel.dates_cal_a, ctl_rate_a))
+
+        rows: list[dict] = []
+        for d, qty in zip(panel.dates_pilot_b, panel.pilot_qty_b):
+            rows.append({"date": str(d), "phase": "before", "qty": float(qty),
+                         "counterfactual": None})
+
+        for d in panel.dates_pilot_a:
+            shape = ctl_shape.get(d, np.nan)
+            if np.isfinite(base_mean) and base_mean > 0 and np.isfinite(shape):
+                cf = rate_before * float(store) * (shape / base_mean)
+            else:
+                cf = float(cf_total) / n_a
+            rows.append({"date": str(d), "phase": "after",
+                         "qty": float(pilot_a.get(d, 0.0)),
+                         "counterfactual": round(float(cf), 3)})
+
+        # округление по дням не должно расходиться с оконным контрфактом
+        after = [r for r in rows if r["phase"] == "after"]
+        drift = float(cf_total) - sum(r["counterfactual"] for r in after)
+        if after and abs(drift) > 1e-6:
+            after[-1]["counterfactual"] = round(after[-1]["counterfactual"] + drift, 3)
+
+        return rows
 
     # -- оценка пачки решений --------------------------------------------
 

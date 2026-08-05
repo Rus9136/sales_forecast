@@ -948,6 +948,64 @@ async def outcomes_summary(
     }
 
 
+@router.get("/outcomes/{outcome_id}/daily")
+async def outcome_daily_series(outcome_id: int, db: Session = Depends(get_db)):
+    """Дневные ряды «факт против контрфакта» для одного измеренного решения.
+
+    Нужен, чтобы показать метод картинкой: одно число не объясняет, откуда
+    взялся эффект, а две линии — объясняют.
+    """
+    from ..services.pricing_effect import PriceEffectEstimator
+
+    row = db.execute(
+        text("""
+            SELECT o.product_id, o.department_id::text, o.applied_at,
+                   o.baseline_from, o.baseline_to, o.eval_from, o.eval_to,
+                   o.old_price, o.new_price, o.measurable, o.not_measurable_reason,
+                   o.counterfactual_qty, o.qty_after, o.incremental_delta_gp,
+                   (o.revenue_before - o.gp_before) / NULLIF(o.qty_before, 0) AS cogs,
+                   p.name AS product_name, d.name AS department_name
+            FROM price_recommendation_outcome o
+            JOIN product p ON p.id = o.product_id
+            JOIN departments d ON d.id = o.department_id
+            WHERE o.id = :oid
+        """),
+        {"oid": outcome_id},
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Outcome not found")
+
+    head = {
+        "outcome_id": outcome_id,
+        "product_id": row.product_id,
+        "product_name": row.product_name,
+        "department_id": row.department_id,
+        "department_name": row.department_name,
+        "applied_at": str(row.applied_at),
+        "old_price": float(row.old_price) if row.old_price is not None else None,
+        "new_price": float(row.new_price) if row.new_price is not None else None,
+        "measurable": row.measurable,
+        "not_measurable_reason": row.not_measurable_reason,
+        "counterfactual_qty": float(row.counterfactual_qty) if row.counterfactual_qty is not None else None,
+        "qty_after": float(row.qty_after) if row.qty_after is not None else None,
+        "incremental_delta_gp": float(row.incremental_delta_gp) if row.incremental_delta_gp is not None else None,
+    }
+    if not row.measurable:
+        return {**head, "days": []}
+
+    est = PriceEffectEstimator(db)
+    panel, res = est.build_panel(
+        product_id=row.product_id, dept_id=row.department_id,
+        old_price=float(row.old_price or 0), new_price=float(row.new_price or 0),
+        cogs=float(row.cogs or 0),
+        baseline_from=row.baseline_from, baseline_to=row.baseline_to,
+        eval_from=row.eval_from, eval_to=row.eval_to,
+    )
+    if panel is None:
+        return {**head, "days": [], "not_measurable_reason": res.reason}
+    return {**head, "days": est.daily_breakdown(panel)}
+
+
 @router.get("/outcomes/batches")
 async def list_outcome_batches(
     department_id: Optional[str] = None,

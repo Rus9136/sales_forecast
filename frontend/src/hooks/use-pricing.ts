@@ -7,6 +7,7 @@ import type {
   ElasticitySummary,
   MenuRoleSummary,
   MenuRolesResponse,
+  OutcomeDailyResponse,
   OutcomeSummary,
   PriceHistoryResponse,
   PriceOutcomeResponse,
@@ -367,6 +368,15 @@ export function useOutcomes(departmentId?: string) {
         department_id: departmentId,
         limit: '500',
       }),
+  })
+}
+
+/** Дневные ряды «факт против контрфакта» для одного измеренного решения. */
+export function useOutcomeDaily(outcomeId: number | null) {
+  return useQuery<OutcomeDailyResponse>({
+    queryKey: ['pricing', 'outcome-daily', outcomeId],
+    enabled: outcomeId != null,
+    queryFn: () => api.get<OutcomeDailyResponse>(`/api/pricing-engine/outcomes/${outcomeId}/daily`),
   })
 }
 

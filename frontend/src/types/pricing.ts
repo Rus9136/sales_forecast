@@ -208,6 +208,31 @@ export interface PriceOutcome {
   concept: string | null
 }
 
+/** День ряда «факт против контрфакта». counterfactual заполнен только после изменения цены. */
+export interface OutcomeDay {
+  date: string
+  phase: 'before' | 'after'
+  qty: number
+  counterfactual: number | null
+}
+
+export interface OutcomeDailyResponse {
+  outcome_id: number
+  product_id: number
+  product_name: string | null
+  department_id: string
+  department_name: string | null
+  applied_at: string
+  old_price: number | null
+  new_price: number | null
+  measurable: boolean | null
+  not_measurable_reason: string | null
+  counterfactual_qty: number | null
+  qty_after: number | null
+  incremental_delta_gp: number | null
+  days: OutcomeDay[]
+}
+
 /** Эффект приказа целиком — интервал считается совместно по всем позициям. */
 export interface PriceOutcomeBatch {
   id: number

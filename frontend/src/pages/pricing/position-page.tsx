@@ -25,6 +25,7 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import {
   useSkuPriceHistory, useSkuWeekly, useSkuElasticity, useSkuMenuRole,
   useOverrideMenuRole, useSkuRecommendations, useSkuOutcomes, usePricingRules,
+  useOutcomeDaily,
 } from '@/hooks/use-pricing'
 import { Term, GLOSSARY } from '@/components/shared/term'
 import { LlmExplanation } from '@/components/shared/llm-explanation'
@@ -55,6 +56,98 @@ function weekLabel(iso: string): string {
 function fmtNum(v: number | null | undefined, digits = 0): string {
   if (v == null || !Number.isFinite(v)) return '—'
   return v.toLocaleString('ru-RU', { maximumFractionDigits: digits })
+}
+
+/**
+ * «Что продали на самом деле» против «что продали бы, не трогая цену».
+ *
+ * Показано накопительным итогом, а не по дням: штучный торт уходит по 1–2 в
+ * сутки, дневная ломаная — сплошной шум, в котором ничего не видно. Накопление
+ * сглаживает, и расхождение линий к концу окна — это ровно тот эффект, который
+ * система насчитала в штуках.
+ */
+function FactVsCounterfactual({ outcomeId }: { outcomeId: number }) {
+  const daily = useOutcomeDaily(outcomeId)
+  const d = daily.data
+
+  const chart = useMemo(() => {
+    if (!d?.days?.length) return []
+    let fact = 0
+    let cf = 0
+    return d.days
+      .filter((row) => row.phase === 'after')
+      .map((row) => {
+        fact += row.qty
+        cf += row.counterfactual ?? 0
+        return {
+          date: row.date.slice(5),
+          fact: Math.round(fact * 100) / 100,
+          cf: Math.round(cf * 100) / 100,
+        }
+      })
+  }, [d])
+
+  if (daily.isLoading) return <div className="card"><LoadingSpinner /></div>
+  if (!d || chart.length === 0) return null
+
+  const last = chart[chart.length - 1]
+  const gap = last.fact - last.cf
+
+  return (
+    <div className="card">
+      <div className="card__header">
+        <div>
+          <div className="card__title">Что изменило решение</div>
+          <div className="card__sub">
+            Накопленные продажи после смены цены против того, что дал бы тот же
+            товар в других точках
+          </div>
+        </div>
+      </div>
+      <div style={{ padding: '12px 16px 16px' }}>
+        <div style={{ width: '100%', height: 240 }}>
+          <ResponsiveContainer>
+            <ComposedChart data={chart} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+              <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--border)" />
+              <YAxis tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--border)" />
+              <Tooltip
+                contentStyle={{
+                  background: 'var(--surface)', border: '1px solid var(--border)',
+                  borderRadius: 8, fontSize: 12,
+                }}
+                formatter={(v, n) => [
+                  `${Number(v).toFixed(1)} шт`,
+                  n === 'fact' ? 'продали' : 'продали бы без изменения цены',
+                ]}
+              />
+              <Line
+                type="monotone" dataKey="cf" stroke="var(--text-subtle)"
+                strokeDasharray="5 4" strokeWidth={2} dot={false}
+              />
+              <Line
+                type="monotone" dataKey="fact" stroke="var(--accent)"
+                strokeWidth={2.5} dot={false}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="text-sm" style={{ margin: '8px 0 0' }}>
+          Цена {formatCurrency(d.old_price)} → {formatCurrency(d.new_price)} с{' '}
+          {formatDate(d.applied_at)}. За окно продали{' '}
+          <span className="tabular font-medium">{last.fact.toFixed(1)} шт</span>, без
+          изменения цены ожидалось{' '}
+          <span className="tabular font-medium">{last.cf.toFixed(1)} шт</span> —{' '}
+          <span style={{ color: gap >= 0 ? 'var(--pos)' : 'var(--neg)', fontWeight: 600 }}>
+            {gap >= 0 ? '+' : ''}{gap.toFixed(1)} шт
+          </span>
+          {d.incremental_delta_gp != null && (
+            <> , это {formatCurrency(d.incremental_delta_gp)} валовой прибыли.</>
+          )}
+        </p>
+      </div>
+    </div>
+  )
 }
 
 function fmtPctSigned(value: number | null | undefined): string {
@@ -113,6 +206,13 @@ export function PricingPositionPage() {
     const v = rule?.params && typeof rule.params.value === 'number' ? rule.params.value : null
     return v ?? 0.6
   }, [rules.data])
+
+  // Последнее измеримое решение по позиции — для графика «факт против контрфакта»
+  const measuredId = useMemo(() => {
+    const rows = (outcomes.data ?? []).filter((o) => o.measurable !== false && o.id != null)
+    if (rows.length === 0) return null
+    return [...rows].sort((a, b) => b.applied_at.localeCompare(a.applied_at))[0].id
+  }, [outcomes.data])
 
   const weeklyRows = useMemo<SkuWeeklyItem[]>(
     () => [...(weekly.data?.items ?? [])].sort((a, b) => a.week_start.localeCompare(b.week_start)),
@@ -644,7 +744,9 @@ export function PricingPositionPage() {
               <div className="card__header">
                 <div>
                   <div className="card__title">Измеренный эффект</div>
-                  <div className="card__sub">Факт vs ожидание после применения · контрольная группа</div>
+                  <div className="card__sub">
+                    Сравнение с тем же блюдом в других точках, где цену не меняли
+                  </div>
                 </div>
               </div>
               <Table>
@@ -652,19 +754,20 @@ export function PricingPositionPage() {
                   <TableRow>
                     <TableHead>Применено</TableHead>
                     <TableHead className="text-right">Цена</TableHead>
-                    <TableHead className="text-right">Ожидание, ₸/нед</TableHead>
-                    <TableHead className="text-right">Факт, ₸/нед</TableHead>
+                    <TableHead className="text-right">Ожидание</TableHead>
+                    <TableHead className="text-right">Эффект</TableHead>
+                    <TableHead className="text-right">Интервал</TableHead>
                     <TableHead className="text-right">
-                      <Term tip={GLOSSARY.controlGroup}>Δ продаж (скорр.)</Term>
-                    </TableHead>
-                    <TableHead className="text-right">
-                      <Term tip={GLOSSARY.realizedElasticity}>Факт. ε</Term>
+                      <Term tip={GLOSSARY.cashDeltaGp}>В кассе</Term>
                     </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {(outcomes.data ?? []).map((o) => {
-                    const hit = o.actual_delta_gp != null ? o.actual_delta_gp >= 0 : null
+                    // вердикт по интервалу, а не по знаку точечной оценки
+                    const confirmed =
+                      o.effect_ci_low != null && o.effect_ci_high != null
+                      && (o.effect_ci_low > 0 || o.effect_ci_high < 0)
                     return (
                       <TableRow key={o.recommendation_id}>
                         <TableCell className="text-sm">{formatDate(o.applied_at)}</TableCell>
@@ -676,13 +779,31 @@ export function PricingPositionPage() {
                         </TableCell>
                         <TableCell
                           className="text-right tabular"
-                          style={{ color: hit == null ? 'var(--text-muted)' : hit ? 'var(--pos)' : 'var(--neg)' }}
+                          style={{
+                            color: o.measurable === false || !confirmed
+                              ? 'var(--text-muted)'
+                              : (o.incremental_delta_gp ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)',
+                            fontWeight: confirmed ? 600 : 400,
+                          }}
+                          title={
+                            o.measurable === false
+                              ? `Не измеримо: ${o.not_measurable_reason ?? '—'}`
+                              : confirmed ? 'Знак эффекта установлен' : 'Интервал накрывает ноль'
+                          }
                         >
-                          {o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}
+                          {o.measurable === false
+                            ? 'не измеримо'
+                            : o.incremental_delta_gp != null
+                              ? formatCurrency(o.incremental_delta_gp)
+                              : '—'}
                         </TableCell>
-                        <TableCell className="text-right tabular">{fmtPctSigned(o.adj_qty_change_pct)}</TableCell>
+                        <TableCell className="text-right tabular text-xs text-muted-foreground">
+                          {o.effect_ci_low != null && o.effect_ci_high != null
+                            ? `${formatCurrency(o.effect_ci_low)} … ${formatCurrency(o.effect_ci_high)}`
+                            : '—'}
+                        </TableCell>
                         <TableCell className="text-right tabular">
-                          {o.realized_elasticity != null ? o.realized_elasticity.toFixed(2) : '—'}
+                          {o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}
                         </TableCell>
                       </TableRow>
                     )
@@ -691,6 +812,9 @@ export function PricingPositionPage() {
               </Table>
             </div>
           )}
+
+          {/* Метод картинкой: что было на самом деле против того, что было бы */}
+          {measuredId != null && <FactVsCounterfactual outcomeId={measuredId} />}
         </>
       )}
 
