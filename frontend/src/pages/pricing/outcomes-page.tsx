@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { FlaskConical, RefreshCw, Snowflake, Target } from 'lucide-react'
 import {
-  Bar, BarChart, Cell, ErrorBar, ReferenceLine, ResponsiveContainer,
-  Scatter, ScatterChart, Tooltip as RTooltip, XAxis, YAxis,
+  Bar, BarChart, Cell, ReferenceLine, ResponsiveContainer,
+  Tooltip as RTooltip, XAxis, YAxis,
 } from 'recharts'
 
 import { Button } from '@/components/ui/button'
@@ -85,82 +85,6 @@ function fmtK(v: number): string {
   if (!Number.isFinite(v)) return ''
   if (Math.abs(v) >= 1000) return `${Math.round(v / 1000)}к`
   return String(Math.round(v))
-}
-
-/**
- * Диаграмма интервалов: точка — оценка, ус — 90% интервал, вертикаль — ноль.
- *
- * Заменяет чтение колонки чисел: сразу видно, что почти все усы пересекают
- * ноль, то есть знак эффекта не установлен. Пока это было текстом, глаз
- * якорился на крупной точечной оценке — ровно та ошибка, против которой
- * вся переделка и делалась.
- */
-function EffectIntervalChart({ items }: { items: PriceOutcome[] }) {
-  const data = useMemo(
-    () =>
-      items
-        .filter((o) => o.incremental_delta_gp != null && o.effect_ci_low != null && o.effect_ci_high != null)
-        .slice()
-        .sort((a, b) => (b.incremental_delta_gp ?? 0) - (a.incremental_delta_gp ?? 0))
-        .map((o) => ({
-          name: (o.product_name ?? `#${o.product_id}`).slice(0, 30),
-          effect: o.incremental_delta_gp as number,
-          // ErrorBar ждёт отступы от точки, а не абсолютные границы
-          err: [
-            (o.incremental_delta_gp as number) - (o.effect_ci_low as number),
-            (o.effect_ci_high as number) - (o.incremental_delta_gp as number),
-          ] as [number, number],
-          confirmed: isConfirmed(o),
-          low: o.effect_ci_low as number,
-          high: o.effect_ci_high as number,
-        })),
-    [items],
-  )
-
-  if (data.length === 0) return null
-
-  return (
-    <div style={{ width: '100%', height: Math.max(220, data.length * 26 + 40) }}>
-      <ResponsiveContainer>
-        <ScatterChart layout="vertical" margin={{ top: 8, right: 20, bottom: 8, left: 8 }} data={data}>
-          <XAxis
-            type="number" dataKey="effect" tickFormatter={fmtK}
-            tick={{ fontSize: 11, fill: 'var(--chart-axis)' }}
-            stroke="var(--border)"
-          />
-          <YAxis
-            type="category" dataKey="name" width={190}
-            tick={{ fontSize: 11, fill: 'var(--chart-axis)' }}
-            stroke="var(--border)"
-          />
-          <ReferenceLine x={0} stroke="var(--border-strong)" strokeDasharray="3 3" />
-          <RTooltip
-            cursor={{ stroke: 'var(--border)' }}
-            contentStyle={{
-              background: 'var(--surface)', border: '1px solid var(--border)',
-              borderRadius: 8, fontSize: 12,
-            }}
-            formatter={(_v, _n, p) => {
-              const d = p.payload as { effect: number; low: number; high: number; confirmed: boolean }
-              return [
-                `${formatCurrency(d.effect)} · от ${formatCurrency(d.low)} до ${formatCurrency(d.high)}`,
-                d.confirmed ? 'подтверждено' : 'не подтверждено',
-              ]
-            }}
-          />
-          <Scatter dataKey="effect">
-            {data.map((d, i) => (
-              <Cell
-                key={i}
-                fill={d.confirmed ? (d.effect >= 0 ? 'var(--pos)' : 'var(--neg)') : 'var(--text-subtle)'}
-              />
-            ))}
-            <ErrorBar dataKey="err" direction="x" width={4} strokeWidth={1.5} stroke="var(--border-strong)" />
-          </Scatter>
-        </ScatterChart>
-      </ResponsiveContainer>
-    </div>
-  )
 }
 
 /**
@@ -401,40 +325,32 @@ export function PricingOutcomesPage() {
         </div>
       </div>
 
-      {/* Как читать цифры: интервалы по позициям + разложение итога */}
-      {items.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
-          <div className="card">
-            <div className="card__header">
-              <div>
-                <div className="card__title">Насколько уверенно измерен эффект</div>
-                <div className="card__sub">
-                  Точка — оценка, линия — где эффект лежит с вероятностью 90%.
-                  Пересекает пунктир нуля — значит даже знак не установлен
-                </div>
+      {/* Разложение итога: почему касса в плюсе, а эффект — нет */}
+      {items.length > 0 && s && (
+        <div className="card">
+          <div className="card__header">
+            <div>
+              <div className="card__title">Откуда берётся итог</div>
+              <div className="card__sub">
+                Прибыль выросла — но те же блюда в других точках за это время
+                выросли сильнее. Разница и есть эффект решения о цене
+                {s.decomp_positions < s.total_evaluated
+                  && ` · по ${s.decomp_positions} позициям из ${s.total_evaluated}, где эффект измерим`}
               </div>
-            </div>
-            <div style={{ padding: '8px 12px 12px' }}>
-              <EffectIntervalChart items={items} />
             </div>
           </div>
-
-          <div className="card">
-            <div className="card__header">
-              <div>
-                <div className="card__title">Откуда берётся итог</div>
-                <div className="card__sub">Касса минус фон сети = эффект решения</div>
-              </div>
-            </div>
-            <div style={{ padding: '8px 12px 12px' }}>
-              {s && <EffectWaterfall cash={s.actual_delta_gp} effect={s.batch_effect_gp} />}
-              {s && (
-                <p className="text-xs" style={{ margin: '4px 0 0', color: 'var(--text-muted)' }}>
-                  {s.batch_effect_gp < s.actual_delta_gp
-                    ? 'Те же блюда в других точках за это время росли быстрее — на их фоне решение сработало слабее, чем видно по кассе.'
-                    : 'Те же блюда в других точках за это время просели — на их фоне решение сработало лучше, чем видно по кассе.'}
-                </p>
-              )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, padding: '12px 16px 16px' }}>
+            <EffectWaterfall cash={s.decomp_cash} effect={s.batch_effect_gp} />
+            <div className="space-y-2 text-sm">
+              <Detail label="Прибыль была (за равное число дней)" value={formatCurrency(s.decomp_gp_before)} />
+              <Detail label="Прибыль стала" value={formatCurrency(s.decomp_gp_after)} />
+              <Detail label="→ выросла на" value={formatCurrency(s.decomp_cash)} />
+              <div style={{ borderTop: '1px solid var(--border-faint)', margin: '6px 0' }} />
+              <Detail
+                label="Была бы без изменения цены"
+                value={formatCurrency(s.decomp_gp_after - s.batch_effect_gp)}
+              />
+              <Detail label="→ не дотянули до неё на" value={formatCurrency(s.batch_effect_gp)} />
             </div>
           </div>
         </div>

@@ -273,6 +273,11 @@ export interface OutcomeSummary {
   batch_effect_gp: number
   batch_ci_low: number
   batch_ci_high: number
+  /** Разложение итога — только по измеримым позициям, иначе числа не сходятся. */
+  decomp_positions: number
+  decomp_gp_before: number
+  decomp_gp_after: number
+  decomp_cash: number
 }
 
 export interface BaselineItem {

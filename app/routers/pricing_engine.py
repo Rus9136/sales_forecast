@@ -905,7 +905,14 @@ async def outcomes_summary(
                    COUNT(*) FILTER (WHERE effect_ci_low > 0 OR effect_ci_high < 0),
                    COALESCE(SUM(incremental_delta_gp)
                             FILTER (WHERE effect_ci_low > 0 OR effect_ci_high < 0), 0),
-                   COUNT(*) FILTER (WHERE measurable IS NOT TRUE)
+                   COUNT(*) FILTER (WHERE measurable IS NOT TRUE),
+                   -- разложение «касса → фон → эффект» считаем ТОЛЬКО по
+                   -- измеримым позициям, иначе прибыль по 18 позициям минус
+                   -- эффект по 17 дадут контрфакт, который ни с чем не сходится
+                   COALESCE(SUM(gp_before * days_after::numeric / NULLIF(days_before, 0))
+                            FILTER (WHERE measurable), 0),
+                   COALESCE(SUM(gp_after) FILTER (WHERE measurable), 0),
+                   COUNT(*) FILTER (WHERE measurable)
             FROM price_recommendation_outcome
             {dept_filter}
         """),
@@ -945,6 +952,11 @@ async def outcomes_summary(
         "batch_effect_gp": float(batches[1]),
         "batch_ci_low": float(batches[2]),
         "batch_ci_high": float(batches[3]),
+        # цепочка для разложения итога на экране: было → стало → было бы
+        "decomp_positions": row[11],
+        "decomp_gp_before": float(row[9]),
+        "decomp_gp_after": float(row[10]),
+        "decomp_cash": float(row[10]) - float(row[9]),
     }
 
 
