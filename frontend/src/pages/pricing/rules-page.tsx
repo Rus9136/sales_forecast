@@ -30,7 +30,7 @@ import { useProduct } from '@/hooks/use-menu'
 import type { Product } from '@/types/menu'
 import type { PricingRule } from '@/types/pricing'
 
-type RuleKind = 'percent' | 'days' | 'toggle' | 'rounding' | 'portfolio' | 'competitive'
+type RuleKind = 'percent' | 'days' | 'toggle' | 'rounding' | 'portfolio' | 'competitive' | 'measurement'
 
 interface RuleMeta {
   label: string
@@ -87,6 +87,11 @@ const RULE_META: Record<string, RuleMeta> = {
     description: 'Цена не ниже k×медианы рынка. Заработает, когда появятся данные о ценах конкурентов — пока не используется.',
     owner: 'Коммерческий директор', kind: 'competitive', defaults: { value: 1.0 },
   },
+  effect_measurement: {
+    label: 'Окно замера эффекта',
+    description: 'Сколько дней после изменения цены наблюдаем и с каким периодом «до» сравниваем.',
+    owner: 'Аналитик', kind: 'measurement', defaults: { eval_days: 14, baseline_days: 14 },
+  },
 }
 
 /** Правило одной человеческой фразой — с текущими параметрами. */
@@ -111,6 +116,10 @@ function humanSummary(ruleType: string, p: Record<string, unknown>): string {
       return `Не больше ${num(p.value, 15)} изменений цен на точку за ${num(p.window_days, 14)} дней.`
     case 'min_competitive_idx':
       return `Цена не ниже ${num(p.value, 1)}× медианы рынка (ждёт данных о конкурентах).`
+    case 'effect_measurement':
+      return `Эффект считается через ${num(p.eval_days, 14)} дней после изменения цены — `
+        + `продажи за это время сравниваются с ${num(p.baseline_days, 14)} днями до него. `
+        + `Результат появится на ${num(p.eval_days, 14)}-й день.`
     default:
       return ''
   }
@@ -120,6 +129,14 @@ const GLOBAL_ORDER = [
   'min_margin', 'max_step', 'min_frequency', 'no_decrease_anchor',
   'rounding', 'no_psychological', 'max_changes_per_cycle', 'min_competitive_idx',
 ]
+
+// Отдельным блоком: это не ограничение на цену, а настройка того, как потом
+// считается эффект. Смешивать с защитными правилами — путать разные вещи.
+const MEASUREMENT_ORDER = ['effect_measurement']
+
+// Зеркалит RULE_TYPE_SCOPES в pricing_rules_service.py: окно замера едино для
+// всей сети, иначе результаты по точкам несравнимы между собой.
+const GLOBAL_ONLY_RULES = new Set(['effect_measurement'])
 
 const SCOPE_LABELS: Record<string, string> = {
   global: 'Глобально', segment: 'Сегмент', department: 'Подразделение', product: 'Позиция',
@@ -139,6 +156,7 @@ function paramsSummary(rule: PricingRule): string {
     case 'rounding': return `${p.step ?? 50}₸ / ${p.flagship_step ?? 100}₸`
     case 'portfolio': return `${p.value ?? 15} / ${p.window_days ?? 14} дн.`
     case 'competitive': return `k ≥ ${p.value ?? 1}`
+    case 'measurement': return `${p.eval_days ?? 14} дн. / база ${p.baseline_days ?? 14} дн.`
     default: return JSON.stringify(p)
   }
 }
@@ -245,6 +263,46 @@ function ParamsEditor({
           <span className="text-sm text-muted-foreground">× медианы</span>
         </div>
       )
+    case 'measurement': {
+      const evalDays = Number(value.eval_days ?? 14)
+      const baseDays = Number(value.baseline_days ?? 14)
+      return (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Наблюдаем после, дней</Label>
+              <Input
+                type="number" step={1} min={7} max={90} className="w-28 h-8 tabular"
+                value={evalDays}
+                onChange={(e) => set({ eval_days: Number(e.target.value) || 0 })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Сравниваем с, дней до</Label>
+              <Input
+                type="number" step={1} min={7} max={90} className="w-28 h-8 tabular"
+                value={baseDays}
+                onChange={(e) => set({ baseline_days: Number(e.target.value) || 0 })}
+              />
+            </div>
+          </div>
+          {/* Главная ловушка: удлинять базу «заодно» с окном — обычно ошибка.
+              Длинная база захватывает чужие переоценки, контрольные точки
+              выкашиваются фильтром «цену не меняли», и мерить становится нечем. */}
+          <p className="text-xs" style={{ margin: 0, color: 'var(--text-muted)' }}>
+            Точность даёт период «до», а не длина наблюдения: удлинение наблюдения
+            увеличивает и сумму эффекта, и его разброс — пропорционально.
+          </p>
+          {baseDays > 21 && (
+            <p className="text-xs" style={{ margin: 0, color: 'var(--warn)', fontWeight: 600 }}>
+              Длинный период «до» рискует захватить прошлые переоценки в других точках.
+              Такие точки выпадают из сравнения — проверьте на вкладке «Результаты»,
+              что позиции не помечены «не измеримо».
+            </p>
+          )}
+        </div>
+      )
+    }
   }
 }
 
@@ -367,7 +425,7 @@ function CreateOverrideDialog({ open, onOpenChange }: { open: boolean; onOpenCha
             <Select value={ruleType} onValueChange={onRuleTypeChange}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {Object.keys(RULE_META).map((t) => (
+                {Object.keys(RULE_META).filter((t) => !GLOBAL_ONLY_RULES.has(t)).map((t) => (
                   <SelectItem key={t} value={t}>{RULE_META[t].label}</SelectItem>
                 ))}
               </SelectContent>
@@ -481,6 +539,28 @@ export function PricingRulesPage() {
                 impactCount={constraintStats.data?.by_constraint?.[t]}
               />
             ))}
+          </div>
+
+          {/* Как замеряется эффект — не ограничение на цену, поэтому отдельно */}
+          <div>
+            <div
+              className="text-xs"
+              style={{
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+                color: 'var(--text-subtle)', marginBottom: 8, fontWeight: 600,
+              }}
+            >
+              Замер эффекта
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+              {MEASUREMENT_ORDER.map((t) => (
+                <GlobalRuleCard
+                  key={`${t}:${globalByType.get(t)?.id ?? 'new'}`}
+                  ruleType={t}
+                  rule={globalByType.get(t) ?? null}
+                />
+              ))}
+            </div>
           </div>
 
           {/* Scoped overrides */}

@@ -788,11 +788,17 @@ def detect_applied_recommendations(
 @router.post("/outcomes/evaluate")
 def evaluate_outcomes_now(
     recompute: bool = Query(False, description="Пересчитать уже оценённые результаты"),
+    eval_days: Optional[int] = Query(None, ge=7, le=90, description="Разово переопределить окно замера"),
+    baseline_days: Optional[int] = Query(None, ge=7, le=90, description="Разово переопределить базу"),
     db: Session = Depends(get_db),
 ):
-    """Evaluate applied recs whose 14-day window elapsed (планировщик: 05:30)."""
+    """Оценить applied-рекомендации с истёкшим окном (планировщик: 05:30).
+
+    Без параметров окна берутся из правила effect_measurement («Правила цен»).
+    """
     from ..services.pricing_feedback_service import PricingFeedbackService
-    return PricingFeedbackService(db).evaluate_outcomes(recompute=recompute)
+    return PricingFeedbackService(db).evaluate_outcomes(
+        eval_window_days=eval_days, baseline_days=baseline_days, recompute=recompute)
 
 
 @router.get("/outcomes")

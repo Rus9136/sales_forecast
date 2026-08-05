@@ -15,15 +15,22 @@ logger = logging.getLogger(__name__)
 VALID_RULE_TYPES = {
     "min_margin", "max_step", "min_frequency", "no_decrease_anchor",
     "min_competitive_idx", "rounding", "no_psychological", "stop_list",
-    "max_changes_per_cycle",
+    "max_changes_per_cycle", "effect_measurement",
 }
 
 # допустимые scope по типу правила: max_changes_per_cycle читается только
 # get_change_cycle_cap (department/global) — segment/product-строки этого
-# типа молча игнорировались бы
+# типа молча игнорировались бы. effect_measurement — только global: разные
+# окна замера по точкам сделали бы результаты несравнимыми.
 RULE_TYPE_SCOPES: dict[str, set[str]] = {
     "max_changes_per_cycle": {"global", "department"},
+    "effect_measurement": {"global"},
 }
+
+# Границы окон замера. Меньше недели — день недели перекашивает сравнение;
+# больше 90 дней — в период неизбежно попадают чужие переоценки, и
+# контрольная группа выкашивается.
+MEASUREMENT_LIMITS = {"eval_days": (7, 90), "baseline_days": (7, 90)}
 VALID_SCOPE_TYPES = {"global", "segment", "department", "product"}
 
 PREMIUM_ROLES = {"premium_anchor", "image_rare"}
@@ -38,6 +45,7 @@ FAILSAFE_DEFAULTS: dict[str, dict[str, Any]] = {
     "max_step": {"value": 0.05},
     "min_frequency": {"days": 14},
     "rounding": {"step": 50, "flagship_step": 100},
+    "effect_measurement": {"eval_days": 14, "baseline_days": 14},
 }
 
 
@@ -116,6 +124,41 @@ class PricingRulesService:
             "value": int(params.get("value", 15)),
             "window_days": int(params.get("window_days", 14)),
         }
+
+    def get_measurement_window(self) -> dict[str, int]:
+        """Окна замера эффекта: {'eval_days': N, 'baseline_days': M}.
+
+        База и окно замера НЕ обязаны совпадать. Симметричное окно ломается на
+        длинных горизонтах: база уезжает назад и захватывает чужие переоценки,
+        после чего контрольные точки выкашиваются фильтром «цену не меняли».
+        База должна стоять на тихом участке, окно замера — тянуться вперёд.
+        """
+        today = date.today()
+        row = self.db.execute(
+            text("""
+                SELECT params FROM pricing_rule
+                WHERE rule_type = 'effect_measurement'
+                  AND scope_type = 'global' AND scope_id IS NULL
+                  AND is_active = true
+                  AND effective_from <= :today
+                  AND (effective_to IS NULL OR effective_to >= :today)
+                LIMIT 1
+            """),
+            {"today": today},
+        ).fetchone()
+
+        params = row[0] if row else FAILSAFE_DEFAULTS["effect_measurement"]
+        out: dict[str, int] = {}
+        for key, (lo, hi) in MEASUREMENT_LIMITS.items():
+            default = FAILSAFE_DEFAULTS["effect_measurement"][key]
+            try:
+                value = int(params.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            # выключенное или кривое правило не должно останавливать замер —
+            # молча возвращаемся к дефолту, как и прочие fail-safe правила
+            out[key] = min(max(value, lo), hi)
+        return out
 
     def check_recommendation(
         self,

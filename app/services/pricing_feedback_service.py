@@ -27,6 +27,9 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+# Окна замера настраиваются на экране «Правила цен» (правило effect_measurement).
+# Здесь — только дефолт на случай, если правила нет; см.
+# PricingRulesService.get_measurement_window().
 EVAL_WINDOW_DAYS = 14
 PRICE_MATCH_TOLERANCE = 0.01
 # детекция applied ограничена окном после approve: цены дискретны (сетка
@@ -91,6 +94,14 @@ class PricingFeedbackService:
     def __init__(self, db: Session):
         self.db = db
         self._estimator = None
+        self._rules = None
+
+    @property
+    def rules(self):
+        if self._rules is None:
+            from .pricing_rules_service import PricingRulesService
+            self._rules = PricingRulesService(self.db)
+        return self._rules
 
     @property
     def estimator(self):
@@ -188,14 +199,24 @@ class PricingFeedbackService:
 
     # -- 2. outcome evaluation -------------------------------------------------
 
-    def evaluate_outcomes(self, eval_window_days: int = EVAL_WINDOW_DAYS,
+    def evaluate_outcomes(self, eval_window_days: Optional[int] = None,
+                          baseline_days: Optional[int] = None,
                           recompute: bool = False) -> dict:
         """Evaluate applied recommendations whose eval window has fully elapsed.
 
         recompute=True пересчитывает уже оценённые строки — нужно после смены
         методики (миграция 036) и после дозагрузки продаж за пропущенный день,
         иначе старая цифра живёт в дашборде вечно.
+
+        Длины окон берутся из правила effect_measurement (экран «Правила цен»).
+        База и окно замера независимы: база должна стоять на тихом участке без
+        чужих переоценок, иначе контрольные точки выкашиваются фильтром «цену
+        не меняли» — при симметричных 30 днях контроль обнулялся полностью.
         """
+        window = self.rules.get_measurement_window()
+        eval_window_days = eval_window_days or window["eval_days"]
+        baseline_days = baseline_days or window["baseline_days"]
+
         if recompute:
             self.db.execute(
                 text("""
@@ -246,7 +267,7 @@ class PricingFeedbackService:
                 # failed state — все последующие итерации и финальный commit
                 # падали, и уже посчитанные outcome-строки ночи терялись
                 with self.db.begin_nested():
-                    outcome = self._evaluate_single(rec, eval_window_days)
+                    outcome = self._evaluate_single(rec, eval_window_days, baseline_days)
                 if outcome:
                     evaluated += 1
                     key = (outcome["department_id"], outcome["applied_at"])
@@ -322,7 +343,8 @@ class PricingFeedbackService:
             },
         )
 
-    def _evaluate_single(self, rec, eval_window_days: int) -> Optional[dict]:
+    def _evaluate_single(self, rec, eval_window_days: int,
+                         baseline_days: int) -> Optional[dict]:
         rec_id, product_id, dept_id, applied_at, old_price, new_price, cogs, weekly_delta_gp = rec
         old_price = float(old_price)
         new_price = float(new_price) if new_price is not None else old_price
@@ -331,7 +353,7 @@ class PricingFeedbackService:
         eval_from = applied_at
         eval_to = applied_at + timedelta(days=eval_window_days - 1)
         baseline_to = applied_at - timedelta(days=1)
-        baseline_from = applied_at - timedelta(days=eval_window_days)
+        baseline_from = applied_at - timedelta(days=baseline_days)
 
         windows = self.db.execute(
             text("""
