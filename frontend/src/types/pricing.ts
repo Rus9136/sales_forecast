@@ -377,18 +377,27 @@ export interface AuditLogResponse {
 
 // ── C4: Отчёты по ценам ────────────────────────────────────────────
 
-export type ReportType = 'weekly' | 'monthly'
+export type ReportType = 'weekly' | 'monthly' | 'effect'
 
 export interface PricingReportKpis {
-  gross_profit: number | null
-  gp_delta_pct: number | null
-  gp_margin: number | null
-  avg_receipt_sum: number | null
-  recs_approved: number
-  recs_applied: number
-  outcomes_evaluated: number
-  actual_delta_gp: number | null
-  hit_rate: number | null
+  // недельный / месячный отчёт
+  gross_profit?: number | null
+  gp_delta_pct?: number | null
+  gp_margin?: number | null
+  avg_receipt_sum?: number | null
+  recs_approved?: number
+  recs_applied?: number
+  outcomes_evaluated?: number
+  actual_delta_gp?: number | null
+  hit_rate?: number | null
+  // отчёт об эффекте решений: свой набор
+  positions?: number
+  cash?: number | null
+  effect?: number | null
+  expected?: number | null
+  confirmed?: number
+  /** Планка шума по «пустым» периодам: эффект меньше неё неотличим от совпадения. */
+  noise_floor?: number | null
 }
 
 export interface PricingReportListItem {

@@ -15,6 +15,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { DepartmentSelect } from '@/components/shared/department-select'
+import { Markdown } from '@/components/shared/markdown'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ErrorAlert } from '@/components/shared/error-alert'
@@ -28,7 +29,9 @@ import type { ReportType, PricingReportListItem } from '@/types/pricing'
 
 const ALL = '__all__'
 
-const TYPE_LABEL: Record<string, string> = { weekly: 'Недельный', monthly: 'Месячный' }
+const TYPE_LABEL: Record<string, string> = {
+  weekly: 'Недельный', monthly: 'Месячный', effect: 'Эффект решений',
+}
 
 function statusBadge(s: string): { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string } {
   if (s === 'ok') return { variant: 'default', label: 'Готов' }
@@ -85,14 +88,16 @@ export function PricingReportsPage() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div className="seg">
-          {[{ k: ALL, l: 'Все' }, { k: 'weekly', l: 'Недельные' }, { k: 'monthly', l: 'Месячные' }].map((t) => (
+          {[{ k: ALL, l: 'Все' }, { k: 'effect', l: 'Эффект решений' },
+            { k: 'weekly', l: 'Недельные' }, { k: 'monthly', l: 'Месячные' }].map((t) => (
             <button key={t.k} type="button" className={cn(typeFilter === t.k && 'active')} onClick={() => setTypeFilter(t.k)}>
               {t.l}
             </button>
           ))}
         </div>
         <span className="pricing-hint">
-          ИИ пишет сводку по итогам недели (пн 08:00) и месяца (1-е число): что сработало, что нет.
+          «Эффект решений» — разбор по точке: что дало изменение цен, с примерами и проверкой
+          на достоверность. Недельные и месячные сводки ИИ пишет сам (пн 08:00 и 1-е число).
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <Button variant="outline" onClick={() => reports.refetch()}>
@@ -148,6 +153,7 @@ export function PricingReportsPage() {
               <Select value={genType} onValueChange={(v) => setGenType(v as ReportType)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="effect">Эффект решений по точке</SelectItem>
                   <SelectItem value="weekly">Недельный (прошлая неделя)</SelectItem>
                   <SelectItem value="monthly">Месячный (прошлый месяц)</SelectItem>
                 </SelectContent>
@@ -155,7 +161,9 @@ export function PricingReportsPage() {
             </div>
             <DepartmentSelect value={genDept} onChange={setGenDept} includeInactive label="Охват (или вся сеть)" />
             <p className="text-xs text-muted-foreground">
-              Генерация зовёт LLM и занимает ~30–60 секунд. Числа берутся строго из данных за период.
+              {genType === 'effect'
+                ? 'Отчёт считается, а не пишется ИИ: все числа и выводы выводятся из данных. Нужно выбрать точку. Занимает ~10–20 секунд.'
+                : 'Генерация зовёт LLM и занимает ~30–60 секунд. Числа берутся строго из данных за период.'}
             </p>
           </div>
           <DialogFooter>
@@ -174,16 +182,40 @@ function ReportRow({ r, onOpen }: { r: PricingReportListItem; onOpen: () => void
   const k = r.kpis
   const sb = statusBadge(r.status)
   const gpUp = (k?.gp_delta_pct ?? 0) >= 0
+  // У отчёта об эффекте свой набор KPI: касса, эффект и сколько результатов
+  // подтверждено. Общие GP/ΔGP/hit-rate там просто отсутствуют.
+  const isEffect = r.report_type === 'effect'
+  const effect = k?.effect as number | undefined
   return (
     <TableRow className="cursor-pointer hover:bg-muted/40" onClick={onOpen}>
       <TableCell><Badge variant="outline">{TYPE_LABEL[r.report_type] ?? r.report_type}</Badge></TableCell>
       <TableCell className="text-sm whitespace-nowrap">{formatDate(r.period_start)} – {formatDate(r.period_end)}</TableCell>
       <TableCell className="text-sm">{r.scope === 'network' ? 'Вся сеть' : (r.department_name ?? 'Точка')}</TableCell>
-      <TableCell className="text-right tabular">{k?.gross_profit != null ? formatCurrency(k.gross_profit) : '—'}</TableCell>
-      <TableCell className="text-right tabular" style={{ color: gpUp ? 'var(--pos)' : 'var(--neg)' }}>
-        {fmtPctSigned(k?.gp_delta_pct)}
-      </TableCell>
-      <TableCell className="text-right tabular">{fmtRatioPct(k?.hit_rate)}</TableCell>
+      {isEffect ? (
+        <>
+          <TableCell className="text-right tabular" title="Изменение в кассе">
+            {k?.cash != null ? formatCurrency(k.cash as number) : '—'}
+          </TableCell>
+          <TableCell
+            className="text-right tabular"
+            title="Эффект решения о цене"
+            style={{ color: effect == null ? undefined : effect >= 0 ? 'var(--pos)' : 'var(--neg)' }}
+          >
+            {effect != null ? formatCurrency(effect) : '—'}
+          </TableCell>
+          <TableCell className="text-right tabular" title="Подтверждено измерением">
+            {k?.confirmed != null ? `${k.confirmed} из ${k.positions ?? '—'}` : '—'}
+          </TableCell>
+        </>
+      ) : (
+        <>
+          <TableCell className="text-right tabular">{k?.gross_profit != null ? formatCurrency(k.gross_profit) : '—'}</TableCell>
+          <TableCell className="text-right tabular" style={{ color: gpUp ? 'var(--pos)' : 'var(--neg)' }}>
+            {fmtPctSigned(k?.gp_delta_pct)}
+          </TableCell>
+          <TableCell className="text-right tabular">{fmtRatioPct(k?.hit_rate)}</TableCell>
+        </>
+      )}
       <TableCell className="text-center"><Badge variant={sb.variant}>{sb.label}</Badge></TableCell>
       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDateTime(r.created_at)}</TableCell>
     </TableRow>
@@ -229,8 +261,8 @@ function ReportDetailDialog({ id, onClose }: { id: number | null; onClose: () =>
             <div>
               <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">Сводка (ИИ)</div>
               {r.narrative ? (
-                <div className="prose prose-sm max-w-none whitespace-pre-wrap rounded-md p-4 text-sm" style={{ background: 'var(--surface-2)' }}>
-                  {r.narrative}
+                <div className="rounded-md p-4" style={{ background: 'var(--surface-2)' }}>
+                  <Markdown>{r.narrative}</Markdown>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">

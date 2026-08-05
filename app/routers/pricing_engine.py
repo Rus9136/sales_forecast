@@ -1265,8 +1265,26 @@ async def generate_report(
     provider: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    if report_type not in ("weekly", "monthly"):
-        raise HTTPException(400, "report_type must be 'weekly' or 'monthly'")
+    if report_type not in ("weekly", "monthly", "effect"):
+        raise HTTPException(400, "report_type must be 'weekly', 'monthly' or 'effect'")
+
+    # Отчёт об эффекте собирается расчётом, а не LLM: в нём три числа, которые
+    # легко перепутать (касса / эффект / уверенность), и пересказ моделью
+    # воспроизводил бы ровно ту ошибку, которую подсистема уже допускала.
+    if report_type == "effect":
+        if not department_id:
+            raise HTTPException(400, "department_id обязателен для отчёта об эффекте")
+        from ..services.pricing_effect_report import PricingEffectReportService
+        report = PricingEffectReportService(db).generate(department_id)
+        return {
+            "id": report.id,
+            "report_type": report.report_type,
+            "status": report.status,
+            "period_start": str(report.period_start),
+            "period_end": str(report.period_end),
+            "has_narrative": report.narrative is not None,
+        }
+
     from ..services.pricing_report_service import (
         PricingReportService, last_full_week, last_full_month,
     )
