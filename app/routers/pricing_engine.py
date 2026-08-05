@@ -786,10 +786,13 @@ def detect_applied_recommendations(
 
 
 @router.post("/outcomes/evaluate")
-def evaluate_outcomes_now(db: Session = Depends(get_db)):
+def evaluate_outcomes_now(
+    recompute: bool = Query(False, description="Пересчитать уже оценённые результаты"),
+    db: Session = Depends(get_db),
+):
     """Evaluate applied recs whose 14-day window elapsed (планировщик: 05:30)."""
     from ..services.pricing_feedback_service import PricingFeedbackService
-    return PricingFeedbackService(db).evaluate_outcomes()
+    return PricingFeedbackService(db).evaluate_outcomes(recompute=recompute)
 
 
 @router.get("/outcomes")
@@ -849,6 +852,11 @@ async def list_outcomes(
             "adj_qty_change_pct": _f(r.adj_qty_change_pct),
             "realized_elasticity": _f(r.realized_elasticity),
             "n_control_skus": r.n_control_skus,
+            "days_before": r.days_before,
+            "days_after": r.days_after,
+            "counterfactual_qty": _f(r.counterfactual_qty),
+            "incremental_delta_gp": _f(r.incremental_delta_gp),
+            "significance_z": _f(r.significance_z),
         }
         for r in rows
     ]
@@ -871,8 +879,11 @@ async def outcomes_summary(
             SELECT COUNT(*),
                    COALESCE(SUM(expected_delta_gp), 0),
                    COALESCE(SUM(actual_delta_gp), 0),
-                   COUNT(*) FILTER (WHERE actual_delta_gp > 0),
-                   AVG(realized_elasticity)
+                   COUNT(*) FILTER (WHERE incremental_delta_gp > 0),
+                   AVG(realized_elasticity),
+                   COALESCE(SUM(incremental_delta_gp), 0),
+                   COUNT(*) FILTER (WHERE ABS(significance_z) >= 2),
+                   COALESCE(SUM(incremental_delta_gp) FILTER (WHERE ABS(significance_z) >= 2), 0)
             FROM price_recommendation_outcome
             {dept_filter}
         """),
@@ -887,6 +898,10 @@ async def outcomes_summary(
         "positive_outcomes": row[3],
         "hit_rate": round(row[3] / total, 4) if total else None,
         "avg_realized_elasticity": float(row[4]) if row[4] is not None else None,
+        # эффект решения о цене, очищенный от фона категории (миграция 036)
+        "incremental_delta_gp": float(row[5]),
+        "significant_outcomes": row[6],
+        "significant_delta_gp": float(row[7]),
     }
 
 

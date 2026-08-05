@@ -35,6 +35,31 @@ PRICE_MATCH_TOLERANCE = 0.01
 APPLIED_DETECTION_WINDOW_DAYS = 30
 
 
+def compute_significance_z(
+    adj_qty_change_pct: Optional[float],
+    qty_before: float,
+    qty_after: float,
+    ctl_before: float,
+    ctl_after: float,
+) -> Optional[float]:
+    """z-оценка разности разностей по логарифму отношения ставок продаж.
+
+    SE(ln(rate ratio)) ≈ sqrt(1/n) для пуассоновского счётчика; четыре
+    независимых счётчика складываются в квадратах. Нужна потому, что штучный
+    торт продаётся 0.2–2 шт/день: «+8 штук за две недели» на глаз выглядит как
+    эффект, а на деле неотличимо от нуля.
+    """
+    if adj_qty_change_pct is None or adj_qty_change_pct <= -1.0:
+        return None
+    counts = [qty_before, qty_after, ctl_before, ctl_after]
+    if any(c <= 0 for c in counts):
+        return None
+    se = math.sqrt(sum(1.0 / c for c in counts))
+    if se <= 0:
+        return None
+    return round(math.log(1.0 + adj_qty_change_pct) / se, 4)
+
+
 def compute_realized_elasticity(
     qty_change_pct: float,
     control_qty_change_pct: Optional[float],
@@ -45,6 +70,10 @@ def compute_realized_elasticity(
 
     adj = (1 + own) / (1 + control) - 1;  ε = ln(1 + adj) / ln(P_new / P_old).
     Returns (adj_qty_change_pct, realized_elasticity); None where undefined.
+
+    Оба изменения ожидаются в среднесуточных ставках продаж, а не в сырых
+    суммах окон — иначе разное число рабочих дней (закрытие точки, праздник)
+    подмешивается в результат.
     """
     if control_qty_change_pct is not None and control_qty_change_pct > -1.0:
         adj = (1.0 + qty_change_pct) / (1.0 + control_qty_change_pct) - 1.0
@@ -150,8 +179,28 @@ class PricingFeedbackService:
 
     # -- 2. outcome evaluation -------------------------------------------------
 
-    def evaluate_outcomes(self, eval_window_days: int = EVAL_WINDOW_DAYS) -> dict:
-        """Evaluate applied recommendations whose eval window has fully elapsed."""
+    def evaluate_outcomes(self, eval_window_days: int = EVAL_WINDOW_DAYS,
+                          recompute: bool = False) -> dict:
+        """Evaluate applied recommendations whose eval window has fully elapsed.
+
+        recompute=True пересчитывает уже оценённые строки — нужно после смены
+        методики (миграция 036) и после дозагрузки продаж за пропущенный день,
+        иначе старая цифра живёт в дашборде вечно.
+        """
+        if recompute:
+            self.db.execute(
+                text("""
+                    DELETE FROM price_recommendation_outcome
+                    WHERE recommendation_id IN (
+                        SELECT pr.id FROM price_recommendation pr
+                        WHERE pr.status = 'applied'
+                          AND pr.applied_at IS NOT NULL
+                          AND pr.applied_at + :window <= CURRENT_DATE
+                    )
+                """),
+                {"window": eval_window_days},
+            )
+
         pending = self.db.execute(
             text("""
                 SELECT pr.id, pr.product_id, pr.department_id::text,
@@ -223,6 +272,26 @@ class PricingFeedbackService:
         if qty_before <= 0:
             return None  # нечего сравнивать — позиция не продавалась до изменения
 
+        # Рабочие дни ТОЧКИ, а не календарные: 12.07.2026 «Мадлен 18 мкр» не
+        # работала, база вышла 13 дней против 14 в оценке и завысила эффект на
+        # ~7.7%. Считаем по тому же источнику, что и qty, чтобы окна сходились.
+        days = self.db.execute(
+            text("""
+                SELECT COUNT(DISTINCT sale_date) FILTER (WHERE sale_date BETWEEN :bfrom AND :bto),
+                       COUNT(DISTINCT sale_date) FILTER (WHERE sale_date BETWEEN :efrom AND :eto)
+                FROM sku_daily_sales
+                WHERE department_id = CAST(:did AS uuid)
+                  AND sale_date BETWEEN :bfrom AND :eto
+            """),
+            {"did": dept_id, "bfrom": baseline_from, "bto": baseline_to,
+             "efrom": eval_from, "eto": eval_to},
+        ).fetchone()
+
+        days_before = int(days[0] or 0)
+        days_after = int(days[1] or 0)
+        if days_before <= 0 or days_after <= 0:
+            return None  # точка не работала в одном из окон — сравнивать нечего
+
         # Контрольная группа: та же категория и подразделение, без изменения
         # каталожной цены за весь период наблюдения.
         control = self.db.execute(
@@ -257,15 +326,41 @@ class PricingFeedbackService:
         ctl_before = float(control[0] or 0)
         ctl_after = float(control[1] or 0)
         n_control = int(control[2] or 0)
-        control_change = (ctl_after / ctl_before - 1.0) if ctl_before > 0 else None
 
-        qty_change = qty_after / qty_before - 1.0
+        # Всё в среднесуточных ставках продаж: дневные множители сокращаются в
+        # adj (отношение отношений), но каждое изменение по отдельности
+        # становится честным.
+        rate_before = qty_before / days_before
+        rate_after = qty_after / days_after
+        qty_change = rate_after / rate_before - 1.0
+
+        if ctl_before > 0:
+            ctl_rate_ratio = (ctl_after / days_after) / (ctl_before / days_before)
+            control_change = ctl_rate_ratio - 1.0
+        else:
+            ctl_rate_ratio = None
+            control_change = None
+
         adj_change, realized_eps = compute_realized_elasticity(
             qty_change, control_change, old_price, new_price,
+        )
+        significance_z = compute_significance_z(
+            adj_change, qty_before, qty_after, ctl_before, ctl_after,
         )
 
         gp_before = rev_before - cogs * qty_before
         gp_after = rev_after - cogs * qty_after
+
+        # Контрфакт: сколько бы продали за оценочное окно по старой цене, если
+        # бы позиция просто повторила динамику своей категории.
+        counterfactual_qty = rate_before * (ctl_rate_ratio or 1.0) * days_after
+        gp_counterfactual = counterfactual_qty * (old_price - cogs)
+        incremental_delta_gp = gp_after - gp_counterfactual
+
+        # «Что произошло в кассе», приведённое к равному числу рабочих дней.
+        # Фон категории здесь НЕ вычтен — это делает incremental_delta_gp.
+        actual_delta_gp = gp_after - gp_before * (days_after / days_before)
+
         expected_delta_gp = (
             float(weekly_delta_gp) * (eval_window_days / 7.0)
             if weekly_delta_gp is not None else None
@@ -280,7 +375,9 @@ class PricingFeedbackService:
                      revenue_before, revenue_after, gp_before, gp_after,
                      expected_delta_gp, actual_delta_gp,
                      qty_change_pct, control_qty_change_pct, adj_qty_change_pct,
-                     realized_elasticity, n_control_skus)
+                     realized_elasticity, n_control_skus,
+                     days_before, days_after, counterfactual_qty,
+                     incremental_delta_gp, significance_z)
                 VALUES
                     (:rec_id, :pid, CAST(:did AS uuid), :applied_at,
                      :window, :bfrom, :bto, :efrom, :eto,
@@ -288,7 +385,9 @@ class PricingFeedbackService:
                      :rev_before, :rev_after, :gp_before, :gp_after,
                      :expected_dgp, :actual_dgp,
                      :qty_change, :ctl_change, :adj_change,
-                     :realized_eps, :n_control)
+                     :realized_eps, :n_control,
+                     :days_before, :days_after, :cf_qty,
+                     :incremental_dgp, :sig_z)
                 ON CONFLICT (recommendation_id) DO NOTHING
             """),
             {
@@ -301,12 +400,17 @@ class PricingFeedbackService:
                 "rev_before": round(rev_before, 2), "rev_after": round(rev_after, 2),
                 "gp_before": round(gp_before, 2), "gp_after": round(gp_after, 2),
                 "expected_dgp": round(expected_delta_gp, 2) if expected_delta_gp is not None else None,
-                "actual_dgp": round(gp_after - gp_before, 2),
+                "actual_dgp": round(actual_delta_gp, 2),
                 "qty_change": round(qty_change, 4),
                 "ctl_change": round(control_change, 4) if control_change is not None else None,
                 "adj_change": adj_change,
                 "realized_eps": realized_eps,
                 "n_control": n_control,
+                "days_before": days_before,
+                "days_after": days_after,
+                "cf_qty": round(counterfactual_qty, 3),
+                "incremental_dgp": round(incremental_delta_gp, 2),
+                "sig_z": significance_z,
             },
         )
         return {"recommendation_id": rec_id}

@@ -130,6 +130,12 @@ class PriceRecommendationOutcome(Base):
     adj_qty_change_pct = Column(Numeric(8, 4))
     realized_elasticity = Column(Numeric(8, 4))
     n_control_skus = Column(Integer)
+    # миграция 036: нормировка на рабочие дни точки + эффект, очищенный от фона
+    days_before = Column(Integer)
+    days_after = Column(Integer)
+    counterfactual_qty = Column(Numeric(12, 3))
+    incremental_delta_gp = Column(Numeric(14, 2))
+    significance_z = Column(Numeric(8, 4))
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 

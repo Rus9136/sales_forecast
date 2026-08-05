@@ -415,8 +415,10 @@ export function useFreezeBaseline() {
 
 export function useEvaluateOutcomes() {
   const qc = useQueryClient()
+  // recompute=true: кнопка называется «Пересчитать», и от неё ждут именно
+  // пересчёта уже оценённых строк — иначе устаревшая цифра живёт вечно.
   return useMutation<{ status: string; pending: number; evaluated: number; skipped: number }, Error, void>({
-    mutationFn: () => api.post('/api/pricing-engine/outcomes/evaluate', undefined),
+    mutationFn: () => api.post('/api/pricing-engine/outcomes/evaluate?recompute=true', undefined),
     onSuccess: () => invalidateOutcomes(qc),
   })
 }

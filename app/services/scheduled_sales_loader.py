@@ -132,6 +132,28 @@ class ScheduledSalesLoaderService:
 
                 self.logger.info(f"Date {check_date}: {dept_count}/{expected_count} departments")
 
+                # Порог ниже ловит только массовые сбои. Пропуск по ОДНОЙ точке
+                # (12.07.2026, «Мадлен 18 мкр») проходил молча — и полгода спустя
+                # укоротил базовое окно в оценке ценового пилота на целый день.
+                # Ресинк тут не делаем: чаще это реальное закрытие точки, а не
+                # дыра синка. Но в логе такой день теперь виден поимённо.
+                if 0 < dept_count < expected_count:
+                    missing = db.query(Department.name).filter(
+                        Department.id.in_(active_dept_ids),
+                        ~Department.id.in_(
+                            db.query(SalesSummary.department_id).filter(
+                                SalesSummary.date == check_date
+                            )
+                        ),
+                    ).all()
+                    if missing:
+                        self.logger.warning(
+                            "Date %s: нет продаж по %d точкам из %d — %s "
+                            "(закрытие точки или дыра синка; влияет на окна сравнения)",
+                            check_date, len(missing), expected_count,
+                            ", ".join(m[0] for m in missing[:10]),
+                        )
+
                 # If significantly fewer departments than expected, resync
                 if dept_count < expected_count - 2 and dept_count < EXPECTED_MIN_DEPARTMENTS:
                     self.logger.warning(f"Missing data detected for {check_date}: only {dept_count} departments")

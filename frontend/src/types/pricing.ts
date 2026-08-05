@@ -186,6 +186,13 @@ export interface PriceOutcome {
   adj_qty_change_pct: number | null
   realized_elasticity: number | null
   n_control_skus: number | null
+  days_before: number | null
+  days_after: number | null
+  counterfactual_qty: number | null
+  /** Эффект решения о цене: факт минус контрфакт по контрольной группе. */
+  incremental_delta_gp: number | null
+  /** |z| >= 2 — эффект отличим от шума. */
+  significance_z: number | null
 }
 
 export interface PriceOutcomeResponse {
@@ -200,6 +207,9 @@ export interface OutcomeSummary {
   positive_outcomes: number
   hit_rate: number | null
   avg_realized_elasticity: number | null
+  incremental_delta_gp: number
+  significant_outcomes: number
+  significant_delta_gp: number
 }
 
 export interface BaselineItem {

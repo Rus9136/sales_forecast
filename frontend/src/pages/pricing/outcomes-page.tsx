@@ -41,13 +41,34 @@ function fmtNum(v: number | null | undefined): string {
   return v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
 }
 
-/** Вывод словами: как факт соотносится с планом. */
+/** Порог, за которым эффект перестаёт быть отличим от обычного разброса продаж. */
+const SIGNIFICANCE_Z = 2
+
+function isSignificant(o: PriceOutcome): boolean {
+  return o.significance_z != null && Math.abs(o.significance_z) >= SIGNIFICANCE_Z
+}
+
+/** Вывод словами: как очищенный эффект соотносится с планом. */
 function verdictOf(o: PriceOutcome): { label: string; cls: string } {
-  if (o.actual_delta_gp == null) return { label: 'В окне измерения', cls: 'verdict--muted' }
+  if (o.incremental_delta_gp == null) return { label: 'В окне измерения', cls: 'verdict--muted' }
+  // Сначала — хватило ли продаж. Штучный торт с разницей в 3 шт. за две недели
+  // даёт красивую цифру, за которой нет ничего, кроме случайности.
+  if (!isSignificant(o)) return { label: 'Не подтверждено', cls: 'verdict--muted' }
   const expected = o.expected_delta_gp ?? 0
-  if (o.actual_delta_gp >= expected) return { label: 'Лучше плана', cls: 'verdict--pos' }
-  if (o.actual_delta_gp >= 0) return { label: 'В плюсе, ниже плана', cls: 'verdict--warn' }
+  if (o.incremental_delta_gp >= expected) return { label: 'Лучше плана', cls: 'verdict--pos' }
+  if (o.incremental_delta_gp >= 0) return { label: 'В плюсе, ниже плана', cls: 'verdict--warn' }
   return { label: 'Хуже базы', cls: 'verdict--neg' }
+}
+
+function outcomeTooltip(o: PriceOutcome): string {
+  const parts = [
+    `Δ продаж за день (скорр.): ${fmtPctSigned(o.adj_qty_change_pct != null ? o.adj_qty_change_pct * 100 : null)}`,
+    `в кассе: ${o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}`,
+    `рабочих дней: ${o.days_before ?? '—'} → ${o.days_after ?? '—'}`,
+    `контроль: ${o.n_control_skus ?? '—'} позиций той же категории`,
+  ]
+  if (o.significance_z != null) parts.push(`запас надёжности: ${o.significance_z.toFixed(1)}σ`)
+  return parts.join(' · ')
 }
 
 function defaultBaselineLabel(): string {
@@ -87,8 +108,8 @@ export function PricingOutcomesPage() {
   }, [baseline.data])
 
   const s = summary.data
-  const actualVsExpected =
-    s && s.expected_delta_gp ? s.actual_delta_gp - s.expected_delta_gp : null
+  const effectVsExpected =
+    s && s.expected_delta_gp ? s.incremental_delta_gp - s.expected_delta_gp : null
 
   const runEvaluate = () => {
     setEvalResult(null)
@@ -138,7 +159,8 @@ export function PricingOutcomesPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span className="pricing-hint">
           Через 14 дней после применения цены система сравнивает факт с ожиданием — с поправкой
-          на <Term tip={GLOSSARY.controlGroup}>контрольную группу</Term>.
+          на <Term tip={GLOSSARY.controlGroup}>контрольную группу</Term> и на число
+          рабочих дней точки.
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <Button
@@ -192,42 +214,50 @@ export function PricingOutcomesPage() {
           </div>
         </div>
         <div className="kpi">
-          <div className="kpi__label">Фактический эффект</div>
+          <div className="kpi__label">
+            <Term tip={GLOSSARY.incrementalGp}>Эффект решений</Term>
+          </div>
           <div
             className="kpi__value"
-            style={{ color: s && s.actual_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)' }}
+            style={{ color: s && s.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)' }}
           >
-            {s ? formatCurrency(s.actual_delta_gp) : '—'}
+            {s ? formatCurrency(s.incremental_delta_gp) : '—'}
           </div>
           <div className="kpi__foot">
             <span style={{ fontSize: 11 }}>
               ожидали {s ? formatCurrency(s.expected_delta_gp) : '—'}
-              {actualVsExpected != null && ` (${actualVsExpected >= 0 ? '+' : ''}${formatCurrency(actualVsExpected)})`}
+              {effectVsExpected != null && ` (${effectVsExpected >= 0 ? '+' : ''}${formatCurrency(effectVsExpected)})`}
             </span>
           </div>
         </div>
         <div className="kpi">
           <div className="kpi__label">
-            <Term tip={GLOSSARY.hitRate}>Решений в цель</Term>
+            <Term tip={GLOSSARY.significance}>Подтверждено измерением</Term>
           </div>
           <div className="kpi__value">
             {s && s.total_evaluated > 0
-              ? `${fmtNum(s.positive_outcomes)} из ${fmtNum(s.total_evaluated)}`
+              ? `${fmtNum(s.significant_outcomes)} из ${fmtNum(s.total_evaluated)}`
               : '—'}
           </div>
           <div className="kpi__foot">
-            <span style={{ fontSize: 11 }}>{s?.hit_rate != null ? `${fmtRatioPct(s.hit_rate)} с приростом прибыли` : 'пока нечего оценивать'}</span>
+            <span style={{ fontSize: 11 }}>
+              {s && s.significant_outcomes > 0
+                ? `надёжный эффект ${formatCurrency(s.significant_delta_gp)}`
+                : 'по остальным продаж слишком мало'}
+            </span>
           </div>
         </div>
         <div className="kpi">
           <div className="kpi__label">
-            <Term tip={GLOSSARY.realizedElasticity}>Фактическая чувствительность</Term>
+            <Term tip={GLOSSARY.cashDeltaGp}>Изменение в кассе</Term>
           </div>
           <div className="kpi__value">
-            {s?.avg_realized_elasticity != null ? s.avg_realized_elasticity.toFixed(2) : '—'}
+            {s ? formatCurrency(s.actual_delta_gp) : '—'}
           </div>
           <div className="kpi__foot">
-            <span style={{ fontSize: 11 }}>средняя по применённым ценам</span>
+            <span style={{ fontSize: 11 }}>
+              {s?.hit_rate != null ? `${fmtRatioPct(s.hit_rate)} позиций в плюсе` : 'фон категории не вычтен'}
+            </span>
           </div>
         </div>
       </div>
@@ -284,7 +314,8 @@ export function PricingOutcomesPage() {
             <div>
               <div className="card__title">Измеренные результаты</div>
               <div className="card__sub">
-                Изменение продаж скорректировано на контрольную группу той же категории
+                Эффект очищен от фона категории и приведён к равному числу рабочих дней.
+                «Не подтверждено» — продаж мало, цифра в пределах обычного разброса
               </div>
             </div>
           </div>
@@ -301,7 +332,7 @@ export function PricingOutcomesPage() {
                     <TableHead>Позиция</TableHead>
                     <TableHead className="text-right">Цена</TableHead>
                     <TableHead className="text-right">Ожидание</TableHead>
-                    <TableHead className="text-right">Факт</TableHead>
+                    <TableHead className="text-right">Эффект</TableHead>
                     <TableHead className="text-center">Вывод</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -333,16 +364,19 @@ export function PricingOutcomesPage() {
                         <TableCell
                           className="text-right tabular"
                           style={{
-                            color: o.actual_delta_gp == null
+                            color: o.incremental_delta_gp == null
                               ? 'var(--text-muted)'
-                              : o.actual_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)',
-                            fontWeight: 600,
+                              : !isSignificant(o)
+                                ? 'var(--text-muted)'
+                                : o.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)',
+                            fontWeight: isSignificant(o) ? 600 : 400,
                           }}
+                          title={outcomeTooltip(o)}
                         >
-                          {o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}
+                          {o.incremental_delta_gp != null ? formatCurrency(o.incremental_delta_gp) : '—'}
                         </TableCell>
                         <TableCell className="text-center">
-                          <span className={`verdict ${v.cls}`} title={`Δ продаж (скорр.): ${fmtPctSigned(o.adj_qty_change_pct)} · факт. ε: ${o.realized_elasticity != null ? o.realized_elasticity.toFixed(2) : '—'}`}>
+                          <span className={`verdict ${v.cls}`} title={outcomeTooltip(o)}>
                             {v.label}
                           </span>
                         </TableCell>

@@ -64,7 +64,11 @@ class PricingReportService:
                 SELECT COUNT(*) AS n,
                        COALESCE(SUM(expected_delta_gp), 0) AS exp_gp,
                        COALESCE(SUM(actual_delta_gp), 0) AS act_gp,
-                       COUNT(*) FILTER (WHERE actual_delta_gp > 0) AS positive,
+                       COALESCE(SUM(incremental_delta_gp), 0) AS inc_gp,
+                       COUNT(*) FILTER (WHERE incremental_delta_gp > 0) AS positive,
+                       COUNT(*) FILTER (WHERE ABS(significance_z) >= 2) AS significant,
+                       COALESCE(SUM(incremental_delta_gp)
+                                FILTER (WHERE ABS(significance_z) >= 2), 0) AS sig_gp,
                        AVG(realized_elasticity) AS avg_eps
                 FROM price_recommendation_outcome
                 WHERE created_at::date BETWEEN :start AND :end
@@ -76,9 +80,15 @@ class PricingReportService:
         return {
             "evaluated": n,
             "expected_delta_gp": _f(r["exp_gp"]),
+            # эффект решения о цене, очищенный от фона категории — основная цифра
+            "incremental_delta_gp": _f(r["inc_gp"]),
+            # изменение по кассе (фон не вычтен), приведено к равному числу дней
             "actual_delta_gp": _f(r["act_gp"]),
             "positive": r["positive"] or 0,
             "hit_rate": round(r["positive"] / n, 4) if n else None,
+            # сколько результатов отличимо от шума и сколько денег за ними стоит
+            "significant": r["significant"] or 0,
+            "significant_delta_gp": _f(r["sig_gp"]),
             "avg_realized_elasticity": _f(r["avg_eps"]),
         }
 
@@ -194,7 +204,12 @@ class PricingReportService:
             "recs_approved": rec.get("approved", 0),
             "recs_applied": rec.get("applied", 0),
             "outcomes_evaluated": out.get("evaluated", 0),
+            # эффект решений о цене — очищенный от фона; кассовую дельту
+            # оставляем рядом, чтобы в отчёте не подменялись понятия
+            "incremental_delta_gp": out.get("incremental_delta_gp"),
             "actual_delta_gp": out.get("actual_delta_gp"),
+            "outcomes_significant": out.get("significant", 0),
+            "significant_delta_gp": out.get("significant_delta_gp"),
             "hit_rate": out.get("hit_rate"),
         }
 
