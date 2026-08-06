@@ -126,18 +126,49 @@ function fmtK(v: number): string {
   return String(Math.round(v))
 }
 
+/** Пояснение к каждому столбцу водопада — иначе средний читается наоборот. */
+const WATERFALL_EXPLAIN: Record<string, string> = {
+  'В кассе': 'На столько выросла прибыль по этим позициям против прошлых двух недель. Сравнение с собой в прошлом.',
+  'Минус рост сети': 'Те же блюда в других точках, где цену не меняли, за это время прибавили. Значит и наша прибыль выросла бы примерно настолько же, ничего не делай мы с ценой. Эту величину вычитаем из кассы.',
+  'Эффект': 'Что осталось на счёт самого решения о цене: насколько мы разошлись с ростом, который дала бы сеть.',
+}
+
+function WaterfallTip({ active, payload }: {
+  active?: boolean
+  payload?: Array<{ payload: { name: string; value: number } }>
+}) {
+  if (!active || !payload?.length) return null
+  const p = payload[0].payload
+  return (
+    <div style={{
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-pop)',
+      padding: '8px 11px', maxWidth: 280, fontSize: 12,
+    }}>
+      <div style={{ fontWeight: 600, marginBottom: 3 }}>
+        {p.name}: {formatCurrency(p.value)}
+      </div>
+      <div style={{ color: 'var(--text-muted)', lineHeight: 1.45 }}>
+        {WATERFALL_EXPLAIN[p.name]}
+      </div>
+    </div>
+  )
+}
+
 /**
- * Водопад: касса → фон сети → эффект.
+ * Водопад: касса → минус рост сети → эффект.
  *
- * Отвечает на вопрос «почему в кассе плюс, а эффект минус» без пояснений:
- * видно, что фон утянул бы позиции сильнее, чем они на самом деле сдвинулись.
+ * Средний столбец раньше назывался «Фон сети» и показывал −129 912 ₸, из чего
+ * читалось «сеть упала». Всё наоборот: сеть выросла на эту величину, и именно
+ * поэтому её вычитают из нашего прироста. Название теперь описывает действие,
+ * а не сущность, и под графиком стоит вся арифметика одной строкой.
  */
 function EffectWaterfall({ cash, effect }: { cash: number; effect: number }) {
   const background = effect - cash
   const data = [
     { name: 'В кассе', range: [Math.min(0, cash), Math.max(0, cash)], tone: cash >= 0 ? 'pos' : 'neg', value: cash },
     {
-      name: 'Фон сети',
+      name: 'Минус рост сети',
       range: [Math.min(cash, effect), Math.max(cash, effect)],
       tone: background >= 0 ? 'pos' : 'neg',
       value: background,
@@ -146,27 +177,26 @@ function EffectWaterfall({ cash, effect }: { cash: number; effect: number }) {
   ]
 
   return (
-    <div style={{ width: '100%', height: 190 }}>
-      <ResponsiveContainer>
-        <BarChart data={data} margin={{ top: 8, right: 12, bottom: 8, left: 4 }}>
-          <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--border)" />
-          <YAxis tickFormatter={fmtK} tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--border)" />
-          <ReferenceLine y={0} stroke="var(--border-strong)" />
-          <RTooltip
-            cursor={{ fill: 'var(--surface-2)' }}
-            contentStyle={{
-              background: 'var(--surface)', border: '1px solid var(--border)',
-              borderRadius: 8, fontSize: 12,
-            }}
-            formatter={(_v, _n, p) => [formatCurrency((p.payload as { value: number }).value), '']}
-          />
-          <Bar dataKey="range" radius={3}>
-            {data.map((d, i) => (
-              <Cell key={i} fill={d.tone === 'pos' ? 'var(--pos)' : 'var(--neg)'} fillOpacity={0.75} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+    <div>
+      <div style={{ width: '100%', height: 176 }}>
+        <ResponsiveContainer>
+          <BarChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--border)" />
+            <YAxis tickFormatter={fmtK} tick={{ fontSize: 11, fill: 'var(--chart-axis)' }} stroke="var(--border)" />
+            <ReferenceLine y={0} stroke="var(--border-strong)" />
+            <RTooltip cursor={{ fill: 'var(--surface-2)' }} content={<WaterfallTip />} />
+            <Bar dataKey="range" radius={3}>
+              {data.map((d, i) => (
+                <Cell key={i} fill={d.tone === 'pos' ? 'var(--pos)' : 'var(--neg)'} fillOpacity={0.75} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="text-xs" style={{ color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.5 }}>
+        {formatCurrency(cash)} в кассе − {formatCurrency(Math.abs(background))}{' '}
+        {background <= 0 ? 'роста сети' : 'падения сети'} = {formatCurrency(effect)}
+      </div>
     </div>
   )
 }
@@ -379,7 +409,8 @@ export function PricingOutcomesPage() {
               <div className="card__title">Откуда берётся итог</div>
               <div className="card__sub">
                 Прибыль выросла — но те же блюда в других точках за это время
-                выросли сильнее. Разница и есть эффект решения о цене
+                выросли сильнее, и этот рост мы бы получили и без всякого приказа.
+                Поэтому его вычитают. Что осталось — эффект решения о цене
                 {s.decomp_positions < s.total_evaluated
                   && ` · по ${s.decomp_positions} позициям из ${s.total_evaluated}, где эффект измерим`}
               </div>
@@ -390,13 +421,25 @@ export function PricingOutcomesPage() {
             <div className="space-y-2 text-sm">
               <Detail label="Прибыль была (за равное число дней)" value={formatCurrency(s.decomp_gp_before)} />
               <Detail label="Прибыль стала" value={formatCurrency(s.decomp_gp_after)} />
-              <Detail label="→ выросла на" value={formatCurrency(s.decomp_cash)} />
-              <div style={{ borderTop: '1px solid var(--border-faint)', margin: '6px 0' }} />
               <Detail
-                label="Была бы без изменения цены"
+                label={s.decomp_cash >= 0 ? '→ выросла на' : '→ снизилась на'}
+                value={formatCurrency(Math.abs(s.decomp_cash))}
+              />
+              <div style={{ borderTop: '1px solid var(--border-faint)', margin: '6px 0' }} />
+              {/* Ключевая строка: сеть выросла — вот на сколько. Без неё
+                  «была бы без изменения цены» выглядит числом с потолка. */}
+              <Detail
+                label="Те же блюда в других точках прибавили"
+                value={formatCurrency(Math.abs(s.decomp_cash - s.batch_effect_gp))}
+              />
+              <Detail
+                label="→ значит без нашего решения было бы"
                 value={formatCurrency(s.decomp_gp_after - s.batch_effect_gp)}
               />
-              <Detail label="→ не дотянули до неё на" value={formatCurrency(s.batch_effect_gp)} />
+              <Detail
+                label={s.batch_effect_gp >= 0 ? '→ превысили это на' : '→ не дотянули до этого на'}
+                value={formatCurrency(Math.abs(s.batch_effect_gp))}
+              />
             </div>
           </div>
         </div>
