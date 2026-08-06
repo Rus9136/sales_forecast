@@ -204,6 +204,9 @@ export interface PriceOutcome {
   control_qty_before: number | null
   control_qty_after: number | null
   control_trend: number | null
+  /** Дней окна выброшено из-за отсутствия товара. null — снимков остатков нет. */
+  days_no_stock_before: number | null
+  days_no_stock_after: number | null
   store_trend_adj: number | null
   effect_ci_low: number | null
   effect_ci_high: number | null

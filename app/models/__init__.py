@@ -16,7 +16,7 @@ from .pricing_analytics import SkuPriceHistory, SkuWeeklySummary, DepartmentWeek
 from .inventory import (  # noqa: F401
     Store, IikoAccount, Supplier, MeasureUnit,
     WriteoffDocument, WriteoffItem,
-    IncomingInvoice, IncomingInvoiceItem, InventorySyncLog,
+    IncomingInvoice, IncomingInvoiceItem, InventorySyncLog, SkuStockBalance,
 )
 from .pricing_engine import (  # noqa: F401
     SkuElasticity, PricingRule, PriceRecommendation,

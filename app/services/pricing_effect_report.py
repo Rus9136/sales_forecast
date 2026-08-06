@@ -224,8 +224,19 @@ class PricingEffectReportService:
         applied_at = min(i["applied_at"] for i in items)
         placebo = self._placebo(dept, applied_at, measurable)
 
+        # Наличие товара: дни без остатка выброшены из окон ещё в расчёте,
+        # здесь только считаем, сколько их было и проводилась ли проверка.
+        checked = [i for i in measurable if i["days_no_stock_after"] is not None]
+        no_stock_days = sum(int(i["days_no_stock_before"] or 0) + int(i["days_no_stock_after"] or 0)
+                            for i in checked)
+        no_stock_items = sum(1 for i in checked
+                             if (i["days_no_stock_before"] or 0) + (i["days_no_stock_after"] or 0) > 0)
+
         deltas = [float(i["delta_pct"]) for i in items if i["delta_pct"] is not None]
         return {
+            "stock_checked": len(checked),
+            "stock_no_days": no_stock_days,
+            "stock_no_items": no_stock_items,
             "department_id": dept,
             "department_name": dept_name,
             "applied_at": str(applied_at),
@@ -333,6 +344,23 @@ class PricingEffectReportService:
           f"с продажами. Цены в чеках сверены с приказом — считаем по тому, что реально "
           f"пробили на кассе, а не по тому, что написано в приказе.")
         A("")
+
+        # Дефицит — первое, чем объясняют упавшие продажи. Проверено по
+        # складским остаткам, а не по времени последнего чека: время чека
+        # обманывает (продажи обрывались в 12:43 при 14 штуках на складе).
+        if d.get("stock_checked"):
+            if d["stock_no_days"]:
+                A(f"Проверили по складским остаткам, был ли товар в наличии. "
+                  f"У {d['stock_no_items']} "
+                  f"{_plural(d['stock_no_items'], 'позиции', 'позиций', 'позиций')} "
+                  f"нашлось {d['stock_no_days']} "
+                  f"{_plural(d['stock_no_days'], 'день', 'дня', 'дней')}, когда продавать было "
+                  f"нечего — эти дни из расчёта выброшены, иначе дефицит записался бы на счёт "
+                  f"цены.")
+            else:
+                A("Проверили по складским остаткам: товар был в наличии все дни обоих окон "
+                  "по всем позициям. Падением продаж из-за дефицита результат не объясняется.")
+            A("")
         if d["measurable"] < n:
             skipped = n - d["measurable"]
             A(f"Из {n} позиций посчитать удалось {d['measurable']}. "

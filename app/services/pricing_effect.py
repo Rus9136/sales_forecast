@@ -59,6 +59,10 @@ MIN_CONTROL_STORES = 3
 MIN_CONTROL_QTY = 30.0          # штук в базовом окне по всей контрольной группе
 BOOTSTRAP_DRAWS = 2000
 CI_LEVEL = 0.90
+# Доля дней окна, в которые у позиции должен быть положительный остаток, чтобы
+# по остаткам вообще можно было судить о её наличии. Ниже порога снимок на
+# конец дня означает не дефицит, а быструю оборачиваемость.
+STOCK_SIGNAL_MIN_SHARE = 0.6
 
 
 @dataclass
@@ -76,6 +80,10 @@ class EffectResult:
     ci_low: Optional[float] = None
     ci_high: Optional[float] = None
     p_negative: Optional[float] = None
+    # Дни, выброшенные из окон из-за отсутствия товара. None — проверка не
+    # проводилась: за этот период снимков остатков нет.
+    days_no_stock_before: Optional[int] = None
+    days_no_stock_after: Optional[int] = None
 
 
 @dataclass
@@ -254,6 +262,73 @@ class PriceEffectEstimator:
         ).fetchall()
         return {r[0] for r in rows}
 
+    def _no_stock_days(self, product_id: int, dept_id: str,
+                       dfrom: date, dto: date) -> Optional[set[date]]:
+        """Дни, когда товара не было: пусто на складе И ни одной продажи.
+
+        Почему не просто «остаток ноль». В ответе iiko нулевых позиций нет
+        вовсе (нет строки = ноль), а отрицательные — есть, и их много: это
+        документы задним числом, а не пустая витрина. Если в такой день товар
+        всё-таки продавался, значит физически он был, и день информативен.
+        Выбрасываем только те дни, где спроса было не увидеть в принципе.
+
+        None означает «проверить нечем»: за период нет снимков остатков.
+        Это важно отличать от пустого множества — иначе непрогруженный период
+        читался бы как «дефицита не было».
+        """
+        covered = self.db.execute(
+            text("""SELECT COUNT(DISTINCT balance_date) FROM sku_stock_balance
+                    WHERE department_id = CAST(:d AS uuid)
+                      AND balance_date BETWEEN :dfrom AND :dto"""),
+            {"d": dept_id, "dfrom": dfrom, "dto": dto},
+        ).scalar() or 0
+        if covered < (dto - dfrom).days + 1:
+            return None
+
+        rows = self.db.execute(
+            text("""
+                WITH cal AS (
+                    SELECT generate_series(CAST(:dfrom AS date), CAST(:dto AS date),
+                                           INTERVAL '1 day')::date AS d
+                ),
+                stock AS (
+                    SELECT balance_date AS d FROM sku_stock_balance
+                    WHERE product_id = :pid AND department_id = CAST(:dept AS uuid)
+                      AND balance_date BETWEEN :dfrom AND :dto
+                    GROUP BY balance_date HAVING SUM(amount) > 0
+                ),
+                sold AS (
+                    SELECT sale_date AS d FROM sku_daily_sales
+                    WHERE product_id = :pid AND department_id = CAST(:dept AS uuid)
+                      AND sale_date BETWEEN :dfrom AND :dto AND total_qty > 0
+                )
+                SELECT cal.d, (SELECT COUNT(*) FROM stock) AS stock_days
+                FROM cal
+                WHERE cal.d NOT IN (SELECT d FROM stock)
+                  AND cal.d NOT IN (SELECT d FROM sold)
+            """),
+            {"pid": product_id, "dept": dept_id, "dfrom": dfrom, "dto": dto},
+        ).fetchall()
+        if not rows:
+            return set()
+
+        # Снимок берётся на конец дня, и для товара, который завозят и
+        # распродают в тот же день, он почти всегда нулевой. Пример с боевых
+        # данных: «Торт Молочная девочка маленький» — остаток на конец дня
+        # положительный лишь 6 дней из 28, при этом продажи идут почти каждый
+        # день. Для таких позиций ноль на конец дня означает «распродали», а не
+        # «не было, и правило выбросило бы как раз дни нулевого спроса — те,
+        # ради которых замер и делается.
+        #
+        # Поэтому по остаткам судим только о позициях, которые реально держат
+        # запас: остаток положителен на большей части дней окна. Блюда, которые
+        # готовят по заказу, на балансе не лежат вовсе и отсекаются тем же
+        # порогом.
+        total_days = (dto - dfrom).days + 1
+        if rows[0].stock_days < STOCK_SIGNAL_MIN_SHARE * total_days:
+            return None
+        return {r.d for r in rows}
+
     def _series(self, product_id: int, depts: set[str], dfrom: date, dto: date):
         if not depts:
             return {}
@@ -286,6 +361,24 @@ class PriceEffectEstimator:
         days_a = ctx.days_open(dept_id, cal_a)
         if not days_b or not days_a:
             return None, EffectResult(reason="точка не работала в одном из окон")
+
+        # Дни без товара выбрасываются из обоих окон. В такой день продажи
+        # нулевые не потому, что цена отпугнула, а потому, что продавать было
+        # нечего — оставлять их значит записывать дефицит на счёт решения.
+        # Выбрасываются симметрично: и из «до», и из «после», иначе смещение
+        # уедет в ту сторону, где дефицита случайно оказалось больше.
+        no_stock = self._no_stock_days(product_id, dept_id, baseline_from, eval_to)
+        oos_b = oos_a = None
+        if no_stock is not None:
+            oos_b = sum(1 for d in days_b if d in no_stock)
+            oos_a = sum(1 for d in days_a if d in no_stock)
+            kept_b = [d for d in days_b if d not in no_stock]
+            kept_a = [d for d in days_a if d not in no_stock]
+            # Если чистых дней не осталось, честнее считать по всем, чем не
+            # считать вовсе: дефицит на всём окне — это отдельный разговор,
+            # и он виден по счётчику.
+            if kept_b and kept_a:
+                days_b, days_a = kept_b, kept_a
 
         pilot = self._series(product_id, {dept_id}, baseline_from, eval_to)
         pilot_qty_b = np.array([pilot.get((dept_id, d), (0.0, 0.0))[0] for d in days_b])
@@ -329,7 +422,8 @@ class PriceEffectEstimator:
             control_method="cross_store", measurable=True,
             n_control_stores=len(control),
             control_qty_before=float(ctl_qty_b.sum()),
-            control_qty_after=float(ctl_qty_a.sum()))
+            control_qty_after=float(ctl_qty_a.sum()),
+            days_no_stock_before=oos_b, days_no_stock_after=oos_a)
 
     # -- перетасовка дней ------------------------------------------------
 
@@ -456,15 +550,22 @@ class PriceEffectEstimator:
             if np.isfinite(e):
                 point += float(e)
 
-        # дни в пачке общие: у всех позиций одна точка и одно окно
-        ref = panels[0]
-        ib, ia, jb, ja = self._draws_for(
-            len(ref.pilot_qty_b), len(ref.pilot_qty_a),
-            len(ref.ctl_qty_b), len(ref.ctl_qty_a))
-
+        # Дни в пачке общие — одна точка, одно окно, — поэтому перетасовка
+        # должна быть общей: иначе ошибки позиций считались бы независимыми и
+        # интервал вышел бы уже реального. Но с тех пор, как из окон
+        # выбрасываются дни без товара, длина рядов у позиций может
+        # различаться. Позиции с одинаковым набором дней (обычно это все)
+        # получают одну и ту же перетасовку; позиции с выброшенными днями —
+        # свою, по своей длине. Для них корреляция теряется, зато не ломается
+        # форма выборки, а вклад таких позиций мал.
+        draws_by_shape: dict[tuple, tuple] = {}
         total = np.zeros(self.draws, dtype=float)
         for p in panels:
-            e, *_ = effect_of(p, ib, ia, jb, ja)
+            shape = (len(p.pilot_qty_b), len(p.pilot_qty_a),
+                     len(p.ctl_qty_b), len(p.ctl_qty_a))
+            if shape not in draws_by_shape:
+                draws_by_shape[shape] = self._draws_for(*shape)
+            e, *_ = effect_of(p, *draws_by_shape[shape])
             total += np.nan_to_num(e, nan=0.0)
 
         lo, hi, p_neg = self._interval(total, self.draws // 2)

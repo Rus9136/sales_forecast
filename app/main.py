@@ -24,6 +24,7 @@ from .services.scheduled_waiter_loader import (
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.scheduled_inventory_loader import run_inventory_sync
+from .services.iiko_stock_loader import run_daily_stock_sync
 from .services.scheduled_pricing_analytics import run_pricing_analytics_aggregation, run_menu_clustering
 from .services.scheduled_pricing_engine import run_catalog_price_sync, run_elasticity_update, run_price_optimization, run_outcome_evaluation, run_pricing_weekly_report, run_pricing_monthly_report, run_price_order_sync
 from .services.scheduled_recipe_loader import run_recipe_sync
@@ -273,6 +274,18 @@ async def lifespan(app: FastAPI):
             minute=45,
             id='daily_inventory_sync',
             name='Daily Inventory Documents Sync',
+            replace_existing=True
+        )
+
+        # Остатки iiko отдаёт только срезом «на сейчас», истории у отчёта нет:
+        # не сняли вчерашний день — восстановить его будет уже нечем.
+        scheduler.add_job(
+            func=run_daily_stock_sync,
+            trigger="cron",
+            hour=2,
+            minute=50,
+            id='daily_stock_balance_sync',
+            name='Daily Stock Balance Snapshot',
             replace_existing=True
         )
 

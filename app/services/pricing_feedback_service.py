@@ -516,7 +516,8 @@ class PricingFeedbackService:
                      control_method, measurable, not_measurable_reason,
                      n_control_stores, control_qty_before, control_qty_after,
                      control_trend, store_trend_adj,
-                     effect_ci_low, effect_ci_high, p_negative, concept)
+                     effect_ci_low, effect_ci_high, p_negative, concept,
+                     days_no_stock_before, days_no_stock_after)
                 VALUES
                     (:rec_id, :pid, CAST(:did AS uuid), :applied_at,
                      :window, :bfrom, :bto, :efrom, :eto,
@@ -530,7 +531,8 @@ class PricingFeedbackService:
                      :ctl_method, :measurable, :reason,
                      :n_ctl_stores, :ctl_qb, :ctl_qa,
                      :ctl_trend, :store_adj,
-                     :ci_low, :ci_high, :p_neg, :concept)
+                     :ci_low, :ci_high, :p_neg, :concept,
+                     :oos_before, :oos_after)
                 ON CONFLICT (recommendation_id) DO NOTHING
             """),
             {
@@ -562,6 +564,8 @@ class PricingFeedbackService:
                 "ctl_qa": round(eff.control_qty_after, 3),
                 "ctl_trend": round(eff.control_trend, 4) if eff.control_trend is not None else None,
                 "store_adj": round(eff.store_trend_adj, 4) if eff.store_trend_adj is not None else None,
+                "oos_before": eff.days_no_stock_before,
+                "oos_after": eff.days_no_stock_after,
                 "ci_low": round(eff.ci_low, 2) if eff.ci_low is not None else None,
                 "ci_high": round(eff.ci_high, 2) if eff.ci_high is not None else None,
                 "p_neg": eff.p_negative,

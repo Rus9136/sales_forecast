@@ -1003,6 +1003,10 @@ async def list_outcomes(
             "control_qty_before": _f(r.control_qty_before),
             "control_qty_after": _f(r.control_qty_after),
             "control_trend": _f(r.control_trend),
+            # дни, выброшенные из окон из-за отсутствия товара; None — снимков
+            # остатков за период нет, проверка не проводилась
+            "days_no_stock_before": r.days_no_stock_before,
+            "days_no_stock_after": r.days_no_stock_after,
             "store_trend_adj": _f(r.store_trend_adj),
             "effect_ci_low": _f(r.effect_ci_low),
             "effect_ci_high": _f(r.effect_ci_high),

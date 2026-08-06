@@ -199,6 +199,48 @@ async def sync_inventory(
     return result
 
 
+@router.post("/stock/sync")
+async def sync_stock_balances(
+    from_date: date,
+    to_date: date,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Снять остатки по складам за каждый день периода.
+
+    iiko отдаёт остатки только срезом на момент времени — за прошлые даты
+    снимок ещё можно достать, но истории у отчёта нет, поэтому дальше их
+    держит наша таблица. Один день по сети — около секунды.
+    """
+    from ..services.iiko_stock_loader import IikoStockLoaderService
+
+    if from_date > to_date:
+        raise HTTPException(400, "from_date позже to_date")
+    if (to_date - from_date).days > 400:
+        raise HTTPException(400, "период больше 400 дней")
+
+    return await IikoStockLoaderService(db).sync_range(from_date, to_date)
+
+
+@router.get("/stock/coverage")
+def stock_coverage(
+    department_id: Optional[UUID] = None,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """За какие дни остатки вообще сняты. Без этого «нет остатка» и «нет
+    снимка» выглядят на графике одинаково."""
+    row = db.execute(
+        text("""
+            SELECT MIN(balance_date), MAX(balance_date), COUNT(DISTINCT balance_date)
+            FROM sku_stock_balance
+            WHERE (:dept IS NULL OR department_id = CAST(:dept AS uuid))
+        """),
+        {"dept": str(department_id) if department_id else None},
+    ).fetchone()
+    return {"from_date": str(row[0]) if row[0] else None,
+            "to_date": str(row[1]) if row[1] else None,
+            "days": row[2] or 0}
+
+
 @router.get("/sync/log")
 def sync_log(
     limit: int = Query(20, ge=1, le=200),

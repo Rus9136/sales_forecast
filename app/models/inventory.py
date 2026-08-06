@@ -156,6 +156,25 @@ class IncomingInvoiceItem(Base):
     is_additional_expense = Column(Boolean, nullable=False, default=False)
 
 
+class SkuStockBalance(Base):
+    """Остаток товара на складе на конец учётного дня.
+
+    iiko отдаёт только срез на момент времени, истории нет — снимок делается
+    ежедневно. Нулевые позиции сервер не присылает: отсутствие строки за
+    загруженный день означает нулевой остаток.
+    """
+
+    __tablename__ = "sku_stock_balance"
+
+    balance_date = Column(Date, primary_key=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("store.id"), primary_key=True)
+    product_id = Column(BigInteger, ForeignKey("product.id"), primary_key=True)
+    department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"))
+    amount = Column(Numeric(16, 3), nullable=False)
+    cost_sum = Column(Numeric(16, 2))
+    synced_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
 class InventorySyncLog(Base):
     __tablename__ = "inventory_sync_log"
 

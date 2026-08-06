@@ -157,6 +157,7 @@ sales_forecast/
 │       ├── forecast_postprocessing_service.py # Post-processing rules
 │       ├── error_analysis_service.py         # Error analysis
 │       ├── iiko_inventory_loader.py         # Списания (JSON) + приходные накладные (XML, потоково)
+│       ├── iiko_stock_loader.py             # Ежедневный снимок складских остатков (balance/stores)
 │       ├── inventory_analytics_service.py   # Аналитика списаний + петля поставка→продажа→списание
 │       ├── procurement_recommendation_service.py # Заявка на цех (newsvendor)
 │       ├── pricing_analytics_service.py     # A2: price history + weekly summary aggregation
@@ -397,7 +398,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 | `receipts.py` | Receipt, ReceiptItem | Чеки + позиции (партиционировано по open_date) |
 | `sku_forecast.py` | SkuDailySales, SkuForecast | Агрегированные продажи по SKU + хранение прогнозов |
 | `pricing_analytics.py` | SkuPriceHistory, SkuWeeklySummary, DepartmentWeeklySummary, SkuMenuRole, SkuCatalogPrice, PricingReport | Ценовые события, недельные агрегаты, роли меню, каталожные цены, LLM-отчёты (C4) |
-| `inventory.py` | Store, IikoAccount, Supplier, MeasureUnit, WriteoffDocument, WriteoffItem, IncomingInvoice, IncomingInvoiceItem, InventorySyncLog | Складской контур: акты списания и приходные накладные iiko |
+| `inventory.py` | Store, IikoAccount, Supplier, MeasureUnit, WriteoffDocument, WriteoffItem, IncomingInvoice, IncomingInvoiceItem, InventorySyncLog, SkuStockBalance | Складской контур: списания, приходные накладные, ежедневные остатки |
 | `branch.py` | Branch, Sale | Legacy модели + re-export всех остальных |
 
 **Backward compatibility:** Все импорты `from ..models.branch import X` продолжают работать через re-exports.
@@ -480,6 +481,8 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/inventory/order-recommendation` — Рекомендуемая заявка на цех (newsvendor: уровень сервиса = наценка позиции). **Только API — раздел из админки убран**
 - `/api/inventory/suppliers|stores` — Поставщики точки за период, склады подразделения
 - `/api/inventory/sync` — Загрузка списаний и накладных из iiko (POST, from_date, to_date, department_id?)
+- `/api/inventory/stock/sync` — Снимки складских остатков за период (POST, from_date, to_date)
+- `/api/inventory/stock/coverage` — За какие дни остатки сняты (GET, department_id?)
 - `/api/labor-demand/{department_id}/menu-mix` — Сигнал для TCO: роли меню, топ-блюда, загрузка цехов (GET, from_date, to_date, top_n)
 - `/api/labor-demand/{department_id}/forecast` — Сигнал для TCO: дневной спрос + почасовая кривая (GET, from_date, to_date)
 - `/api/labor-demand/{department_id}/elasticity-signal` — Сигнал для TCO: эластичность флагманов (GET, grade)
@@ -493,6 +496,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **02:15** — Daily receipts sync (per-dish OLAP)
 - **02:30** — Daily waiter sales sync (per-waiter OLAP)
 - **02:45** — Daily inventory documents sync (списания + приходные накладные, скользящее окно `INVENTORY_SYNC_LOOKBACK_DAYS`)
+- **02:50** — Daily stock balance snapshot (остатки по складам на конец дня → `sku_stock_balance`; у iiko это срез «на сейчас», истории нет — не сняли день, восстановить нечем)
 - **03:00 Sun** — Weekly model retraining (department-level)
 - **03:15 Sun** — Weekly menu role clustering (KMeans → sku_menu_role)
 - **03:20** — Daily catalog price sync (iiko orders → sku_catalog_price) + детекция applied-рекомендаций
