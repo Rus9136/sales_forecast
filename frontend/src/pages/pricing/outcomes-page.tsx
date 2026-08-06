@@ -35,6 +35,13 @@ function fmtPctSigned(value: number | null | undefined): string {
   return `${sign}${value.toFixed(1)}%`
 }
 
+/** Прирост продаж — целыми процентами: доли процента здесь ничего не решают. */
+function fmtGrowth(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const v = Math.round(value)
+  return v < 0 ? `−${Math.abs(v)}%` : `+${v}%`
+}
+
 function fmtRatioPct(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
   return (value * 100).toFixed(0) + '%'
@@ -57,27 +64,59 @@ function verdictOf(o: PriceOutcome): { label: string; cls: string } {
   if (o.incremental_delta_gp == null) return { label: 'В окне измерения', cls: 'verdict--muted' }
   // Штучный торт с разницей в 3 шт. за две недели даёт красивую цифру, за
   // которой нет ничего, кроме случайности. Пока интервал накрывает ноль —
-  // не установлен даже знак эффекта.
-  if (!isConfirmed(o)) return { label: 'Не подтверждено', cls: 'verdict--muted' }
+  // не установлен даже знак эффекта. «Не подтверждено» читалось как «провал»,
+  // поэтому формулировка та же, что в отчёте: цифра есть, но она мельче ошибки.
+  if (!isConfirmed(o)) return { label: 'В пределах погрешности', cls: 'verdict--muted' }
   const expected = o.expected_delta_gp ?? 0
   if (o.incremental_delta_gp >= expected) return { label: 'Лучше плана', cls: 'verdict--pos' }
   if (o.incremental_delta_gp >= 0) return { label: 'В плюсе, ниже плана', cls: 'verdict--warn' }
-  return { label: 'Хуже базы', cls: 'verdict--neg' }
+  return { label: 'В минусе', cls: 'verdict--neg' }
 }
 
+/**
+ * Подсказка при наведении. Раньше это была строка технических полей через
+ * точку («Δ продаж за день (очищ.)», «интервал», «z»), которую нельзя прочитать
+ * без знания методики. Теперь — несколько предложений, объясняющих ровно то,
+ * что человек и хочет понять: откуда взялся знак эффекта и можно ли ему верить.
+ */
 function outcomeTooltip(o: PriceOutcome): string {
   if (o.measurable === false) {
-    return `Эффект не оценивался: ${o.not_measurable_reason ?? 'не прошли ворота качества'}`
+    return 'Эффект не считали: продаж слишком мало, не с чем сравнивать. '
+      + 'Ноль вместо оценки был бы враньём, поэтому в итог позиция не входит.'
   }
-  const parts = [
-    `интервал: ${o.effect_ci_low != null ? formatCurrency(o.effect_ci_low) : '—'} … ${o.effect_ci_high != null ? formatCurrency(o.effect_ci_high) : '—'}`,
-    `Δ продаж за день (очищ.): ${fmtPctSigned(o.adj_qty_change_pct != null ? o.adj_qty_change_pct * 100 : null)}`,
-    `в кассе: ${o.actual_delta_gp != null ? formatCurrency(o.actual_delta_gp) : '—'}`,
-    `рабочих дней: ${o.days_before ?? '—'} → ${o.days_after ?? '—'}`,
-    `контроль: тот же товар в ${o.n_control_stores ?? '—'} точках`,
-  ]
-  if (o.p_negative != null) parts.push(`вероятность минуса: ${Math.round(o.p_negative * 100)}%`)
-  return parts.join(' · ')
+  if (o.incremental_delta_gp == null) {
+    return 'Замер ещё идёт. Результат появится через 14 дней после того, '
+      + 'как новая цена начала пробиваться в чеках.'
+  }
+
+  const ours = o.qty_change_pct != null ? o.qty_change_pct * 100 : null
+  const ctl = o.control_qty_change_pct != null ? o.control_qty_change_pct * 100 : null
+  const lines: string[] = []
+
+  if (ours != null && ctl != null) {
+    lines.push(
+      `Продажи за окно: ${fmtNum(o.qty_before)} → ${fmtNum(o.qty_after)} шт, это ${fmtGrowth(ours)} `
+      + `к прошлому периоду. То же блюдо в других точках (${o.n_control_stores ?? '—'}), где цену `
+      + `не меняли, дало ${fmtGrowth(ctl)}.`,
+    )
+    lines.push(
+      ours >= ctl
+        ? 'Мы прибавили больше сети — поэтому эффект в плюсе.'
+        : 'Сеть прибавила больше нас — поэтому эффект в минусе, хотя в кассе могло быть и больше денег.',
+    )
+  }
+  if (o.actual_delta_gp != null) {
+    lines.push(`В кассе по этой позиции: ${formatCurrency(o.actual_delta_gp)} — это сравнение с прошлым, без поправки на другие точки.`)
+  }
+  if (o.effect_ci_low != null && o.effect_ci_high != null) {
+    lines.push(
+      `Точность расчёта: от ${formatCurrency(o.effect_ci_low)} до ${formatCurrency(o.effect_ci_high)}. `
+      + (isConfirmed(o)
+        ? 'Ноль в этот разброс не попадает — значит знак эффекта установлен.'
+        : 'В разброс попадает и ноль, и плюс, и минус — при таких объёмах продаж их не различить.'),
+    )
+  }
+  return lines.join('\n')
 }
 
 /** Компактный формат для осей: 50 652 ₸ → «51к». */
@@ -408,8 +447,9 @@ export function PricingOutcomesPage() {
             <div>
               <div className="card__title">Измеренные результаты</div>
               <div className="card__sub">
-                Сравнение с теми же блюдами в других точках, где цену не меняли.
-                Под суммой — интервал; «Не подтверждено» значит, что он накрывает ноль
+                «У нас» и «в сети» — насколько изменились продажи в штуках: у этой точки
+                и у тех же блюд там, где цену не трогали. Эффект — разница между ними
+                в деньгах. Серая цифра значит «посчитали, но ручаться не можем»
               </div>
             </div>
           </div>
@@ -426,6 +466,12 @@ export function PricingOutcomesPage() {
                     <TableHead>Позиция</TableHead>
                     <TableHead className="text-right">Цена</TableHead>
                     <TableHead className="text-right">Ожидание</TableHead>
+                    <TableHead className="text-right">
+                      <Term tip={GLOSSARY.qtyGrowthOurs}>У нас</Term>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <Term tip={GLOSSARY.qtyGrowthControl}>В сети</Term>
+                    </TableHead>
                     <TableHead className="text-right">Эффект</TableHead>
                     <TableHead className="text-center">Вывод</TableHead>
                   </TableRow>
@@ -454,6 +500,17 @@ export function PricingOutcomesPage() {
                         </TableCell>
                         <TableCell className="text-right tabular">
                           {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
+                        </TableCell>
+                        {/* Две колонки, ради которых вся страница и читается:
+                            эффект — это разница между ними, а не «прибыль позиции». */}
+                        <TableCell className="text-right tabular whitespace-nowrap">
+                          {fmtGrowth(o.qty_change_pct != null ? o.qty_change_pct * 100 : null)}
+                        </TableCell>
+                        <TableCell
+                          className="text-right tabular whitespace-nowrap"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          {fmtGrowth(o.control_qty_change_pct != null ? o.control_qty_change_pct * 100 : null)}
                         </TableCell>
                         <TableCell
                           className="text-right tabular"
