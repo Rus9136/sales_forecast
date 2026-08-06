@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { FlaskConical, RefreshCw, Snowflake, Target } from 'lucide-react'
 import {
@@ -200,12 +200,19 @@ export function PricingOutcomesPage() {
   const genExp = useGenerateExperiments()
   const freeze = useFreezeBaseline()
 
-  // Network baseline row of the most recently created label.
-  const baselineNet = useMemo<BaselineItem | null>(() => {
-    const rows = (baseline.data?.items ?? []).filter((b) => b.scope === 'network')
+  // База той же точки, что выбрана в шапке. Раньше карточка всегда показывала
+  // сеть: пользователь выбирал «Мадлен 18 мкр», а видел средние по 43 точкам.
+  const baselineRow = useMemo<BaselineItem | null>(() => {
+    const rows = baseline.data?.items ?? []
     if (rows.length === 0) return null
-    return [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
-  }, [baseline.data])
+    const scoped = effectiveDepartmentId
+      ? rows.filter((b) => b.scope === 'department' && b.department_id === effectiveDepartmentId)
+      : []
+    const pool = scoped.length > 0 ? scoped : rows.filter((b) => b.scope === 'network')
+    if (pool.length === 0) return null
+    return [...pool].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+  }, [baseline.data, effectiveDepartmentId])
+  const baselineIsNetwork = baselineRow?.scope === 'network'
 
   const s = summary.data
   const effectVsExpected =
@@ -405,7 +412,10 @@ export function PricingOutcomesPage() {
                 <Term tip={GLOSSARY.baseline}>База сравнения</Term>
               </div>
               <div className="card__sub">
-                {baselineNet ? `${baselineNet.label} · ${baselineNet.weeks} нед.` : 'снимок показателей «до»'}
+                {baselineRow
+                  ? `${baselineIsNetwork ? 'вся сеть' : (baselineRow.department_name ?? 'точка')}`
+                    + ` · ${baselineRow.label} · ${baselineRow.weeks} нед.`
+                  : 'снимок показателей «до»'}
               </div>
             </div>
             <Target size={16} className="text-muted-foreground" />
@@ -413,14 +423,37 @@ export function PricingOutcomesPage() {
           <div style={{ padding: '14px 16px' }} className="space-y-2 text-sm">
             {baseline.isLoading ? (
               <LoadingSpinner />
-            ) : baselineNet ? (
+            ) : baselineRow ? (
               <>
-                <Detail label="Период" value={`${formatDate(baselineNet.baseline_from)} – ${formatDate(baselineNet.baseline_to)}`} />
-                <Detail label="Прибыль / неделю" value={formatCurrency(baselineNet.weekly_gp_avg)} />
-                <Detail label="Маржа" value={fmtRatioPct(baselineNet.gp_margin)} />
-                <Detail label="Средний чек" value={formatCurrency(baselineNet.avg_receipt_sum)} />
-                <Detail label="Активных позиций" value={fmtNum(baselineNet.active_skus)} />
-                <Detail label="Себестоимость известна" value={fmtRatioPct(baselineNet.cost_coverage)} />
+                <Detail label="Период" value={`${formatDate(baselineRow.baseline_from)} – ${formatDate(baselineRow.baseline_to)}`} />
+                <Detail
+                  label={
+                    <Term tip={baselineIsNetwork ? GLOSSARY.baselineWeeklyGpNetwork : GLOSSARY.baselineWeeklyGp}>
+                      {baselineIsNetwork ? 'Прибыль / неделю на точку' : 'Прибыль / неделю'}
+                    </Term>
+                  }
+                  value={formatCurrency(baselineRow.weekly_gp_avg)}
+                />
+                <Detail
+                  label={<Term tip={GLOSSARY.margin}>Маржа</Term>}
+                  value={fmtRatioPct(baselineRow.gp_margin)}
+                />
+                <Detail
+                  label={<Term tip={GLOSSARY.aov}>Средний чек</Term>}
+                  value={formatCurrency(baselineRow.avg_receipt_sum)}
+                />
+                <Detail
+                  label={
+                    <Term tip={baselineIsNetwork ? GLOSSARY.activeSkusNetwork : GLOSSARY.activeSkus}>
+                      {baselineIsNetwork ? 'Позиций по всем точкам' : 'Активных позиций'}
+                    </Term>
+                  }
+                  value={fmtNum(baselineRow.active_skus)}
+                />
+                <Detail
+                  label={<Term tip={GLOSSARY.costCoverage}>Себестоимость известна</Term>}
+                  value={fmtRatioPct(baselineRow.cost_coverage)}
+                />
                 <div style={{ paddingTop: 8 }}>
                   <Button size="sm" variant="outline" onClick={() => { setFreezeLabel(defaultBaselineLabel()); setFreezeOpen(true) }}>
                     <Snowflake className="h-4 w-4 mr-1" /> Зафиксировать новую базу…
@@ -621,7 +654,7 @@ export function PricingOutcomesPage() {
   )
 }
 
-function Detail({ label, value }: { label: string; value: string }) {
+function Detail({ label, value }: { label: ReactNode; value: string }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-muted-foreground">{label}</span>

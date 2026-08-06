@@ -48,6 +48,15 @@ def _actor_of(user: Optional[AppUser]) -> Optional[str]:
     return f"{label} ({user.phone})" if user.full_name else label
 
 
+def _parse_ids(raw: Optional[str]) -> Optional[list[int]]:
+    if not raw:
+        return None
+    try:
+        return [int(x.strip()) for x in raw.split(",") if x.strip()] or None
+    except ValueError:
+        raise HTTPException(400, "rec_ids must be comma-separated integers")
+
+
 # ==================== B4: Rules ====================
 
 @router.get("/rules")
@@ -772,6 +781,126 @@ async def list_audit_log(
     return {"items": items, "total": total}
 
 
+# ==================== Приказы: выгрузка утверждённых цен в iiko ====================
+
+def _price_order_service(db: Session):
+    from ..services.price_order_service import PriceOrderService
+    return PriceOrderService(db)
+
+
+def _order_error(e) -> HTTPException:
+    return HTTPException(e.http_status, {"code": e.code, "message": e.message})
+
+
+def _parse_effective_date(value: Optional[str]) -> date:
+    """По умолчанию — завтра: цена меняется на границе учётного дня, окна
+    замера не разрезают день пополам."""
+    from datetime import timedelta as _td
+    if not value:
+        return date.today() + _td(days=1)
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(400, "effective_date должен быть в формате YYYY-MM-DD")
+
+
+@router.get("/price-orders")
+async def list_price_orders(
+    department_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(50, le=500),
+    db: Session = Depends(get_db),
+):
+    """Журнал приказов об изменении цен."""
+    return {"items": _price_order_service(db).list_orders(department_id, status, limit)}
+
+
+@router.get("/price-orders/{order_id}")
+async def get_price_order(order_id: int, db: Session = Depends(get_db)):
+    from ..services.price_order_service import PriceOrderError
+    try:
+        return _price_order_service(db).get_order(order_id)
+    except PriceOrderError as e:
+        raise _order_error(e)
+
+
+@router.post("/price-orders/preview")
+async def preview_price_order(
+    department_id: str = Query(...),
+    effective_date: Optional[str] = Query(None, description="YYYY-MM-DD, по умолчанию завтра"),
+    rec_ids: Optional[str] = Query(None, description="Comma-separated ID рекомендаций"),
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Что уедет в iiko: позиции, исключённые с причинами, суммарный эффект.
+    Ничего не пишет и в iiko не ходит."""
+    from ..services.price_order_service import PriceOrderError
+    _require_section(user, "pricing.apply")
+    try:
+        return _price_order_service(db).build_preview(
+            department_id, _parse_effective_date(effective_date), _parse_ids(rec_ids))
+    except PriceOrderError as e:
+        raise _order_error(e)
+
+
+@router.post("/price-orders")
+async def create_price_order(
+    department_id: str = Query(...),
+    effective_date: Optional[str] = Query(None, description="YYYY-MM-DD, по умолчанию завтра"),
+    rec_ids: Optional[str] = Query(None, description="Comma-separated ID рекомендаций"),
+    dry_run: bool = Query(False, description="Собрать payload, но не отправлять"),
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Собрать и отправить приказ в iiko. Публикация цен в боевую кассу."""
+    from ..services.price_order_service import PriceOrderError
+    _require_section(user, "pricing.apply")
+    try:
+        return await _price_order_service(db).send_order(
+            department_id,
+            _parse_effective_date(effective_date),
+            _parse_ids(rec_ids),
+            created_by=str(user.id) if user else None,
+            actor=_actor_of(user),
+            dry_run=dry_run,
+        )
+    except PriceOrderError as e:
+        raise _order_error(e)
+
+
+@router.post("/price-orders/{order_id}/cancel")
+async def cancel_price_order(
+    order_id: int,
+    reason: Optional[str] = None,
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Отмена: удаление документа в iiko, а если приказ уже действует —
+    обратный приказ с прежними ценами."""
+    from ..services.price_order_service import PriceOrderError
+    _require_section(user, "pricing.apply")
+    try:
+        return await _price_order_service(db).cancel_order(
+            order_id, actor=_actor_of(user), reason=reason)
+    except PriceOrderError as e:
+        raise _order_error(e)
+
+
+@router.post("/price-orders/{order_id}/sync")
+async def sync_price_order(
+    order_id: int,
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Сверить статус приказа с iiko (могли провести или удалить руками)."""
+    from ..services.price_order_service import PriceOrderError
+    _require_section(user, "pricing.apply")
+    try:
+        return await _price_order_service(db).sync_order_status(order_id)
+    except PriceOrderError as e:
+        raise _order_error(e)
+
+
 # ==================== Feedback loop: applied + outcomes + baseline ====================
 
 @router.post("/recommendations/detect-applied")
@@ -1078,6 +1207,11 @@ def freeze_baseline(
     label: str = Query(..., description="Например 'pre-pilot-2026-06'"),
     weeks: int = Query(8, ge=2, le=26),
     force: bool = Query(False, description="Перезаписать существующий label"),
+    as_of: Optional[date] = Query(
+        None,
+        description="Отсчитывать окно не от сегодня, а от этой даты — "
+                    "чтобы пересчитать уже замороженный снимок за ТОТ ЖЕ период",
+    ),
     user: Optional[AppUser] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
@@ -1086,7 +1220,7 @@ def freeze_baseline(
     from ..services.pricing_feedback_service import PricingFeedbackService
     _require_section(user, "pricing.outcomes")
     result = PricingFeedbackService(db).freeze_baseline(label, weeks, force=force,
-                                                        actor=_actor_of(user))
+                                                        actor=_actor_of(user), as_of=as_of)
     if result.get("status") == "error" and result.get("code") in _CONFLICT_CODES:
         raise HTTPException(409, result.get("message"))
     return result

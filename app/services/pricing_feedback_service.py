@@ -123,6 +123,43 @@ class PricingFeedbackService:
         """
         from .pricing_audit import log_audit
 
+        # Сопоставление по документу (миграция 039): если цена уехала нашим
+        # приказом, каталог принесёт интервал с ЕГО document_id. Это точнее
+        # совпадения цены: applied_at = дата вступления приказа в силу, а не
+        # «когда мы заметили похожую цену». Совпадение по цене остаётся ниже
+        # фолбэком — цены правят и в обход системы.
+        by_document = self.db.execute(
+            text("""
+                WITH matches AS (
+                    SELECT DISTINCT ON (pr.id)
+                        pr.id, scp.date_from, scp.price
+                    FROM price_recommendation pr
+                    JOIN price_change_order o ON o.id = pr.order_id
+                    JOIN sku_catalog_price scp
+                        ON scp.product_id = pr.product_id
+                        AND scp.department_id = pr.department_id
+                        AND scp.document_id = o.iiko_document_id
+                        AND scp.price > 0
+                        AND NOT scp.is_stale
+                    WHERE pr.status = 'approved'
+                      AND o.status = 'sent'
+                      AND o.iiko_document_id IS NOT NULL
+                    ORDER BY pr.id, scp.date_from
+                )
+                UPDATE price_recommendation pr
+                SET status = 'applied',
+                    applied_at = m.date_from,
+                    applied_price = m.price
+                FROM matches m
+                WHERE pr.id = m.id
+                RETURNING pr.id
+            """),
+        )
+        applied_by_document = [r[0] for r in by_document.fetchall()]
+        for rid in applied_by_document:
+            log_audit(self.db, "recommendation", rid, "applied", actor=actor,
+                      details={"matched_by": "order_document"})
+
         result = self.db.execute(
             text("""
                 WITH matches AS (
@@ -156,11 +193,18 @@ class PricingFeedbackService:
 
         expired = self.db.execute(
             text("""
-                UPDATE price_recommendation
+                UPDATE price_recommendation pr
                 SET status = 'expired'
-                WHERE status = 'approved'
-                  AND reviewed_at < NOW() - make_interval(days => :window)
-                RETURNING id
+                WHERE pr.status = 'approved'
+                  AND pr.reviewed_at < NOW() - make_interval(days => :window)
+                  -- приказ уже уехал в iiko и ещё не вступил в силу: цена
+                  -- впереди, экспирировать такую рекомендацию нельзя
+                  AND NOT EXISTS (
+                      SELECT 1 FROM price_change_order o
+                      WHERE o.id = pr.order_id AND o.status = 'sent'
+                        AND o.effective_date >= CURRENT_DATE
+                  )
+                RETURNING pr.id
             """),
             {"window": APPLIED_DETECTION_WINDOW_DAYS},
         )
@@ -184,14 +228,18 @@ class PricingFeedbackService:
         expired_new = stale_new.rowcount
 
         self.db.commit()
+        applied_ids = applied_by_document + applied_ids
         if applied_ids or expired_ids or expired_new:
             logger.info(
-                "Detected %d applied recommendations: %s; expired %d stale approved, %d stale new",
-                len(applied_ids), applied_ids, len(expired_ids), expired_new,
+                "Detected %d applied recommendations (%d по документу приказа): %s; "
+                "expired %d stale approved, %d stale new",
+                len(applied_ids), len(applied_by_document), applied_ids,
+                len(expired_ids), expired_new,
             )
         return {
             "status": "ok",
             "applied": len(applied_ids),
+            "applied_by_document": len(applied_by_document),
             "ids": applied_ids,
             "expired_stale_approved": len(expired_ids),
             "expired_stale_new": expired_new,
@@ -531,12 +579,20 @@ class PricingFeedbackService:
     # -- 3. baseline freeze ----------------------------------------------------
 
     def freeze_baseline(self, label: str, weeks: int = 8, force: bool = False,
-                        actor: Optional[str] = None) -> dict:
+                        actor: Optional[str] = None,
+                        as_of: Optional[date] = None) -> dict:
         """Freeze per-department + network KPI over the last N complete ISO weeks.
 
         Повторный вызов с существующим label БЕЗ force — ошибка: «замороженная»
         пред-пилотная база молча пересчитывалась по свежим (пост-пилотным)
         данным, обнуляя точку отсчёта метрики «ΔGP vs baseline».
+
+        `as_of` сдвигает точку отсчёта окна: без него берутся последние N недель
+        от сегодня. Нужен, чтобы пересчитать УЖЕ замороженный снимок за тот же
+        период — витрины могли поехать задним числом (так и вышло: база от
+        10.06 попала на ошибку в себестоимости, исправленную 09.07, и держала
+        отрицательную валовую прибыль). Без этого параметра «пересчитать»
+        означало бы «заморозить другой период», то есть потерять точку отсчёта.
         """
         existing = self.db.execute(
             text("SELECT COUNT(*) FROM pricing_baseline_kpi WHERE label = :label"),
@@ -552,7 +608,7 @@ class PricingFeedbackService:
                 ),
             }
 
-        today = date.today()
+        today = as_of or date.today()
         last_monday = today - timedelta(days=today.weekday())
         baseline_to = last_monday - timedelta(days=1)        # воскресенье прошлой недели
         baseline_from = last_monday - timedelta(weeks=weeks)  # понедельник N недель назад
