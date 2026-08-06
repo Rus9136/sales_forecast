@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { FlaskConical, RefreshCw, Snowflake, Target } from 'lucide-react'
+import { ChevronDown, ChevronRight, FlaskConical, RefreshCw, Snowflake, Target } from 'lucide-react'
 import {
   Bar, BarChart, Cell, ReferenceLine, ResponsiveContainer,
   Tooltip as RTooltip, XAxis, YAxis,
@@ -222,6 +222,7 @@ export function PricingOutcomesPage() {
   const [freezeWeeks, setFreezeWeeks] = useState(8)
   const [freezeForce, setFreezeForce] = useState(false)
   const [freezeResult, setFreezeResult] = useState<string | null>(null)
+  const [baselineOpen, setBaselineOpen] = useState(false)
 
   const summary = useOutcomesSummary(effectiveDepartmentId)
   const outcomes = useOutcomes(effectiveDepartmentId)
@@ -445,30 +446,146 @@ export function PricingOutcomesPage() {
         </div>
       )}
 
-      {/* Baseline + outcomes */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
-        {/* Baseline card */}
-        <div className="card">
-          <div className="card__header">
-            <div>
-              <div className="card__title">
-                <Term tip={GLOSSARY.baseline}>База сравнения</Term>
-              </div>
-              <div className="card__sub">
-                {baselineRow
-                  ? `${baselineIsNetwork ? 'вся сеть' : (baselineRow.department_name ?? 'точка')}`
-                    + ` · ${baselineRow.label} · ${baselineRow.weeks} нед.`
-                  : 'снимок показателей «до»'}
-              </div>
+      {/* Outcomes table — на всю ширину: 8 колонок в двух третях экрана
+          не помещались, названия тортов переносились в три строки. */}
+      <div className="card">
+        <div className="card__header">
+          <div>
+            <div className="card__title">Измеренные результаты</div>
+            <div className="card__sub">
+              «У нас» и «в сети» — насколько изменились продажи в штуках: у этой точки
+              и у тех же блюд там, где цену не трогали. Эффект — разница между ними
+              в деньгах. Серая цифра значит «посчитали, но ручаться не можем»
             </div>
-            <Target size={16} className="text-muted-foreground" />
           </div>
-          <div style={{ padding: '14px 16px' }} className="space-y-2 text-sm">
+        </div>
+        {outcomes.isLoading ? (
+          <LoadingSpinner />
+        ) : items.length === 0 ? (
+          <EmptyState text="Оценённых результатов пока нет — они появляются через 14 дней после применения цены в iiko." />
+        ) : (
+          <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Применено</TableHead>
+                  <TableHead>Позиция</TableHead>
+                  <TableHead className="text-right">Цена</TableHead>
+                  <TableHead className="text-right">Ожидание</TableHead>
+                  <TableHead className="text-right">
+                    <Term tip={GLOSSARY.qtyGrowthOurs}>У нас</Term>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <Term tip={GLOSSARY.qtyGrowthControl}>В сети</Term>
+                  </TableHead>
+                  <TableHead className="text-right">Эффект</TableHead>
+                  <TableHead className="text-center">Вывод</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((o) => {
+                  const v = verdictOf(o)
+                  return (
+                    <TableRow key={o.id}>
+                      <TableCell className="text-sm whitespace-nowrap">{formatDate(o.applied_at)}</TableCell>
+                      <TableCell>
+                        <Link
+                          to={`/pricing/position/${o.product_id}/${o.department_id}`}
+                          state={fromPath}
+                          className="text-sm font-medium hover:underline"
+                          style={{ color: 'var(--accent)' }}
+                        >
+                          {o.product_name ?? `#${o.product_id}`}
+                        </Link>
+                        {o.department_name && (
+                          <div className="text-xs text-muted-foreground">{o.department_name}</div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right tabular whitespace-nowrap">
+                        {formatCurrency(o.old_price)} → {formatCurrency(o.new_price)}
+                      </TableCell>
+                      <TableCell className="text-right tabular">
+                        {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
+                      </TableCell>
+                      {/* Две колонки, ради которых вся страница и читается:
+                          эффект — это разница между ними, а не «прибыль позиции». */}
+                      <TableCell className="text-right tabular whitespace-nowrap">
+                        {fmtGrowth(o.qty_change_pct != null ? o.qty_change_pct * 100 : null)}
+                      </TableCell>
+                      <TableCell
+                        className="text-right tabular whitespace-nowrap"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        {fmtGrowth(o.control_qty_change_pct != null ? o.control_qty_change_pct * 100 : null)}
+                      </TableCell>
+                      <TableCell
+                        className="text-right tabular"
+                        style={{
+                          color: o.incremental_delta_gp == null || !isConfirmed(o)
+                            ? 'var(--text-muted)'
+                            : o.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)',
+                          fontWeight: isConfirmed(o) ? 600 : 400,
+                        }}
+                        title={outcomeTooltip(o)}
+                      >
+                        {o.incremental_delta_gp != null ? formatCurrency(o.incremental_delta_gp) : '—'}
+                        {o.effect_ci_low != null && o.effect_ci_high != null && (
+                          <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontWeight: 400 }}>
+                            {formatCurrency(o.effect_ci_low)} … {formatCurrency(o.effect_ci_high)}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className={`verdict ${v.cls}`} title={outcomeTooltip(o)}>
+                          {v.label}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+
+      {/* База сравнения — справка, а не рабочий инструмент: смотрят раз в
+          квартал, а карточка занимала треть ширины у главной таблицы. Свёрнутая
+          полоса внизу: заголовок отвечает «какая точка и какой период», цифры
+          раскрываются по клику. */}
+      <div className="card">
+        <button
+          type="button"
+          onClick={() => setBaselineOpen((v) => !v)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+            padding: '11px 16px', background: 'none', border: 'none',
+            cursor: 'pointer', textAlign: 'left', color: 'var(--text)',
+          }}
+        >
+          {baselineOpen
+            ? <ChevronDown size={15} className="text-muted-foreground" />
+            : <ChevronRight size={15} className="text-muted-foreground" />}
+          <Target size={15} className="text-muted-foreground" />
+          <span style={{ fontWeight: 600, fontSize: 13.5 }}>
+            <Term tip={GLOSSARY.baseline}>База сравнения</Term>
+          </span>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {baselineRow
+              ? `${baselineIsNetwork ? 'вся сеть' : (baselineRow.department_name ?? 'точка')}`
+                + ` · ${formatDate(baselineRow.baseline_from)} – ${formatDate(baselineRow.baseline_to)}`
+              : 'не зафиксирована'}
+          </span>
+        </button>
+        {baselineOpen && (
+          <div style={{ padding: '2px 16px 16px', borderTop: '1px solid var(--border-faint)' }}>
             {baseline.isLoading ? (
               <LoadingSpinner />
             ) : baselineRow ? (
-              <>
-                <Detail label="Период" value={`${formatDate(baselineRow.baseline_from)} – ${formatDate(baselineRow.baseline_to)}`} />
+              <div style={{
+                display: 'grid', gap: '10px 24px', paddingTop: 12,
+                gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+              }} className="text-sm">
                 <Detail
                   label={
                     <Term tip={baselineIsNetwork ? GLOSSARY.baselineWeeklyGpNetwork : GLOSSARY.baselineWeeklyGp}>
@@ -497,14 +614,10 @@ export function PricingOutcomesPage() {
                   label={<Term tip={GLOSSARY.costCoverage}>Себестоимость известна</Term>}
                   value={fmtRatioPct(baselineRow.cost_coverage)}
                 />
-                {/* Кнопки «Зафиксировать новую базу» здесь нет намеренно: точку
-                    отсчёта переставляют раз в несколько месяцев, а место она
-                    занимала постоянно. Осталась только в пустом состоянии ниже —
-                    там без неё раздел вообще не запустить. Разовая перезаморозка
-                    делается через POST /baseline/freeze (есть параметр as_of). */}
-              </>
+                <Detail label="Снимок" value={`${baselineRow.label} · ${baselineRow.weeks} нед.`} />
+              </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3" style={{ paddingTop: 12 }}>
                 <p className="text-sm text-muted-foreground">
                   База ещё не зафиксирована. Это снимок прибыли, маржи и среднего чека «до» —
                   с ним сравнивается весь эффект изменений цен.
@@ -515,109 +628,7 @@ export function PricingOutcomesPage() {
               </div>
             )}
           </div>
-        </div>
-
-        {/* Outcomes table */}
-        <div className="card">
-          <div className="card__header">
-            <div>
-              <div className="card__title">Измеренные результаты</div>
-              <div className="card__sub">
-                «У нас» и «в сети» — насколько изменились продажи в штуках: у этой точки
-                и у тех же блюд там, где цену не трогали. Эффект — разница между ними
-                в деньгах. Серая цифра значит «посчитали, но ручаться не можем»
-              </div>
-            </div>
-          </div>
-          {outcomes.isLoading ? (
-            <LoadingSpinner />
-          ) : items.length === 0 ? (
-            <EmptyState text="Оценённых результатов пока нет — они появляются через 14 дней после применения цены в iiko." />
-          ) : (
-            <div style={{ maxHeight: 480, overflowY: 'auto' }}>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Применено</TableHead>
-                    <TableHead>Позиция</TableHead>
-                    <TableHead className="text-right">Цена</TableHead>
-                    <TableHead className="text-right">Ожидание</TableHead>
-                    <TableHead className="text-right">
-                      <Term tip={GLOSSARY.qtyGrowthOurs}>У нас</Term>
-                    </TableHead>
-                    <TableHead className="text-right">
-                      <Term tip={GLOSSARY.qtyGrowthControl}>В сети</Term>
-                    </TableHead>
-                    <TableHead className="text-right">Эффект</TableHead>
-                    <TableHead className="text-center">Вывод</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((o) => {
-                    const v = verdictOf(o)
-                    return (
-                      <TableRow key={o.id}>
-                        <TableCell className="text-sm whitespace-nowrap">{formatDate(o.applied_at)}</TableCell>
-                        <TableCell>
-                          <Link
-                            to={`/pricing/position/${o.product_id}/${o.department_id}`}
-                            state={fromPath}
-                            className="text-sm font-medium hover:underline"
-                            style={{ color: 'var(--accent)' }}
-                          >
-                            {o.product_name ?? `#${o.product_id}`}
-                          </Link>
-                          {o.department_name && (
-                            <div className="text-xs text-muted-foreground">{o.department_name}</div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right tabular whitespace-nowrap">
-                          {formatCurrency(o.old_price)} → {formatCurrency(o.new_price)}
-                        </TableCell>
-                        <TableCell className="text-right tabular">
-                          {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
-                        </TableCell>
-                        {/* Две колонки, ради которых вся страница и читается:
-                            эффект — это разница между ними, а не «прибыль позиции». */}
-                        <TableCell className="text-right tabular whitespace-nowrap">
-                          {fmtGrowth(o.qty_change_pct != null ? o.qty_change_pct * 100 : null)}
-                        </TableCell>
-                        <TableCell
-                          className="text-right tabular whitespace-nowrap"
-                          style={{ color: 'var(--text-muted)' }}
-                        >
-                          {fmtGrowth(o.control_qty_change_pct != null ? o.control_qty_change_pct * 100 : null)}
-                        </TableCell>
-                        <TableCell
-                          className="text-right tabular"
-                          style={{
-                            color: o.incremental_delta_gp == null || !isConfirmed(o)
-                              ? 'var(--text-muted)'
-                              : o.incremental_delta_gp >= 0 ? 'var(--pos)' : 'var(--neg)',
-                            fontWeight: isConfirmed(o) ? 600 : 400,
-                          }}
-                          title={outcomeTooltip(o)}
-                        >
-                          {o.incremental_delta_gp != null ? formatCurrency(o.incremental_delta_gp) : '—'}
-                          {o.effect_ci_low != null && o.effect_ci_high != null && (
-                            <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontWeight: 400 }}>
-                              {formatCurrency(o.effect_ci_low)} … {formatCurrency(o.effect_ci_high)}
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <span className={`verdict ${v.cls}`} title={outcomeTooltip(o)}>
-                            {v.label}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Experiments dialog */}
