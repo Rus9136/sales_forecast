@@ -454,11 +454,11 @@ export function PricingOutcomesPage() {
                   label={<Term tip={GLOSSARY.costCoverage}>Себестоимость известна</Term>}
                   value={fmtRatioPct(baselineRow.cost_coverage)}
                 />
-                <div style={{ paddingTop: 8 }}>
-                  <Button size="sm" variant="outline" onClick={() => { setFreezeLabel(defaultBaselineLabel()); setFreezeOpen(true) }}>
-                    <Snowflake className="h-4 w-4 mr-1" /> Зафиксировать новую базу…
-                  </Button>
-                </div>
+                {/* Кнопки «Зафиксировать новую базу» здесь нет намеренно: точку
+                    отсчёта переставляют раз в несколько месяцев, а место она
+                    занимала постоянно. Осталась только в пустом состоянии ниже —
+                    там без неё раздел вообще не запустить. Разовая перезаморозка
+                    делается через POST /baseline/freeze (есть параметр as_of). */}
               </>
             ) : (
               <div className="space-y-3">
