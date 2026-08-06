@@ -63,7 +63,7 @@ export const navSections: NavSection[] = [
         icon: BadgePercent,
         section: 'pricing.dashboard',
         anySections: [
-          'pricing.dashboard', 'pricing.recommendations', 'pricing.outcomes',
+          'pricing.dashboard', 'pricing.recommendations', 'pricing.apply', 'pricing.outcomes',
           'pricing.reports', 'pricing.analytics', 'pricing.rules',
         ],
       },

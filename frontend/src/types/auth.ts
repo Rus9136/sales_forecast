@@ -16,6 +16,7 @@ export type SectionKey =
   | 'ai.recommendations'
   | 'pricing.dashboard'
   | 'pricing.recommendations'
+  | 'pricing.apply'
   | 'pricing.rules'
   | 'pricing.position_detail'
   | 'pricing.outcomes'

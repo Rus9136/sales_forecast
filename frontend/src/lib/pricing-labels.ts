@@ -144,3 +144,41 @@ export const AUDIT_DETAIL_LABELS: Record<string, string> = {
   delta_pct: 'Δ цены %',
   status: 'статус',
 }
+
+// ── Приказы в iiko ─────────────────────────────────────────────────
+
+/** Статус приказа у нас. «Отправляется» = ответ iiko не получен, судьбу решает сверка. */
+export const ORDER_STATUS_LABELS: Record<string, string> = {
+  draft: 'Черновик',
+  sending: 'Отправляется',
+  sent: 'Отправлен',
+  failed: 'Ошибка',
+  cancelled: 'Отменён',
+}
+
+export function orderStatusLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  return ORDER_STATUS_LABELS[status] ?? status
+}
+
+export function orderStatusBadgeVariant(
+  status: string | null | undefined,
+): 'default' | 'secondary' | 'destructive' | 'success' | 'outline' {
+  if (status === 'sent') return 'success'
+  if (status === 'failed') return 'destructive'
+  if (status === 'cancelled') return 'outline'
+  if (status === 'sending') return 'default'
+  return 'secondary'
+}
+
+/** Статус документа на стороне iiko: черновик ещё не влияет на кассу. */
+export const IIKO_DOC_STATUS_LABELS: Record<string, string> = {
+  NEW: 'Черновик в iiko',
+  PROCESSED: 'Проведён в iiko',
+  DELETED: 'Удалён в iiko',
+}
+
+export function iikoDocStatusLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  return IIKO_DOC_STATUS_LABELS[status] ?? status
+}

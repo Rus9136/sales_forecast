@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  ChevronDown, ChevronRight, Check, X, Search, Wand2, Download, ArrowUp, ArrowDown, Sparkles,
+  ChevronDown, ChevronRight, Check, X, Search, Wand2, Download, ArrowUp, ArrowDown, Sparkles, Send,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,7 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { LoadingSpinner } from '@/components/shared/loading-spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
+import { SendToIikoDialog } from '@/components/pricing/send-to-iiko-dialog'
 import { LlmExplanation } from '@/components/shared/llm-explanation'
 import { Term, GLOSSARY } from '@/components/shared/term'
 import {
@@ -67,9 +68,11 @@ function fmtCompact(value: number): string {
 }
 
 export function PricingRecommendationsPage() {
-  const { user } = useAuth()
+  const { user, hasSection } = useAuth()
   const reviewerId = user?.id
+  const canApply = hasSection('pricing.apply')
   const location = useLocation()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
 
   const { effectiveDepartmentId } = usePricingScope()
@@ -97,6 +100,7 @@ export function PricingRecommendationsPage() {
   const [generateConfirm, setGenerateConfirm] = useState(false)
   const [genResult, setGenResult] = useState<string | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
+  const [sendOpen, setSendOpen] = useState(false)
 
   // Поиск — серверный, с дебаунсом 350 мс
   useEffect(() => {
@@ -268,7 +272,16 @@ export function PricingRecommendationsPage() {
           })}
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Button variant="outline" onClick={handleExport} title="Скачать таблицу для загрузки цен в iiko">
+          {canApply && (
+            <Button
+              onClick={() => setSendOpen(true)}
+              disabled={!effectiveDepartmentId}
+              title="Создать приказ в iiko по утверждённым позициям"
+            >
+              <Send className="h-4 w-4 mr-2" /> Отправить в iiko
+            </Button>
+          )}
+          <Button variant="outline" onClick={handleExport} title="Скачать таблицу для ручной загрузки цен в iiko">
             <Download className="h-4 w-4 mr-2" /> {exportLabel}
           </Button>
           <Button
@@ -511,6 +524,13 @@ export function PricingRecommendationsPage() {
         confirmText={batchConfirm === 'approve' ? 'Утвердить' : 'Отклонить'}
         destructive={batchConfirm === 'reject'}
         onConfirm={runBatch}
+      />
+
+      <SendToIikoDialog
+        open={sendOpen}
+        onOpenChange={setSendOpen}
+        departmentId={effectiveDepartmentId}
+        onSent={() => navigate('/pricing/orders')}
       />
 
       {/* Generate confirm */}

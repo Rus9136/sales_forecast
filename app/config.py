@@ -44,6 +44,20 @@ class Settings(BaseSettings):
     # C4': сколько новых рекомендаций на подразделение объясняем LLM за ночной прогон
     PRICING_EXPLAIN_TOP_N: int = 10
 
+    # ── Автовыгрузка утверждённых цен в iiko (приказы menuChange) ────────
+    # Kill-switch: пока False, эндпоинты /price-orders отвечают 503.
+    IIKO_PRICE_PUSH_ENABLED: bool = False
+    # Белый список точек (CSV UUID). Пусто = разрешены все — включать только
+    # после пилота на одной точке.
+    IIKO_PRICE_PUSH_DEPARTMENTS: str = ""
+    # NEW — приказ приходит в бэк-офис черновиком, управляющий проводит его
+    # сам и видит, что мы прислали. PROCESSED — цена встаёт сама.
+    IIKO_PRICE_ORDER_STATUS: str = "NEW"
+    # Потолок позиций в одном приказе: больше — просят разбить на два.
+    IIKO_PRICE_ORDER_MAX_ITEMS: int = 40
+    # На сколько дней вперёд разрешено ставить дату вступления в силу.
+    IIKO_PRICE_ORDER_MAX_LEAD_DAYS: int = 14
+
     # UI auth bootstrap (creates first admin if none exists)
     BOOTSTRAP_ADMIN_PHONE: str = ""
     BOOTSTRAP_ADMIN_NAME: str = "Администратор"

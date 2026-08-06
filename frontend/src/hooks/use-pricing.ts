@@ -10,6 +10,10 @@ import type {
   OutcomeDailyResponse,
   OutcomeSummary,
   PriceHistoryResponse,
+  PriceOrderDetail,
+  PriceOrderListResponse,
+  PriceOrderPreview,
+  PriceOrderSendResult,
   PriceOutcomeResponse,
   PriceRecommendation,
   PriceRecommendationResponse,
@@ -593,6 +597,100 @@ export function useGeneratePricingReport() {
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['pricing', 'reports'] })
+    },
+  })
+}
+
+// ── Приказы: выгрузка утверждённых цен в iiko ──────────────────────
+
+export function usePriceOrders(filters: { department_id?: string; status?: string }) {
+  return useQuery<PriceOrderListResponse>({
+    queryKey: ['pricing', 'price-orders', filters],
+    queryFn: () =>
+      api.get<PriceOrderListResponse>('/api/pricing-engine/price-orders', {
+        department_id: filters.department_id,
+        status: filters.status,
+        limit: '100',
+      }),
+  })
+}
+
+export function usePriceOrder(id: number | null) {
+  return useQuery<PriceOrderDetail>({
+    queryKey: ['pricing', 'price-order', id],
+    queryFn: () => api.get<PriceOrderDetail>(`/api/pricing-engine/price-orders/${id}`),
+    enabled: id != null,
+  })
+}
+
+/** Предпросмотр: что уедет в iiko. POST, но ничего не меняет и в iiko не ходит. */
+export function usePriceOrderPreview(
+  params: { departmentId?: string; effectiveDate?: string },
+  options?: { enabled?: boolean },
+) {
+  return useQuery<PriceOrderPreview>({
+    queryKey: ['pricing', 'price-order-preview', params],
+    queryFn: () =>
+      api.post<PriceOrderPreview>('/api/pricing-engine/price-orders/preview', undefined, {
+        department_id: params.departmentId,
+        effective_date: params.effectiveDate,
+      }),
+    enabled: (options?.enabled ?? true) && !!params.departmentId,
+    staleTime: 0,
+  })
+}
+
+export function useSendPriceOrder() {
+  const qc = useQueryClient()
+  return useMutation<
+    PriceOrderSendResult,
+    Error,
+    { departmentId: string; effectiveDate: string; recIds?: number[] }
+  >({
+    mutationFn: ({ departmentId, effectiveDate, recIds }) =>
+      api.post('/api/pricing-engine/price-orders', undefined, {
+        department_id: departmentId,
+        effective_date: effectiveDate,
+        rec_ids: recIds?.length ? recIds.join(',') : undefined,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pricing', 'price-orders'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'price-order-preview'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'recommendations'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'recommendations-summary'] })
+    },
+  })
+}
+
+export function useCancelPriceOrder() {
+  const qc = useQueryClient()
+  return useMutation<
+    { status: string; order_id: number; method: string; reverse_order_id?: number },
+    Error,
+    { orderId: number; reason?: string }
+  >({
+    mutationFn: ({ orderId, reason }) =>
+      api.post(`/api/pricing-engine/price-orders/${orderId}/cancel`, undefined, { reason }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pricing', 'price-orders'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'price-order'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'recommendations'] })
+    },
+  })
+}
+
+export function useSyncPriceOrder() {
+  const qc = useQueryClient()
+  return useMutation<
+    { status: string; order_id: number; result: string; order_status: string; iiko_status?: string },
+    Error,
+    { orderId: number }
+  >({
+    mutationFn: ({ orderId }) =>
+      api.post(`/api/pricing-engine/price-orders/${orderId}/sync`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pricing', 'price-orders'] })
+      void qc.invalidateQueries({ queryKey: ['pricing', 'price-order'] })
     },
   })
 }

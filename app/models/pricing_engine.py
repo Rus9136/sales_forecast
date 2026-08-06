@@ -96,6 +96,69 @@ class PriceRecommendation(Base):
     review_comment = Column(Text)
     applied_at = Column(Date)
     applied_price = Column(Numeric(14, 2))
+    # миграция 039: приказ, которым цена уехала в iiko. Не статус —
+    # applied по-прежнему ставит detect_applied по факту каталога.
+    order_id = Column(BigInteger, ForeignKey("price_change_order.id"))
+    pushed_at = Column(DateTime)
+
+
+class PriceChangeOrder(Base):
+    """Приказ об изменении меню в iiko (миграция 039).
+
+    Один приказ = одна точка × одна дата вступления в силу. Партия
+    утверждённых рекомендаций уезжает в iiko документом menuChange —
+    тем же, что заводят руками в бэк-офисе.
+    """
+    __tablename__ = "price_change_order"
+    __table_args__ = (
+        # один живой приказ на точку и дату (миграция 039)
+        Index(
+            "uq_price_order_open", "department_id", "effective_date",
+            unique=True,
+            postgresql_where=text("status IN ('draft', 'sending', 'sent')"),
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=False)
+    iiko_source_domain = Column(Text, nullable=False)
+    effective_date = Column(Date, nullable=False)
+    status = Column(Text, nullable=False, default="draft", server_default=text("'draft'"))
+    iiko_status = Column(Text)
+    iiko_document_id = Column(UUID(as_uuid=True))
+    iiko_document_number = Column(Text)
+    n_items = Column(Integer, nullable=False, default=0)
+    request_payload = Column(JSONB, nullable=False)
+    response_payload = Column(JSONB)
+    error_message = Column(Text)
+    reverses_order_id = Column(BigInteger, ForeignKey("price_change_order.id"))
+    created_by = Column(UUID(as_uuid=True))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    sent_at = Column(DateTime)
+    cancelled_at = Column(DateTime)
+
+
+class PriceChangeOrderItem(Base):
+    """Позиция приказа (миграция 039). `old_price` — базис решения, по нему
+    строится обратный приказ при откате."""
+    __tablename__ = "price_change_order_item"
+    __table_args__ = (
+        Index(
+            "uq_price_order_item_rec", "recommendation_id",
+            unique=True,
+            postgresql_where=text("recommendation_id IS NOT NULL"),
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    order_id = Column(BigInteger, ForeignKey("price_change_order.id", ondelete="CASCADE"),
+                      nullable=False)
+    recommendation_id = Column(BigInteger, ForeignKey("price_recommendation.id"))
+    product_id = Column(BigInteger, nullable=False)
+    iiko_product_id = Column(UUID(as_uuid=True), nullable=False)
+    old_price = Column(Numeric(14, 2), nullable=False)
+    new_price = Column(Numeric(14, 2), nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class PriceRecommendationOutcome(Base):

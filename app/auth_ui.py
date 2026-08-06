@@ -178,6 +178,9 @@ AVAILABLE_SECTIONS = [
     "ai.recommendations",
     "pricing.dashboard",
     "pricing.recommendations",
+    # публикация цен в боевую кассу iiko (приказы) — право сильнее, чем
+    # «утвердить рекомендацию у нас», поэтому отдельная секция
+    "pricing.apply",
     "pricing.rules",
     "pricing.position_detail",
     "pricing.outcomes",
@@ -213,7 +216,8 @@ DEFAULT_ROLES = [
             "receipts.list", "receipts.stats",
             "inventory.writeoffs",
             "ai.recommendations",
-            "pricing.dashboard", "pricing.recommendations", "pricing.rules",
+            "pricing.dashboard", "pricing.recommendations", "pricing.apply",
+            "pricing.rules",
             "pricing.position_detail", "pricing.outcomes", "pricing.analytics",
             "pricing.reports",
             "sync",

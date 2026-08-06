@@ -21,7 +21,8 @@
 валовую прибыль (grid search с бизнес-правилами) → менеджер утверждает их в UI →
 система детектирует фактическое применение цены по каталогу iiko → через 14 дней
 считает фактический эффект против контрольной группы → LLM пишет объяснения и
-weekly/monthly отчёты. Автовыгрузки цен в iiko НЕТ — только XLSX для ручной загрузки.
+weekly/monthly отчёты. Утверждённые цены уезжают в iiko **приказом** (`menuChange`) по
+кнопке в UI; XLSX остаётся запасным путём.
 
 ## 2. Поток данных
 
@@ -49,7 +50,11 @@ iiko /v2/price ──▶ sku_catalog_price  ◀── АВТОРИТЕТНЫЙ �
                     price_recommendation  (оптимизатор 05:00 daily)
                                │  UI approve/reject (или эксперимент C/D)
                                ▼
-              детекция applied по каталогу (03:20, окно 30 дней)
+        price_change_order ──▶ POST /v2/documents/menuChange (кнопка «Отправить в iiko»)
+        (+ _item, сверка 03:25)      │
+                               ▼
+              детекция applied по каталогу (03:20, окно 30 дней;
+              приоритет — совпадение document_id нашего приказа)
                                ▼
               price_recommendation_outcome (оценка 05:30, окно 14 дней,
                                │            контрольная группа = категория)
@@ -76,6 +81,8 @@ iiko /v2/price ──▶ sku_catalog_price  ◀── АВТОРИТЕТНЫЙ �
 | `pricing_feedback_service.py` | FB: detect_applied, evaluate_outcomes, freeze_baseline |
 | `pricing_explanation_service.py` | C4': LLM-объяснение одной рекомендации (structured JSON) |
 | `pricing_report_service.py` | C4: weekly/monthly LLM-отчёты → `pricing_report` |
+| `iiko_menu_change_writer.py` | Транспорт к API приказов iiko (create/update/get/list, поиск сироты по маркеру). **POST не ретраится** |
+| `price_order_service.py` | Приказы: сборка из approved + ревалидация, отправка, отмена (delete/обратный приказ), сверка |
 | `pricing_audit.py` | `log_audit()` — единственная точка записи в аудит |
 | `pricing_jobs.py` | In-memory реестр фоновых джобов (`?background=true`) + `log_job_run` → `auto_sync_log` |
 | `scheduled_pricing_analytics.py` | Обёртки планировщика: агрегация 04:30, кластеризация вс 03:15 |
@@ -127,6 +134,8 @@ partial unique на открытые рекомендации.
 | `price_recommendation_outcome` | recommendation_id UNIQUE | Появляется через 14+ дней после applied. `realized_elasticity` — control-adjusted |
 | `pricing_rule` | (rule_type, scope_type, scope_id) UNIQUE + partial для global | params JSONB. Каскад: product > department > segment > global (первое совпадение по типу) |
 | `pricing_baseline_kpi` | (label, scope, dept) UNIQUE NULLS NOT DISTINCT | Перезапись label — только `force=true` (иначе 409) |
+| `price_change_order` | partial UNIQUE (dept, effective_date) WHERE status IN draft/sending/sent | Один приказ на точку и дату. `sending` = ответ iiko не получен, документ ищется по маркеру `SF#{id}` в комментарии — **POST не повторять** |
+| `price_change_order_item` | partial UNIQUE (recommendation_id) | `old_price` — базис решения, по нему строится обратный приказ при откате |
 | `pricing_audit_log` | — | **Append-only на уровне БД** (триггер 029). UPDATE/DELETE кинет исключение |
 
 ## 5. Scheduler (что и когда, все в `app/main.py` lifespan)
@@ -135,6 +144,7 @@ partial unique на открытые рекомендации.
 |---|---|---|
 | 03:15 вс | Кластеризация ролей меню | scheduled_pricing_analytics |
 | 03:20 ежедн. | Синк каталожных цен + detect_applied + экспирация протухших | scheduled_pricing_engine |
+| 03:25 ежедн. | Сверка приказов с iiko (провели/удалили руками, зависшие 'sending') | scheduled_pricing_engine |
 | 03:30 вс | Переоценка эластичности (lookback **730** — канонический, не менять в одном месте) | scheduled_pricing_engine |
 | 04:30 ежедн. | Витрины: price history (окно 8 дней ≥ окна gap check) + weekly | scheduled_pricing_analytics |
 | 05:00 ежедн. | Оптимизатор по всем активным точкам (продажи за 30 дней) | scheduled_pricing_engine |
@@ -223,7 +233,8 @@ UI НЕ отключает защиту (fail-safe, не fail-open). Каска�
 `/api/pricing-engine/`: `rules` CRUD+effective · `elasticity` list/summary/{id}/estimate ·
 `recommendations` list/summary/generate/review/batch-review/export(XLSX)/explain/explain-batch/
 detect-applied · `experiments/generate` · `outcomes` list/summary/evaluate ·
-`baseline` get/freeze · `audit-log` · `reports` list/{id}/generate · `jobs/{id}`.
+`baseline` get/freeze · `audit-log` · `reports` list/{id}/generate · `jobs/{id}` ·
+`price-orders` list/{id}/preview/create/{id}/cancel/{id}/sync.
 
 `/api/pricing-analytics/`: `price-history` · `sku-weekly` · `department-weekly` ·
 `aggregate` / `backfill` · `menu-roles` list/summary/override(PUT)/cluster.
@@ -239,7 +250,8 @@ detect-applied · `experiments/generate` · `outcomes` list/summary/evaluate ·
 2. **`X-Session-Token`** (опционально) — на мутирующих pricing-эндпоинтах:
    если заголовок есть → актор аудита = ФИО(телефон) пользователя, `reviewed_by` = его UUID
    (клиентский `reviewer_id` игнорируется), и проверяется секция роли
-   (`pricing.recommendations` для review, `pricing.rules` для правил,
+   (`pricing.recommendations` для review, `pricing.apply` для отправки цен в iiko,
+   `pricing.rules` для правил,
    `pricing.outcomes` для baseline, `pricing.analytics|position_detail` для ролей меню) → 403.
    Если заголовка нет (curl/автоматизация) → допускается, актор `'api'`. SPA шлёт оба.
 
@@ -303,6 +315,12 @@ venv/bin/python -m pytest tests/unit/test_pricing_engine.py -q
 - UPDATE/DELETE в `pricing_audit_log` (упадёт на триггере — так и задумано).
 - Менять lookback эластичности локально (канон 730, грейды зависят от окна).
 - Снимать fail-safe дефолты правил или partial unique `uq_price_rec_open`.
+- Делать `deletePreviousMenu=true` в приказе или выносить его в параметр API —
+  это исключит из меню точки всё, чего нет в документе.
+- Ретраить POST `menuChange` (в т.ч. «по таймауту») — повтор создаёт второй приказ
+  и цена уезжает дважды. Разбор обрыва — только через сверку по маркеру.
+- Отправлять позицию, у которой цена в каталоге разошлась с `current_price` рекомендации,
+  есть размеры или небазовая серия — только исключение с причиной.
 
 **ОБЯЗАТЕЛЬНО:**
 - Новые мутирующие эндпоинты: `Depends(get_optional_user)` + `_require_section` + актор в аудит.

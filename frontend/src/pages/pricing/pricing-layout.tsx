@@ -28,15 +28,17 @@ export const PRICING_TABS: PricingTab[] = [
     label: 'Рекомендации',
     children: [
       { path: '/pricing/recommendations', label: 'Рекомендации', section: 'pricing.recommendations' },
+      { path: '/pricing/orders', label: 'Приказы в iiko', section: 'pricing.apply' },
     ],
   },
-  {
-    label: 'Результаты',
-    children: [
-      { path: '/pricing/outcomes', label: 'Эффект цен', section: 'pricing.outcomes' },
-      { path: '/pricing/reports', label: 'Отчёты ИИ', section: 'pricing.reports' },
-    ],
-  },
+  // Временно скрыто (роуты/страницы сохранены — открыть = раскомментировать):
+  // {
+  //   label: 'Результаты',
+  //   children: [
+  //     { path: '/pricing/outcomes', label: 'Эффект цен', section: 'pricing.outcomes' },
+  //     { path: '/pricing/reports', label: 'Отчёты ИИ', section: 'pricing.reports' },
+  //   ],
+  // },
   {
     label: 'Аналитика',
     children: [

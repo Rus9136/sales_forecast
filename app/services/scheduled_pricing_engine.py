@@ -185,6 +185,31 @@ def run_recommendation_explanations():
         db.close()
 
 
+def run_price_order_sync():
+    """Сверка приказов с iiko. Schedule: daily 03:25 (после синка цен 03:20).
+
+    Ловит две ситуации: приказ провели или удалили руками в бэк-офисе, и
+    приказ, зависший в 'sending' после обрыва связи (документ-сирота ищется
+    по маркеру SF#{order_id} в комментарии).
+    """
+    import asyncio
+    logger.info("Starting price order status sync")
+    db = SessionLocal()
+    try:
+        from .price_order_service import PriceOrderService
+        result = asyncio.run(PriceOrderService(db).sync_pending())
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_order_sync", result, records=result.get("synced", 0))
+        return result
+    except Exception as e:
+        logger.error("Price order sync failed: %s", e, exc_info=True)
+        from .pricing_jobs import log_job_run
+        log_job_run("pricing_order_sync", {"status": "error", "message": str(e)})
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
 def run_price_optimization():
     """Daily price recommendation generation. Schedule: daily 05:00."""
     logger.info("Starting daily price optimization")

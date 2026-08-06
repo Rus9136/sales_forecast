@@ -27,6 +27,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   'ai.recommendations': 'Рекомендации ИИ',
   'pricing.dashboard': 'Ценообразование — дашборд',
   'pricing.recommendations': 'Ценообразование — рекомендации',
+  'pricing.apply': 'Ценообразование — отправка цен в iiko',
   'pricing.rules': 'Ценообразование — правила',
   'pricing.position_detail': 'Ценообразование — карточка позиции',
   'pricing.outcomes': 'Ценообразование — результаты пилота',

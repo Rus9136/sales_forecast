@@ -22,6 +22,7 @@ import { SyncPage } from '@/pages/sync-page'
 import { AIRecommendationsPage } from '@/pages/ai-recommendations-page'
 import { PricingDashboardPage } from '@/pages/pricing/dashboard-page'
 import { PricingRecommendationsPage } from '@/pages/pricing/recommendations-page'
+import { PricingOrdersPage } from '@/pages/pricing/orders-page'
 import { PricingPositionPage } from '@/pages/pricing/position-page'
 import { PricingRulesPage } from '@/pages/pricing/rules-page'
 import { PricingOutcomesPage } from '@/pages/pricing/outcomes-page'
@@ -105,6 +106,9 @@ export default function App() {
                     </Route>
                     <Route element={<ProtectedRoute section="pricing.recommendations" />}>
                       <Route path="/pricing/recommendations" element={<PricingRecommendationsPage />} />
+                    </Route>
+                    <Route element={<ProtectedRoute section="pricing.apply" />}>
+                      <Route path="/pricing/orders" element={<PricingOrdersPage />} />
                     </Route>
                     <Route element={<ProtectedRoute section="pricing.rules" />}>
                       <Route path="/pricing/rules" element={<PricingRulesPage />} />

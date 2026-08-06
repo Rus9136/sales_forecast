@@ -34,7 +34,7 @@ Sales Forecast API — система прогнозирования прода�
 - **ML Framework**: LightGBM (основной), XGBoost, CatBoost (сравнение)
 - **AI Recommendations**: Multi-agent анализ (Claude/OpenAI) — `app/services/ai/`, прямые SQL без MCP
 - **Deployment**: Docker + Docker Compose (3-stage build: Node.js → Python → final)
-- **Scheduler**: APScheduler (22 задачи: nomenclature, employees, sales, receipts, inventory documents, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, elasticity estimation, price optimization, outcome evaluation, recommendation LLM explanations, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
+- **Scheduler**: APScheduler (23 задачи: nomenclature, employees, sales, receipts, inventory documents, waiter sales, retrain, SKU retrain, recipes, menu clustering, catalog price sync + applied detection, iiko price order sync, elasticity estimation, price optimization, outcome evaluation, recommendation LLM explanations, weekly/monthly pricing LLM reports, metrics, pricing analytics, gap checks ×3)
 - **Auth**: API-ключи с SHA256 хешированием + in-memory rate limiting
 - **Logging**: Structured JSON (production) / plain-text (development) — `app/logging_config.py`
 - **Security**: CSP headers, X-Frame-Options, X-Content-Type-Options middleware
@@ -216,7 +216,8 @@ sales_forecast/
 | `/sync` | Синхронизация данных | POST `/api/sales/sync`, GET `/api/sales/auto-sync/status` |
 | `/ai-recommendations` | Мультиагентный анализ (Sales/Optimization/Narrative) + редактор промптов + история | `/api/ai-recommendations/*` (8 endpoints) |
 | `/pricing/dashboard` | Дашборд ценообразования (KPI, динамика) | GET `/api/pricing-analytics/department-weekly`, `/api/pricing-engine/recommendations/summary` |
-| `/pricing/recommendations` | Рекомендации цен (approve/reject + XLSX) | `/api/pricing-engine/recommendations*` |
+| `/pricing/recommendations` | Рекомендации цен (approve/reject + отправка в iiko + XLSX) | `/api/pricing-engine/recommendations*` |
+| `/pricing/orders` | Приказы в iiko (журнал, сверка, отмена) | `/api/pricing-engine/price-orders*` |
 | `/pricing/position/:productId/:departmentId` | Карточка позиции (C3) | price-history, sku-weekly, elasticity/{id}/{id}, menu-roles, recs/outcomes по SKU |
 | `/pricing/rules` | Правила цен (B4 UI) | `/api/pricing-engine/rules` CRUD |
 | `/pricing/outcomes` | Результаты пилота (FB) | `/api/pricing-engine/outcomes*`, `/baseline`, `/experiments/generate` |
@@ -273,6 +274,11 @@ API_BASE_URL=http://tco.aqnietgroup.com:5555/v1
 IIKO_LOGIN=<login>
 IIKO_PASSWORD=<password-hash>
 IIKO_DOMAINS=https://sandy-co-co.iiko.it,https://madlen-group-so.iiko.it
+
+# Автовыгрузка цен в iiko (приказы menuChange). Пилот: черновики на одной точке
+IIKO_PRICE_PUSH_ENABLED=False          # kill-switch, без него /price-orders → 503
+IIKO_PRICE_PUSH_DEPARTMENTS=           # белый список точек (CSV UUID), пусто = все
+IIKO_PRICE_ORDER_STATUS=NEW            # NEW = приказ-черновик; PROCESSED = цена встаёт сама
 
 # CORS
 ALLOWED_ORIGINS=https://aqniet.space
@@ -341,8 +347,8 @@ CLAUDE_MODEL=claude-sonnet-4-20250514
 
 Права ролей **редактируются через UI** (`/roles`) — admin отмечает чекбоксы. Имена системных ролей менять нельзя.
 
-### Section keys (25 шт)
-`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `inventory.writeoffs`, `ai.recommendations`, `pricing.dashboard`, `pricing.recommendations`, `pricing.rules`, `pricing.position_detail`, `pricing.outcomes`, `pricing.analytics`, `pricing.reports`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + `roles-page.tsx` (лейбл) + `home-redirect.tsx` (map+priority) + `App.tsx` (route) + `sidebar.tsx`. ⚠️ Системные роли (admin/manager) автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`); **несистемные роли** (pricing-роли C5) — НЕ мерджат, новый key им добавляется ручным SQL.
+### Section keys (26 шт)
+`dashboard`, `departments`, `employees`, `sales.daily`, `sales.hourly`, `sales.waiters`, `forecast.branches`, `forecast.comparison`, `forecast.sku`, `menu.products`, `menu.groups`, `receipts.list`, `receipts.stats`, `inventory.writeoffs`, `ai.recommendations`, `pricing.dashboard`, `pricing.recommendations`, `pricing.apply`, `pricing.rules`, `pricing.position_detail`, `pricing.outcomes`, `pricing.analytics`, `pricing.reports`, `sync`, `users`, `roles`. Список захардкожен в `app/auth_ui.py::AVAILABLE_SECTIONS` — при добавлении нового раздела нужно дописать туда + в `frontend/src/types/auth.ts::SectionKey` + `roles-page.tsx` (лейбл) + `home-redirect.tsx` (map+priority) + `App.tsx` (route) + `sidebar.tsx`. ⚠️ Системные роли (admin/manager) автоматически мерджат новые секции из `DEFAULT_ROLES` при старте (`seed_default_roles`); **несистемные роли** (pricing-роли C5) — НЕ мерджат, новый key им добавляется ручным SQL.
 
 ### Backend (`app/auth_ui.py`, `app/routers/users_ui.py`)
 - `get_current_user` (Depends) читает `X-Session-Token` (или `Authorization: Session <token>`) → валидирует `app_session` → возвращает `AppUser`
@@ -466,6 +472,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - `/api/pricing-engine/outcomes` — Пост-анализ applied-рекомендаций: факт vs ожидание, реализованная эластичность (GET, + /summary, + POST /evaluate)
 - `/api/pricing-engine/baseline` — KPI-база пилота (GET, + POST /freeze)
 - `/api/pricing-engine/audit-log` — Append-only журнал действий ценообразования (GET)
+- `/api/pricing-engine/price-orders` — Приказы об изменении цен в iiko: GET список/детали, POST создать+отправить (`?dry_run=true`), POST `/{id}/cancel` (удаление документа или обратный приказ), POST `/{id}/sync` (сверка с iiko)
 - `/api/pricing-engine/reports` — Weekly/Monthly LLM-отчёты (C4): GET список, GET `/{id}` детали, POST `/generate` (report_type weekly/monthly, department_id?, period?)
 - `/api/pricing-engine/jobs/{id}` — Статус фоновых джобов (`?background=true` на estimate/backfill)
 - `/api/inventory/writeoffs/summary|by-product|trend` — Аналитика списаний (склад × причина, топ позиций с долей потерь, понедельная динамика)
@@ -489,6 +496,7 @@ docker exec -it sales-forecast-db psql -U sales_user -d sales_forecast \
 - **03:00 Sun** — Weekly model retraining (department-level)
 - **03:15 Sun** — Weekly menu role clustering (KMeans → sku_menu_role)
 - **03:20** — Daily catalog price sync (iiko orders → sku_catalog_price) + детекция applied-рекомендаций
+- **03:25** — Daily iiko price order status sync (сверка приказов menuChange, добивка зависших)
 - **03:30 Sun** — Weekly price elasticity estimation (B2, lookback 730д → sku_elasticity)
 - **03:30 Sun** — Weekly recipe sync
 - **03:45 Sun** — Weekly SKU model retraining

@@ -424,3 +424,96 @@ export interface PricingReportListResponse {
   items: PricingReportListItem[]
   total: number
 }
+
+// ── Приказы: выгрузка утверждённых цен в iiko ──────────────────────
+
+/** draft — собран; sending — POST ушёл, ответ не получен; sent — документ создан. */
+export type PriceOrderStatus = 'draft' | 'sending' | 'sent' | 'failed' | 'cancelled'
+
+/** Статус документа на стороне iiko (NEW = черновик, PROCESSED = проведён). */
+export type IikoDocumentStatus = 'NEW' | 'PROCESSED' | 'DELETED'
+
+export interface PriceOrderPreviewItem {
+  recommendation_id: number
+  product_id: number
+  product_code: string | null
+  product_name: string | null
+  menu_role: string | null
+  rec_type: string | null
+  old_price: number | null
+  new_price: number | null
+  delta_pct: number | null
+  delta_gp: number | null
+  iiko_product_id?: string
+  catalog_document_id?: string | null
+  /** Заполнено только в excluded: почему позиция не идёт в приказ. */
+  reason?: string
+}
+
+export interface PriceOrderPreview {
+  department_id: string
+  department_name: string
+  iiko_source_domain: string
+  effective_date: string
+  iiko_order_status: IikoDocumentStatus
+  items: PriceOrderPreviewItem[]
+  excluded: PriceOrderPreviewItem[]
+  n_items: number
+  n_excluded: number
+  total_delta_gp: number
+  existing_order: { id: number; status: PriceOrderStatus; iiko_document_number: string | null } | null
+}
+
+export interface PriceOrderSendResult {
+  status: string
+  order_id: number
+  iiko_document_id: string | null
+  iiko_document_number: string | null
+  iiko_status: IikoDocumentStatus | null
+  n_items: number
+  n_excluded: number
+  excluded: PriceOrderPreviewItem[]
+  total_delta_gp: number
+  effective_date: string
+}
+
+export interface PriceOrderListItem {
+  id: number
+  department_id: string
+  department_name: string
+  effective_date: string
+  status: PriceOrderStatus
+  iiko_status: IikoDocumentStatus | null
+  iiko_document_id: string | null
+  iiko_document_number: string | null
+  n_items: number
+  n_applied: number
+  total_delta_gp: number | null
+  error_message: string | null
+  created_at: string
+  sent_at: string | null
+  cancelled_at: string | null
+  reverses_order_id: number | null
+}
+
+export interface PriceOrderItem {
+  id: number
+  recommendation_id: number | null
+  product_id: number
+  product_name: string | null
+  product_code: string | null
+  old_price: number | null
+  new_price: number | null
+  recommendation_status: RecommendationStatus | null
+  delta_gp: number | null
+  applied_at: string | null
+}
+
+export interface PriceOrderDetail extends PriceOrderListItem {
+  iiko_source_domain: string
+  items: PriceOrderItem[]
+}
+
+export interface PriceOrderListResponse {
+  items: PriceOrderListItem[]
+}
