@@ -241,8 +241,24 @@ function ReportDetailDialog({ id, onClose }: { id: number | null; onClose: () =>
           <EmptyState text="Не удалось загрузить отчёт" />
         ) : (
           <div className="space-y-4">
-            {/* KPI grid */}
-            {r.kpis && (
+            {/* KPI grid. У отчёта об эффекте свой набор: общие GP/маржа/hit-rate
+                для него не считаются и показывались бы восемью прочерками. */}
+            {r.kpis && (r.report_type === 'effect' ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                <MiniKpi label="Позиций" value={String(r.kpis.positions ?? '—')} foot={r.department_name ?? undefined} />
+                <MiniKpi label="Денег в кассе" value={r.kpis.cash != null ? formatCurrency(r.kpis.cash) : '—'}
+                  foot="против прошлых недель" footColor={(r.kpis.cash ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'} />
+                <MiniKpi label="Заслуга цены" value={r.kpis.effect != null ? formatCurrency(r.kpis.effect) : '—'}
+                  foot="против «если бы не меняли»" footColor={(r.kpis.effect ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'} />
+                <MiniKpi label="Погрешность" value={r.kpis.noise_floor != null ? `± ${formatCurrency(r.kpis.noise_floor)}` : '—'}
+                  foot="обычные колебания точки" />
+                <MiniKpi label="Ждали" value={r.kpis.expected != null ? formatCurrency(r.kpis.expected) : '—'}
+                  foot="расчёт при утверждении" />
+                <MiniKpi label="Видно точно"
+                  value={r.kpis.confirmed != null ? `${r.kpis.confirmed} из ${r.kpis.positions ?? '—'}` : '—'}
+                  foot="крупнее погрешности" />
+              </div>
+            ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
                 <MiniKpi label="GP" value={r.kpis.gross_profit != null ? formatCurrency(r.kpis.gross_profit) : '—'}
                   foot={fmtPctSigned(r.kpis.gp_delta_pct)} footColor={(r.kpis.gp_delta_pct ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'} />
@@ -255,11 +271,13 @@ function ReportDetailDialog({ id, onClose }: { id: number | null; onClose: () =>
                   footColor={(r.kpis.actual_delta_gp ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'} />
                 <MiniKpi label="Охват" value={r.scope === 'network' ? 'Сеть' : (r.department_name ?? 'Точка')} />
               </div>
-            )}
+            ))}
 
             {/* Narrative */}
             <div>
-              <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">Сводка (ИИ)</div>
+              <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">
+                {r.provider === 'calculated' ? 'Разбор' : 'Сводка (ИИ)'}
+              </div>
               {r.narrative ? (
                 <div className="rounded-md p-4" style={{ background: 'var(--surface-2)' }}>
                   <Markdown>{r.narrative}</Markdown>
@@ -272,7 +290,8 @@ function ReportDetailDialog({ id, onClose }: { id: number | null; onClose: () =>
             </div>
 
             <div className="text-xs text-muted-foreground">
-              {r.provider}{r.model ? ` · ${r.model}` : ''} · создан {formatDateTime(r.created_at)}
+              {r.provider === 'calculated' ? 'Посчитано по данным чеков, без ИИ' : r.provider}
+              {r.model ? ` · ${r.model}` : ''} · создан {formatDateTime(r.created_at)}
             </div>
           </div>
         )}
