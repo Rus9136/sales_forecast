@@ -177,6 +177,9 @@ export interface PriceOutcome {
   new_price: number
   qty_before: number | null
   qty_after: number | null
+  /** Выручка за окно замера: до изменения цены и после. */
+  revenue_before: number | null
+  revenue_after: number | null
   gp_before: number | null
   gp_after: number | null
   expected_delta_gp: number | null

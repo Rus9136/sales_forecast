@@ -978,6 +978,10 @@ async def list_outcomes(
             "new_price": _f(r.new_price),
             "qty_before": _f(r.qty_before),
             "qty_after": _f(r.qty_after),
+            # выручка за окно — «сколько на самом деле продали в деньгах»;
+            # прибыль без неё висит в воздухе
+            "revenue_before": _f(r.revenue_before),
+            "revenue_after": _f(r.revenue_after),
             "gp_before": _f(r.gp_before),
             "gp_after": _f(r.gp_after),
             "expected_delta_gp": _f(r.expected_delta_gp),

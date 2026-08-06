@@ -455,7 +455,8 @@ export function PricingOutcomesPage() {
             <div className="card__sub">
               «У нас» и «в сети» — насколько изменились продажи в штуках: у этой точки
               и у тех же блюд там, где цену не трогали. Эффект — разница между ними
-              в деньгах. Серая цифра значит «посчитали, но ручаться не можем»
+              в деньгах. Серая цифра значит «посчитали, но ручаться не можем»;
+              наведите на неё, чтобы увидеть точность расчёта
             </div>
           </div>
         </div>
@@ -471,13 +472,19 @@ export function PricingOutcomesPage() {
                   <TableHead>Применено</TableHead>
                   <TableHead>Позиция</TableHead>
                   <TableHead className="text-right">Цена</TableHead>
-                  <TableHead className="text-right">Ожидание</TableHead>
+                  <TableHead className="text-right">
+                    <Term tip={GLOSSARY.qtySold}>Продали</Term>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <Term tip={GLOSSARY.revenueFact}>Выручка</Term>
+                  </TableHead>
                   <TableHead className="text-right">
                     <Term tip={GLOSSARY.qtyGrowthOurs}>У нас</Term>
                   </TableHead>
                   <TableHead className="text-right">
                     <Term tip={GLOSSARY.qtyGrowthControl}>В сети</Term>
                   </TableHead>
+                  <TableHead className="text-right">Ожидание</TableHead>
                   <TableHead className="text-right">Эффект</TableHead>
                   <TableHead className="text-center">Вывод</TableHead>
                 </TableRow>
@@ -504,8 +511,17 @@ export function PricingOutcomesPage() {
                       <TableCell className="text-right tabular whitespace-nowrap">
                         {formatCurrency(o.old_price)} → {formatCurrency(o.new_price)}
                       </TableCell>
-                      <TableCell className="text-right tabular">
-                        {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
+                      {/* Сырые штуки и деньги: на них видно, что за красивой
+                          суммой эффекта стоит разница в один торт. */}
+                      <TableCell className="text-right tabular whitespace-nowrap">
+                        {o.qty_after != null
+                          ? `${fmtNum(o.qty_before)} → ${fmtNum(o.qty_after)} шт`
+                          : '—'}
+                      </TableCell>
+                      <TableCell className="text-right tabular whitespace-nowrap">
+                        {o.revenue_after != null
+                          ? `${fmtNum(o.revenue_before)} → ${formatCurrency(o.revenue_after)}`
+                          : '—'}
                       </TableCell>
                       {/* Две колонки, ради которых вся страница и читается:
                           эффект — это разница между ними, а не «прибыль позиции». */}
@@ -518,6 +534,9 @@ export function PricingOutcomesPage() {
                       >
                         {fmtGrowth(o.control_qty_change_pct != null ? o.control_qty_change_pct * 100 : null)}
                       </TableCell>
+                      <TableCell className="text-right tabular">
+                        {o.expected_delta_gp != null ? formatCurrency(o.expected_delta_gp) : '—'}
+                      </TableCell>
                       <TableCell
                         className="text-right tabular"
                         style={{
@@ -528,12 +547,11 @@ export function PricingOutcomesPage() {
                         }}
                         title={outcomeTooltip(o)}
                       >
+                        {/* Интервал («−16 393 ₸ … 46 711 ₸») из ячейки убран:
+                            две лишние суммы под каждой строкой читались как
+                            ещё какие-то деньги, а не как точность. Он остался
+                            в подсказке при наведении и в вердикте справа. */}
                         {o.incremental_delta_gp != null ? formatCurrency(o.incremental_delta_gp) : '—'}
-                        {o.effect_ci_low != null && o.effect_ci_high != null && (
-                          <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontWeight: 400 }}>
-                            {formatCurrency(o.effect_ci_low)} … {formatCurrency(o.effect_ci_high)}
-                          </div>
-                        )}
                       </TableCell>
                       <TableCell className="text-center">
                         <span className={`verdict ${v.cls}`} title={outcomeTooltip(o)}>
