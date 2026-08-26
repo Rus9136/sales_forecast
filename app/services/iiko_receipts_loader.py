@@ -408,6 +408,23 @@ class IikoReceiptsLoaderService:
 
                 receipts, items = self._parse_olap_rows(raw, host)
 
+                # iiko отдаёт чеки и по точкам, которых нет в нашем справочнике
+                # (открылась новая — справочник никто не пересинхронизировал).
+                # Один такой чек валил FK-ошибкой ВЕСЬ батч: с 06.08.2026 три
+                # недели не грузились чеки всей сети из-за двух новых точек.
+                # Пропускаем чужие точки, но громко — иначе потеря молчаливая.
+                unknown = {r["department_id"] for r in receipts
+                           if r["department_id"] not in dept_domain_map}
+                if unknown:
+                    dropped = sum(1 for r in receipts if r["department_id"] in unknown)
+                    receipts = [r for r in receipts if r["department_id"] not in unknown]
+                    items = [it for it in items if it["receipt_key"][0] not in unknown]
+                    logger.warning(
+                        "%s: skipped %d receipt(s) of %d unknown department(s) (%s) — "
+                        "sync departments and re-run this period to pick them up",
+                        host, dropped, len(unknown), ", ".join(sorted(unknown)),
+                    )
+
                 # Resolve FKs
                 dish_ids = {it["iiko_dish_id"] for it in items if it.get("iiko_dish_id")}
                 product_map = self._build_product_map(host, dish_ids)

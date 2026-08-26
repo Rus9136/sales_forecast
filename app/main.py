@@ -21,6 +21,7 @@ from .services.scheduled_waiter_loader import (
     run_waiter_gap_check,
     run_waiter_sales_sync,
 )
+from .services.scheduled_department_loader import run_department_sync
 from .services.scheduled_nomenclature_loader import run_nomenclature_sync
 from .services.scheduled_receipts_loader import run_receipts_sync, run_receipts_gap_check
 from .services.scheduled_inventory_loader import run_inventory_sync
@@ -64,6 +65,18 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to seed UI auth tables: {e}", exc_info=True)
 
     try:
+        # Раньше всех остальных: чеки не грузятся по точке, которой нет в
+        # справочнике, а падает при этом весь батч целиком.
+        scheduler.add_job(
+            func=run_department_sync,
+            trigger="cron",
+            hour=0,
+            minute=45,
+            id='daily_department_sync',
+            name='Daily Department Catalog Sync',
+            replace_existing=True
+        )
+
         scheduler.add_job(
             func=run_auto_sync,
             trigger="cron",
@@ -321,7 +334,7 @@ async def lifespan(app: FastAPI):
 
         scheduler.start()
         logger.info(
-            "Background scheduler started - Nomenclature 1:00, Employees 1:30, Sales 2:00, "
+            "Background scheduler started - Departments 0:45, Nomenclature 1:00, Employees 1:30, Sales 2:00, "
             "Receipts 2:15, Waiter sales 2:30, Inventory docs 2:45, Retrain Sun 3:00, Menu clustering Sun 3:15, Catalog price 3:20, Price order sync 3:25, "
             "Elasticity Sun 3:30, Recipes Sun 3:30, SKU retrain Sun 3:45 (out-of-process), Metrics 4:00, Pricing analytics 4:30, Forecast sweep 6:00, "
             "Price optimization 5:00, Outcome evaluation 5:30, Gap check 10:00, Waiter gap 11:00, Receipts gap 11:30"
