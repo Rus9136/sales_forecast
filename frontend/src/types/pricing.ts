@@ -42,6 +42,33 @@ export interface MeasurementForecast {
   reason?: string
 }
 
+export interface PriceDriftItem {
+  department_id: string
+  department_name: string
+  product_id: number
+  product_name: string
+  price_before: number
+  price_now: number
+  change_pct: number
+  changed_at: string
+  qty_day: number
+  revenue: number
+  by_us: boolean
+}
+
+/** Правила движка действуют только на его решения; ручные правки в iiko видны отсюда */
+export interface PriceDriftReport {
+  cap_pct: number
+  cap_window_days: number
+  lookback_days: number
+  total: number
+  manual: number
+  by_us: number
+  manual_revenue: number
+  max_change_pct: number | null
+  items: PriceDriftItem[]
+}
+
 export interface RecommendationSummary {
   by_status: Partial<Record<RecommendationStatus, number>>
   total: number

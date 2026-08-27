@@ -729,3 +729,113 @@ class PricingFeedbackService:
             "baseline_to": str(baseline_to),
             "weeks": weeks,
         }
+
+
+# ---------------------------------------------------------------------------
+# Расхождение каталога с правилами системы
+# ---------------------------------------------------------------------------
+# Кумулятивный потолок (+15% за 90 дней) и max_step (5% за 14 дней) действуют
+# только на решения движка. Цены в iiko правятся и руками, и на такие правки
+# система влиять не может — она узнаёт о них постфактум из синка каталога.
+# До появления этого отчёта узнавали случайно: попытка откатить баурсаки в
+# Kainar упёрлась в то, что 21.08 их подняли ещё раз, 2090 → 2590 (+23.9%),
+# уже после нашего замера. Проверка по сети показала, что случай не единичный:
+# 24-25.08 в Sandyq Алматы и Astana переоценили топовые блюда на 15-69%
+# («Какталган казы» +68.6%, «Кымыз кабырга» +46.1%).
+#
+# Отчёт НИЧЕГО не запрещает — ручное ценообразование остаётся за пределами
+# системы. Он только делает расхождение видимым в тот же день, а не через месяц.
+
+def detect_price_drift(
+    db: Session,
+    lookback_days: int = 30,
+    cap_pct: float = 0.15,
+    cap_window_days: int = 90,
+    min_qty_day: float = 1.0,
+    limit: int = 200,
+) -> dict:
+    """Позиции, чья каталожная цена ушла за кумулятивный потолок мимо системы.
+
+    Берутся только недавние изменения (lookback_days) у позиций с реальным
+    оборотом: без фильтра по продажам в выборку попадает 4 685 позиций, из
+    которых большинство — архивные карточки и разовые правки прайса.
+
+    `by_us` = у позиции есть applied-рекомендация ровно на текущую цену.
+    """
+    rows = db.execute(
+        text("""
+            WITH now_p AS (
+                SELECT DISTINCT ON (department_id, product_id)
+                       department_id, product_id, price, date_from
+                FROM sku_catalog_price
+                WHERE product_id IS NOT NULL AND price > 0 AND NOT is_stale
+                  AND date_from <= CURRENT_DATE AND date_to > CURRENT_DATE
+                ORDER BY department_id, product_id, (price_type <> 'BASE'),
+                         (product_size_id IS NOT NULL), product_size_id, id
+            ),
+            old_p AS (
+                SELECT DISTINCT ON (department_id, product_id)
+                       department_id, product_id, price
+                FROM sku_catalog_price
+                WHERE product_id IS NOT NULL AND price > 0 AND NOT is_stale
+                  AND date_from <= CURRENT_DATE - :cap_win
+                  AND date_to > CURRENT_DATE - :cap_win
+                ORDER BY department_id, product_id, (price_type <> 'BASE'),
+                         (product_size_id IS NOT NULL), product_size_id, id
+            ),
+            sales AS (
+                SELECT department_id, product_id,
+                       SUM(total_qty) / :look AS qty_day,
+                       SUM(total_sum)        AS revenue
+                FROM sku_daily_sales
+                WHERE sale_date >= CURRENT_DATE - :look
+                GROUP BY 1, 2
+            )
+            SELECT d.name AS department_name, n.department_id::text AS department_id,
+                   p.name AS product_name, n.product_id,
+                   o.price AS price_before, n.price AS price_now,
+                   n.date_from AS changed_at,
+                   ROUND(s.qty_day, 2) AS qty_day, ROUND(s.revenue) AS revenue,
+                   EXISTS (
+                       SELECT 1 FROM price_recommendation r
+                       WHERE r.product_id = n.product_id
+                         AND r.department_id = n.department_id
+                         AND r.status = 'applied'
+                         AND ABS(r.applied_price - n.price) < :eps
+                   ) AS by_us
+            FROM now_p n
+            JOIN old_p o USING (department_id, product_id)
+            JOIN sales s USING (department_id, product_id)
+            JOIN departments d ON d.id = n.department_id
+            JOIN product p ON p.id = n.product_id
+            WHERE n.price / o.price - 1 > :cap
+              AND n.date_from >= CURRENT_DATE - :look
+              AND s.qty_day >= :min_qty
+            ORDER BY s.revenue DESC
+            LIMIT :lim
+        """),
+        {"cap": cap_pct, "cap_win": cap_window_days, "look": lookback_days,
+         "min_qty": min_qty_day, "eps": PRICE_MATCH_TOLERANCE, "lim": limit},
+    ).fetchall()
+
+    items = []
+    for r in rows:
+        before, now = float(r.price_before), float(r.price_now)
+        items.append({
+            "department_id": r.department_id, "department_name": r.department_name,
+            "product_id": r.product_id, "product_name": r.product_name,
+            "price_before": before, "price_now": now,
+            "change_pct": round((now / before - 1) * 100, 1),
+            "changed_at": str(r.changed_at),
+            "qty_day": float(r.qty_day), "revenue": float(r.revenue),
+            "by_us": bool(r.by_us),
+        })
+    manual = [i for i in items if not i["by_us"]]
+    return {
+        "cap_pct": cap_pct, "cap_window_days": cap_window_days,
+        "lookback_days": lookback_days, "min_qty_day": min_qty_day,
+        "total": len(items), "manual": len(manual), "by_us": len(items) - len(manual),
+        "manual_revenue": round(sum(i["revenue"] for i in manual)),
+        "max_change_pct": max((i["change_pct"] for i in items), default=None),
+        "items": items,
+    }

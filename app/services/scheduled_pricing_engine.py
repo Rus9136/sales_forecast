@@ -39,6 +39,27 @@ def run_catalog_price_sync():
             logger.error("Applied-recommendation detection failed: %s", e, exc_info=True)
             result["applied_detection"] = {"status": "error", "message": str(e)}
 
+        # расхождение каталога с правилами движка: цены правят и руками, и
+        # такие правки система видит только отсюда. Ничего не блокируем —
+        # просто делаем видимым в тот же день, а не через месяц
+        try:
+            from .pricing_feedback_service import detect_price_drift
+            drift = detect_price_drift(db, lookback_days=7)
+            result["price_drift"] = {k: v for k, v in drift.items() if k != "items"}
+            if drift["manual"]:
+                top = drift["items"][:5]
+                logger.warning(
+                    "Цены изменены мимо системы сверх потолка +%.0f%%/%dд: %d позиций, "
+                    "выручка %s ₸. Крупнейшие: %s",
+                    drift["cap_pct"] * 100, drift["cap_window_days"], drift["manual"],
+                    f"{drift['manual_revenue']:,}",
+                    "; ".join(f"{i['department_name']}/{i['product_name'][:28]} "
+                              f"{i['price_before']:.0f}→{i['price_now']:.0f} "
+                              f"({i['change_pct']:+.0f}%)" for i in top),
+                )
+        except Exception as e:
+            logger.error("Price drift detection failed: %s", e, exc_info=True)
+
         from .pricing_jobs import log_job_run
         log_job_run("pricing_catalog_price", result, records=result.get("total_intervals", 0))
         return result

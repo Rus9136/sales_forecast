@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowDown, ArrowUp, Download, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Download, RefreshCw, X } from 'lucide-react'
 import {
   Area,
   CartesianGrid,
@@ -16,6 +16,7 @@ import {
   useDepartmentWeekly,
   useOutcomesSummary,
   usePricingReports,
+  usePriceDrift,
   useRecommendationsSummary,
 } from '@/hooks/use-pricing'
 import { usePricingScope } from '@/contexts/pricing-context'
@@ -141,6 +142,7 @@ export function PricingDashboardPage() {
 
   const weekly = useDepartmentWeekly({ department_id: effectiveDepartmentId, from_week: fromWeek })
   const recSummary = useRecommendationsSummary(effectiveDepartmentId)
+  const drift = usePriceDrift(7)
   const outcomes = useOutcomesSummary(effectiveDepartmentId)
   const canReports = hasSection('pricing.reports')
   const reports = usePricingReports(canReports ? { department_id: effectiveDepartmentId } : {})
@@ -399,6 +401,53 @@ export function PricingDashboardPage() {
         <EmptyState text="Данных за период пока нет. Витрины продаж обновляются каждую ночь к 04:30 — загляните позже или выберите другой период." />
       ) : (
         <div className="dash">
+          {drift.data && drift.data.manual > 0 && (
+            <div
+              style={{
+                border: '1px solid var(--border)',
+                borderLeft: '3px solid var(--warn)',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--surface)',
+                padding: '14px 18px',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 14,
+              }}
+            >
+              <AlertTriangle size={18} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 2 }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 650, fontSize: 14 }}>
+                  Цены меняли мимо системы: {drift.data.manual} поз. за {drift.data.lookback_days} дней
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Подъём больше{' '}
+                  <Term tip={GLOSSARY.cumulativeCap}>
+                    кумулятивного потолка +{Math.round(drift.data.cap_pct * 100)}% за{' '}
+                    {drift.data.cap_window_days} дней
+                  </Term>
+                  . Правила движка на ручные правки в iiko не действуют — система видит их только
+                  из ночного синка каталога.
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                  {drift.data.items
+                    .filter((i) => !i.by_us)
+                    .slice(0, 4)
+                    .map((i) => (
+                      <Link
+                        key={`${i.department_id}-${i.product_id}`}
+                        to={`/pricing/position/${i.product_id}/${i.department_id}`}
+                        className="tabular"
+                        style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}
+                      >
+                        {i.product_name.slice(0, 26)} {formatCurrency(i.price_before)} →{' '}
+                        {formatCurrency(i.price_now)} ({fmtPctSigned(i.change_pct)})
+                      </Link>
+                    ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* KPI row */}
           <div className="kpi-row">
             <div className="kpi">

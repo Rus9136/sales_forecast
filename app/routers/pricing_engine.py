@@ -690,6 +690,25 @@ def generate_rollbacks(
         department_id=department_id, actor=_actor_of(user), dry_run=dry_run)
 
 
+@router.get("/price-drift")
+def price_drift(
+    lookback_days: int = Query(30, ge=1, le=180),
+    min_qty_day: float = Query(1.0, ge=0.0),
+    limit: int = Query(200, le=1000),
+    db: Session = Depends(get_db),
+):
+    """Цены, ушедшие за кумулятивный потолок мимо системы.
+
+    Правила движка (max_step 5% / 14 дней, потолок +15% / 90 дней) действуют
+    только на его собственные решения. Ручные правки в iiko система видит
+    постфактум из синка каталога — отчёт делает расхождение видимым в тот же
+    день. Ничего не запрещает: ручное ценообразование вне зоны системы.
+    """
+    from ..services.pricing_feedback_service import detect_price_drift
+    return detect_price_drift(db, lookback_days=lookback_days,
+                              min_qty_day=min_qty_day, limit=limit)
+
+
 # ==================== Audit log ====================
 
 @router.get("/audit-log")

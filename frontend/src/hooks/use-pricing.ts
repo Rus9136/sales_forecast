@@ -27,6 +27,7 @@ import type {
   SkuElasticityListResponse,
   SkuMenuRoleItem,
   SkuWeeklyResponse,
+  PriceDriftReport,
 } from '@/types/pricing'
 
 interface DepartmentWeeklyParams {
@@ -294,6 +295,16 @@ export function useSkuOutcomes({ productId, departmentId }: SkuKey) {
 interface RulesResponse {
   items: PricingRule[]
   total: number
+}
+
+/** Цены, ушедшие за кумулятивный потолок мимо системы (ручные правки в iiko) */
+export function usePriceDrift(lookbackDays = 7) {
+  return useQuery<PriceDriftReport>({
+    queryKey: ['pricing', 'price-drift', lookbackDays],
+    queryFn: () =>
+      api.get<PriceDriftReport>(`/pricing-engine/price-drift?lookback_days=${lookbackDays}`),
+    staleTime: 5 * 60_000,
+  })
 }
 
 export function usePricingRules() {

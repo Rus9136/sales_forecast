@@ -265,6 +265,14 @@ detect-applied · `experiments/generate` · `rollbacks/generate` (`?dry_run=true
 `/api/pricing-analytics/`: `price-history` · `sku-weekly` · `department-weekly` ·
 `aggregate` / `backfill` · `menu-roles` list/summary/override(PUT)/cluster.
 
+`price-drift` — цены, ушедшие за кумулятивный потолок **мимо системы**.
+Правила движка (max_step, потолок +15%/90д) действуют только на его решения;
+ручные правки в iiko видны лишь из синка каталога. Отчёт ничего не запрещает,
+он делает расхождение видимым в тот же день: на 27.08.2026 — 150 позиций
+за неделю, все ручные, выручка 53 млн ₸ (Sandyq Алматы/Astana переоценили
+топ-блюда на 15–69% 24–25.08). Ночной джоб 03:20 пишет warning; блок на
+дашборде ведёт в карточки позиций.
+
 `recommendations/summary?department_id=` возвращает `measurement_forecast` —
 прогноз точности будущего замера (`pricing_effect.forecast_batch_precision`).
 Откалибровано на 9 приказах: corr(прогноз, факт) = **+0.976** на уровне приказа.
