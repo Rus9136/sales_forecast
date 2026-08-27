@@ -26,6 +26,12 @@ CUMULATIVE_CAP_WINDOW_DAYS = 90
 # approved-рекомендация без применения протухает: базис (цена/COGS/эластичность)
 # устаревает, а детекция applied без TTL ловила совпадения через полгода
 APPROVED_TTL_DAYS = 30
+# допуск сверки применённой цены с каталогом (та же величина, что у детекции
+# applied в pricing_feedback_service)
+PRICE_MATCH_EPS = 0.01
+# после отката SKU не возвращается к оптимизатору: эластичность, которая
+# привела к убытку, ещё не переоценена, и храповик завёлся бы заново
+ROLLBACK_COOLDOWN_DAYS = 60
 
 
 def select_planning_elasticity(
@@ -608,6 +614,235 @@ class PriceOptimizerService:
             "items": created,
         }
 
+    # ---- откат подтверждённо убыточного решения ------------------------------
+
+    def generate_rollbacks(
+        self,
+        department_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Вернуть прежнюю цену там, где повышение доказанно навредило.
+
+        Зачем отдельный тип решения, а не «эксперимент со знаком минус».
+        Оптимизатор структурно не может предложить снижение: при |ε| > −1
+        прибыль (P − COGS)·q·(P/P₀)^ε монотонно растёт по цене, внутреннего
+        максимума нет, и grid search обязан выбрать верхний край коридора —
+        так ведут себя 92.6% рекомендаций. А generate_experiments переворачивает
+        отрицательный delta_pct в положительный строкой
+        `if target <= current_price: target = current_price + step`.
+
+        ДВА ИСТОЧНИКА КАНДИДАТОВ.
+        1. auto — интервал самой позиции целиком ниже нуля (effect_ci_high < 0).
+           Строгий критерий, не требует человека.
+        2. stop_list — позиция с отрицательным эффектом, на которую заведено
+           правило stop_list. Нужен потому, что на пилоте доказанным оказался
+           уровень КАТЕГОРИИ, а не позиции: импульсная выпечка целиком дала
+           −212 977 ₸ (интервал −382к…−50к, P(минус)=98.5%), при этом у четырёх
+           пирожных из четырёх собственный интервал ноль накрывает. Решение
+           «эта категория убыточна» принимает человек и записывает его в
+           stop_list с обоснованием в params — здесь оно только исполняется.
+
+        НЕ significance_z: он считается через пуассоновскую SE = √Σ(1/n) и не
+        видит выходных и погоды. Вердикт — по bootstrap-интервалу.
+
+        Цель отката — цена ДО решения (current_price исходной рекомендации).
+        Ниже исторической не идём: замеренная ε −6…−20 получена на 14 днях,
+        доверия к её величине нет, есть только к знаку.
+        """
+        from .pricing_audit import log_audit
+
+        batch_id = str(uuid.uuid4())
+        rows = self.db.execute(
+            text("""
+                WITH latest AS (
+                    -- по SKU откатываем ПОСЛЕДНЕЕ применённое решение: если
+                    -- цену поднимали дважды, вернуть надо к цене перед
+                    -- последним подъёмом, а не к самой первой
+                    SELECT DISTINCT ON (pr.product_id, pr.department_id)
+                           pr.id, pr.product_id, pr.department_id, pr.current_price,
+                           pr.applied_price, pr.cogs, pr.menu_role, pr.applied_at,
+                           o.incremental_delta_gp, o.effect_ci_low, o.effect_ci_high,
+                           o.p_negative
+                    FROM price_recommendation pr
+                    JOIN price_recommendation_outcome o ON o.recommendation_id = pr.id
+                    WHERE pr.status = 'applied'
+                      AND pr.rec_type <> 'rollback'
+                      AND o.measurable
+                      AND o.incremental_delta_gp < 0
+                      AND (:dept_id IS NULL
+                           OR pr.department_id = CAST(:dept_id AS uuid))
+                      -- откат по этому решению уже заведён: полагаться на
+                      -- uq_rollback_open значит ловить дубль исключением и
+                      -- показывать пользователю текст ошибки БД вместо причины
+                      AND NOT EXISTS (
+                          SELECT 1 FROM price_recommendation rb
+                          WHERE rb.reverses_recommendation_id = pr.id
+                            AND rb.status IN ('new', 'approved', 'applied')
+                      )
+                    ORDER BY pr.product_id, pr.department_id, pr.applied_at DESC, pr.id DESC
+                )
+                SELECT l.*, p.name AS product_name, d.segment_type,
+                       EXISTS (
+                           SELECT 1 FROM pricing_rule r
+                           WHERE r.rule_type = 'stop_list' AND r.is_active
+                             AND r.scope_type = 'product'
+                             AND r.scope_id = l.product_id::text
+                       ) AS on_stop_list
+                FROM latest l
+                JOIN product p ON p.id = l.product_id
+                JOIN departments d ON d.id = l.department_id
+                WHERE l.effect_ci_high < 0
+                   OR EXISTS (
+                       SELECT 1 FROM pricing_rule r
+                       WHERE r.rule_type = 'stop_list' AND r.is_active
+                         AND r.scope_type = 'product'
+                         AND r.scope_id = l.product_id::text
+                   )
+                ORDER BY l.incremental_delta_gp
+            """),
+            {"dept_id": department_id},
+        ).fetchall()
+
+        created, skipped = [], []
+        for r in rows:
+            rec_id, product_id, dept_id = r.id, r.product_id, str(r.department_id)
+            old_price = float(r.current_price)          # цена ДО решения — цель отката
+            now_price = float(r.applied_price or 0)
+            reason = "interval" if r.effect_ci_high is not None and float(
+                r.effect_ci_high) < 0 else "stop_list"
+
+            if now_price <= 0 or old_price <= 0 or old_price >= now_price:
+                skipped.append({"product_name": r.product_name, "department_id": dept_id,
+                                "reason": "исходная цена не ниже текущей"})
+                continue
+
+            catalog_price = self._catalog_price(product_id, dept_id)
+            if catalog_price is None:
+                skipped.append({"product_name": r.product_name, "department_id": dept_id,
+                                "reason": "нет каталожной цены базовой серии"})
+                continue
+            # цену могли изменить руками после нашего решения — тогда базис
+            # отката устарел и возвращать «как было» уже некорректно
+            if abs(catalog_price - now_price) > PRICE_MATCH_EPS:
+                skipped.append({
+                    "product_name": r.product_name, "department_id": dept_id,
+                    "reason": f"каталог {catalog_price:.0f} ≠ применённая {now_price:.0f}"})
+                continue
+
+            rules = self.rules_service.get_effective_rules(product_id, dept_id, r.segment_type)
+            is_valid, violations = self.rules_service.check_recommendation(
+                now_price, old_price, float(r.cogs) if r.cogs is not None else None,
+                r.menu_role, r.applied_at, rules, rec_type="rollback",
+            )
+            if not is_valid:
+                skipped.append({"product_name": r.product_name, "department_id": dept_id,
+                                "reason": "; ".join(violations)})
+                continue
+
+            item = {
+                "product_id": product_id, "product_name": r.product_name,
+                "department_id": dept_id, "current_price": now_price,
+                "target_price": old_price,
+                "delta_pct": round((old_price - now_price) / now_price * 100, 2),
+                "reverses_recommendation_id": rec_id,
+                "measured_effect_gp": float(r.incremental_delta_gp),
+                "effect_ci": [float(r.effect_ci_low) if r.effect_ci_low is not None else None,
+                              float(r.effect_ci_high) if r.effect_ci_high is not None else None],
+                "trigger": reason,
+            }
+            if dry_run:
+                created.append(item)
+                continue
+
+            try:
+                with self.db.begin_nested():
+                    self._insert_rollback(item, batch_id, r)
+                created.append(item)
+            except Exception as e:                       # noqa: BLE001
+                # uq_rollback_open: откат по этому решению уже заведён
+                skipped.append({"product_name": r.product_name,
+                                "department_id": dept_id, "reason": str(e)[:120]})
+
+        if not dry_run:
+            log_audit(self.db, "rollback", batch_id, "generate", actor=actor,
+                      department_id=department_id,
+                      details={"created": len(created), "skipped": len(skipped)})
+            self.db.commit()
+
+        logger.info("Rollbacks for dept %s: %d created, %d skipped of %d candidates",
+                    department_id or "all", len(created), len(skipped), len(rows))
+        return {"status": "ok", "dry_run": dry_run, "batch_id": None if dry_run else batch_id,
+                "candidates": len(rows), "created": len(created),
+                "items": created, "skipped": skipped}
+
+    def _catalog_price(self, product_id: int, department_id: str) -> Optional[float]:
+        """Действующая цена БАЗОВОЙ серии по каталогу (не AVG по размерам)."""
+        row = self.db.execute(
+            text("""
+                SELECT price FROM sku_catalog_price
+                WHERE department_id = CAST(:dept_id AS uuid)
+                  AND product_id = :pid
+                  AND price > 0 AND NOT is_stale
+                  AND date_from <= CURRENT_DATE AND date_to > CURRENT_DATE
+                ORDER BY (price_type <> 'BASE'), (product_size_id IS NOT NULL),
+                         product_size_id, id
+                LIMIT 1
+            """),
+            {"dept_id": department_id, "pid": product_id},
+        ).fetchone()
+        return float(row[0]) if row else None
+
+    def _insert_rollback(self, item: dict, batch_id: str, src) -> None:
+        """Строка отката. Ожидаемый ΔGP не считаем моделью: эластичность,
+        которая привела к убытку, не годится в прогноз его устранения.
+        Ожидание = вернуть измеренный эффект со знаком плюс."""
+        cogs = float(src.cogs) if src.cogs is not None else None
+        rec = {
+            "product_id": item["product_id"],
+            "department_id": item["department_id"],
+            "batch_id": batch_id,
+            "current_price": item["current_price"],
+            "recommended_price": item["target_price"],
+            "delta_pct": item["delta_pct"],
+            "cogs": cogs,
+            "current_qty_forecast": None,
+            "new_qty_forecast": None,
+            "current_gp": None,
+            "expected_gp": None,
+            "delta_gp": round(-item["measured_effect_gp"], 2),
+            "elasticity_used": None,
+            "elasticity_grade": None,
+            "menu_role": src.menu_role,
+            "constraints_applied": ["rollback", f"trigger:{item['trigger']}"],
+            "status": "new",
+            "rec_type": "rollback",
+        }
+        # откат замещает открытую optimizer-рекомендацию SKU: иначе вставка
+        # упрётся в partial unique uq_price_rec_open (product, dept) WHERE new
+        self.db.execute(
+            text("""
+                UPDATE price_recommendation
+                SET status = 'expired'
+                WHERE status = 'new' AND rec_type = 'optimizer'
+                  AND department_id = CAST(:dept_id AS uuid)
+                  AND product_id = :pid
+            """),
+            {"dept_id": item["department_id"], "pid": item["product_id"]},
+        )
+        self._insert_recommendation(rec)
+        self.db.execute(
+            text("""
+                UPDATE price_recommendation
+                SET reverses_recommendation_id = :src_id
+                WHERE batch_id = CAST(:batch_id AS uuid)
+                  AND product_id = :pid
+                  AND department_id = CAST(:dept_id AS uuid)
+            """),
+            {"src_id": item["reverses_recommendation_id"], "batch_id": batch_id,
+             "pid": item["product_id"], "dept_id": item["department_id"]},
+        )
+
     def _supersede_open_recommendations(self, department_id: str) -> int:
         """Expire open OPTIMIZER recommendations for the department before a new batch.
 
@@ -629,16 +864,24 @@ class PriceOptimizerService:
         return result.rowcount
 
     def _open_experiment_products(self, department_id: str) -> set[int]:
-        """SKUs с открытым/идущим экспериментом — оптимизатор их не трогает,
-        чтобы не загрязнять измерение."""
+        """SKUs, которые оптимизатор не трогает: идёт эксперимент или откат.
+
+        Откат добавлен сюда вместе с cooldown: без этого ближайший ночной
+        прогон снова предложил бы поднять позицию, которую мы только что
+        вернули — эластичность-то по-прежнему говорит «спрос не отреагирует».
+        """
         rows = self.db.execute(
             text("""
                 SELECT DISTINCT product_id FROM price_recommendation
                 WHERE department_id = CAST(:dept_id AS uuid)
-                  AND rec_type = 'experiment'
-                  AND status IN ('new', 'approved', 'applied')
+                  AND (
+                      (rec_type IN ('experiment', 'rollback')
+                       AND status IN ('new', 'approved', 'applied'))
+                      OR (rec_type = 'rollback' AND status = 'applied'
+                          AND applied_at > CURRENT_DATE - :cooldown)
+                  )
             """),
-            {"dept_id": department_id},
+            {"dept_id": department_id, "cooldown": ROLLBACK_COOLDOWN_DAYS},
         ).fetchall()
         return {r[0] for r in rows}
 

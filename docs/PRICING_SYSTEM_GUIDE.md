@@ -108,7 +108,8 @@ ORM синхронизирован с миграциями (UNIQUE-констр�
 ### Миграции: `019` витрины → `020` роли меню → `021` эластичность → `022` правила →
 `023` рекомендации → `024` каталожные цены → `025` фиксы уников → `026` feedback loop +
 baseline → `027` эксперименты/аудит/cycle cap/is_stale → `029` append-only триггер +
-partial unique на открытые рекомендации.
+partial unique на открытые рекомендации → … → `041` откаты + комментарии к
+интервалу эффекта.
 
 ### Frontend (`frontend/src/`)
 - `hooks/use-pricing.ts` — все TanStack-хуки; `types/pricing.ts` — TS-типы
@@ -130,8 +131,8 @@ partial unique на открытые рекомендации.
 | `sku_catalog_price` | (dept, iiko_product, COALESCE(size), date_from, price_type) UNIQUE | **Авторитетный источник цен.** Интервалы [date_from, date_to). `is_stale=true` = отозванный приказ — всегда фильтровать `NOT is_stale`. «Цена SKU» = цена БАЗОВОЙ серии (price_type='BASE', size IS NULL) через DISTINCT ON — НЕ AVG по размерам |
 | `sku_elasticity` | (product, dept) UNIQUE | ε<0 всегда (положительные оценки переопределяются). `estimation_level`: sku/group/global. Строки чужих `model_version` удаляются при переоценке — отсутствие строки = честный fallback −1.0 |
 | `sku_menu_role` | (product, dept) UNIQUE | `effective_role` = GENERATED COALESCE(manual, auto). Рекластеризация не трогает manual_role |
-| `price_recommendation` | partial UNIQUE (product, dept) WHERE status='new' | Статусы см. §6.4. `rec_type`: optimizer/experiment. `elasticity_used` — планирующая ε (консервативная), не mean |
-| `price_recommendation_outcome` | recommendation_id UNIQUE | Появляется через 14+ дней после applied. `realized_elasticity` — control-adjusted |
+| `price_recommendation` | partial UNIQUE (product, dept) WHERE status='new' + partial UNIQUE (reverses_recommendation_id) WHERE status IN new/approved/applied | Статусы см. §6.4. `rec_type`: optimizer/experiment/**rollback**. `elasticity_used` — планирующая ε (консервативная), не mean |
+| `price_recommendation_outcome` | recommendation_id UNIQUE | Появляется через 14+ дней после applied. `realized_elasticity` — control-adjusted. **Вердикт — по `effect_ci_low`/`effect_ci_high`** (bootstrap); `significance_z` УСТАРЕЛО (пуассоновская SE, не видит выходных/погоды) и ни на что не влияет |
 | `pricing_rule` | (rule_type, scope_type, scope_id) UNIQUE + partial для global | params JSONB. Каскад: product > department > segment > global (первое совпадение по типу) |
 | `pricing_baseline_kpi` | (label, scope, dept) UNIQUE NULLS NOT DISTINCT | Перезапись label — только `force=true` (иначе 409) |
 | `price_change_order` | partial UNIQUE (dept, effective_date) WHERE status IN draft/sending/sent | Один приказ на точку и дату. `sending` = ответ iiko не получен, документ ищется по маркеру `SF#{id}` в комментарии — **POST не повторять** |
@@ -206,12 +207,27 @@ new ──approve──▶ approved ──каталог показал цену
   [reviewed_at, reviewed_at+30д]. Там же экспирируются протухшие approved и new.
 - Эксперименты (`rec_type='experiment'`): +2–5% для grade C/D с целью ИЗМЕРИТЬ ε;
   идут тем же циклом; оптимизатор такие SKU не трогает до завершения.
+- **Откаты (`rec_type='rollback'`, миграция 041)**: возврат к цене ДО решения там,
+  где повышение доказанно навредило. Оптимизатор снижение предложить не может
+  структурно (при |ε| < 1 прибыль монотонна по цене → всегда верх коридора; 92.6%
+  рекомендаций), а `generate_experiments` переворачивает отрицательный `delta_pct`
+  строкой `if target <= current_price: target = current_price + step`.
+  Кандидаты: применённое решение с отрицательным эффектом И (`effect_ci_high < 0`
+  ИЛИ на товар заведён `stop_list`). Второе условие — потому что на пилоте
+  доказанным оказался уровень КАТЕГОРИИ, а не позиции. Цель — `current_price`
+  исходной рекомендации; ниже исторической не идём. Для этого типа снимаются
+  `ROLLBACK_RELAXED_RULES` (max_step, rounding, no_decrease_anchor,
+  no_psychological, min_frequency) — `min_margin` и `stop_list` остаются.
+  После applied-отката SKU не возвращается к оптимизатору `ROLLBACK_COOLDOWN_DAYS`=60.
 
 ### 6.5 Правила (B4) — fail-safe
 `check_recommendation` применяет **зашитые дефолты**, если строки правила нет в БД:
 min_margin 60%, max_step 5%, min_frequency 14д, rounding 50/100. Удаление правила через
 UI НЕ отключает защиту (fail-safe, не fail-open). Каскад scope: первое совпадение по типу.
 `max_changes_per_cycle` валиден только на global/department scope.
+`stop_list.params.block` задаёт направление: `any` (деф. — не трогать),
+`increase` (не повышать, вернуть можно — для позиций с доказанным убытком от
+подъёма), `decrease`.
 
 ### 6.6 Feedback loop
 - `evaluate_outcomes`: before/after 14+14 дней (weekday-сбалансировано), поправка на
@@ -232,7 +248,7 @@ UI НЕ отключает защиту (fail-safe, не fail-open). Каска�
 
 `/api/pricing-engine/`: `rules` CRUD+effective · `elasticity` list/summary/{id}/estimate ·
 `recommendations` list/summary/generate/review/batch-review/export(XLSX)/explain/explain-batch/
-detect-applied · `experiments/generate` · `outcomes` list/summary/evaluate ·
+detect-applied · `experiments/generate` · `rollbacks/generate` (`?dry_run=true`) · `outcomes` list/summary/evaluate ·
 `baseline` get/freeze · `audit-log` · `reports` list/{id}/generate · `jobs/{id}` ·
 `price-orders` list/{id}/preview/create/{id}/cancel/{id}/sync.
 
@@ -311,6 +327,12 @@ venv/bin/python -m pytest tests/unit/test_pricing_engine.py -q
 - Брать «цену SKU» как AVG по размерам/price_type или из `sku_price_history` — только
   базовая серия `sku_catalog_price` (`NOT is_stale`).
 - Планировать C/D по точечной ε или единой ε в обе стороны (см. §6.2).
+- Выносить вердикт «значимо» по `significance_z` — только по bootstrap-интервалу
+  (`effect_ci_low`/`effect_ci_high`). z считается через пуассоновскую SE = √Σ(1/n)
+  и расходится с интервалом в обе стороны: Бонаква z=3.64 при интервале
+  [−29 322 … +128 863]; «Крафт бургер» z=1.95 при [+17 948 … +245 966].
+- Снимать `min_margin` или `stop_list` для откатов — послабления перечислены
+  в `ROLLBACK_RELAXED_RULES` и этими двумя не расширяются.
 - Обходить `log_audit()` при мутациях recommendation/rule/menu_role/baseline/experiment.
 - UPDATE/DELETE в `pricing_audit_log` (упадёт на триггере — так и задумано).
 - Менять lookback эластичности локально (канон 730, грейды зависят от окна).

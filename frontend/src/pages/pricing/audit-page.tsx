@@ -29,6 +29,7 @@ const ENTITY_LABELS: Record<string, string> = {
   menu_role: 'Роль меню',
   baseline: 'База сравнения',
   experiment: 'Эксперимент',
+  rollback: 'Возврат цены',
 }
 
 function entityLabel(t: string): string {

@@ -448,3 +448,113 @@ class TestDirectionalPlanningElasticity:
         # при ε_down=-0.2 снижение цены режет GP → рекомендации быть не должно
         # (повышение заблокировано ε_up=-3.0)
         assert rec is None
+
+
+class TestRollbackRuleRelaxation:
+    """Откат возвращает цену, которая уже стояла в каталоге.
+
+    Правила, описывающие выбор НОВОЙ цены (округление, шаг, защита якорей),
+    к нему неприменимы: на пилоте они запрещали вернуться туда, откуда система
+    сама же увела цену — исходные цены 430/810/1010/1360/1990/2890 ₸ не кратны
+    шагу 50. Финансовый пол min_margin при этом остаётся.
+    """
+
+    def test_rounding_blocks_optimizer_but_not_rollback(self, rules_svc):
+        # 1400 → 1360: возврат к прежней цене, не кратной 50
+        ok_opt, viol = rules_svc.check_recommendation(
+            1400.0, 1360.0, 331.86, "traffic_driver", None, DEFAULT_RULES)
+        assert not ok_opt
+        assert any(v.startswith("rounding") for v in viol)
+
+        ok_rb, viol_rb = rules_svc.check_recommendation(
+            1400.0, 1360.0, 331.86, "traffic_driver", None, DEFAULT_RULES,
+            rec_type="rollback")
+        assert ok_rb, viol_rb
+
+    def test_max_step_relaxed_for_rollback(self, rules_svc):
+        # 3090 → 2890 это −6.5%: шаг больше 5% только потому, что цену
+        # применили вручную с окончанием «90»
+        ok_opt, viol = rules_svc.check_recommendation(
+            3090.0, 2890.0, 870.87, "traffic_driver", None, DEFAULT_RULES)
+        assert not ok_opt
+        assert any(v.startswith("max_step") for v in viol)
+
+        ok_rb, _ = rules_svc.check_recommendation(
+            3090.0, 2890.0, 870.87, "traffic_driver", None, DEFAULT_RULES,
+            rec_type="rollback")
+        assert ok_rb
+
+    def test_anchor_and_frequency_relaxed_for_rollback(self, rules_svc):
+        yesterday = date.today() - timedelta(days=1)
+        ok_opt, viol = rules_svc.check_recommendation(
+            3100.0, 3000.0, 800.0, "premium_anchor", yesterday, DEFAULT_RULES)
+        assert not ok_opt
+        assert any(v.startswith("no_decrease_anchor") for v in viol)
+        assert any(v.startswith("min_frequency") for v in viol)
+
+        ok_rb, _ = rules_svc.check_recommendation(
+            3100.0, 3000.0, 800.0, "premium_anchor", yesterday, DEFAULT_RULES,
+            rec_type="rollback")
+        assert ok_rb
+
+    def test_min_margin_is_never_relaxed(self, rules_svc):
+        """Финансовый пол — не политика выбора цены: снимать его нельзя."""
+        ok, viol = rules_svc.check_recommendation(
+            450.0, 400.0, 163.15, "traffic_driver", None, DEFAULT_RULES,
+            rec_type="rollback")
+        assert not ok
+        assert any(v.startswith("min_margin") for v in viol)
+
+    def test_optimizer_unaffected_by_default(self, rules_svc):
+        """rec_type по умолчанию не меняет поведение существующих вызовов."""
+        a = rules_svc.check_recommendation(
+            1000.0, 1050.0, 300.0, "traffic_driver", None, DEFAULT_RULES)
+        b = rules_svc.check_recommendation(
+            1000.0, 1050.0, 300.0, "traffic_driver", None, DEFAULT_RULES,
+            rec_type="optimizer")
+        assert a == b
+
+
+class TestStopListDirection:
+    """params.block задаёт направление блокировки.
+
+    Позиции с доказанным убытком от повышения должны быть закрыты для подъёма
+    и открыты для возврата — иначе стоп-лист блокирует собственное лечение.
+    """
+
+    def test_default_blocks_any_change(self, rules_svc):
+        rules = {**DEFAULT_RULES, "stop_list": {"reason": "x"}}
+        for candidate in (1050.0, 950.0):
+            ok, viol = rules_svc.check_recommendation(
+                1000.0, candidate, 300.0, "traffic_driver", None, rules,
+                rec_type="rollback")
+            assert not ok
+            assert any(v.startswith("stop_list") for v in viol)
+
+    def test_block_increase_allows_rollback(self, rules_svc):
+        rules = {**DEFAULT_RULES, "stop_list": {"block": "increase"}}
+        ok_up, viol = rules_svc.check_recommendation(
+            1000.0, 1050.0, 300.0, "traffic_driver", None, rules)
+        assert not ok_up
+        assert any(v.startswith("stop_list") for v in viol)
+
+        ok_down, _ = rules_svc.check_recommendation(
+            1000.0, 950.0, 300.0, "traffic_driver", None, rules,
+            rec_type="rollback")
+        assert ok_down
+
+    def test_block_decrease_allows_increase(self, rules_svc):
+        rules = {**DEFAULT_RULES, "stop_list": {"block": "decrease"}}
+        ok_up, _ = rules_svc.check_recommendation(
+            1000.0, 1050.0, 300.0, "traffic_driver", None, rules)
+        assert ok_up
+        ok_down, _ = rules_svc.check_recommendation(
+            1000.0, 950.0, 300.0, "traffic_driver", None, rules,
+            rec_type="rollback")
+        assert not ok_down
+
+    def test_unchanged_price_never_violates(self, rules_svc):
+        rules = {**DEFAULT_RULES, "stop_list": {"block": "any"}}
+        _, viol = rules_svc.check_recommendation(
+            1000.0, 1000.0, 300.0, "traffic_driver", None, rules)
+        assert not any(v.startswith("stop_list") for v in viol)

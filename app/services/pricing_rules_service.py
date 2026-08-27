@@ -48,6 +48,25 @@ FAILSAFE_DEFAULTS: dict[str, dict[str, Any]] = {
     "effect_measurement": {"eval_days": 14, "baseline_days": 14},
 }
 
+# Откат (rec_type='rollback') возвращает цену, которая уже стояла в каталоге и
+# отработала полное окно замера. К такому ходу неприменимы правила, которые
+# описывают, КАК выбирать НОВУЮ цену:
+#   * rounding — исходные цены пилота (430, 810, 1010, 1360, 1990, 2890 ₸) не
+#     кратны шагу 50, и правило запрещало вернуться туда, откуда сама же
+#     система и увела цену;
+#   * max_step — шаг отката по построению равен исходному шагу; больше 5% он
+#     выходит только там, где цену применили вручную с окончанием «90»;
+#   * no_decrease_anchor / no_psychological — политика про якорные позиции
+#     слабее доказанного убытка;
+#   * min_frequency — outcome существует только после полного окна замера,
+#     ждать ещё один интервал значит продолжать терять деньги.
+# min_margin НЕ снимается: это финансовый пол, а не политика выбора цены.
+# stop_list НЕ снимается: «не трогать» должно означать «не трогать» — чтобы
+# разрешить откат, но запретить повышение, у правила есть params.block.
+ROLLBACK_RELAXED_RULES = frozenset({
+    "max_step", "rounding", "no_decrease_anchor", "no_psychological", "min_frequency",
+})
+
 
 class PricingRulesService:
     def __init__(self, db: Session):
@@ -168,16 +187,23 @@ class PricingRulesService:
         menu_role: Optional[str],
         last_change_date: Optional[date],
         rules: dict[str, dict[str, Any]],
+        rec_type: str = "optimizer",
     ) -> tuple[bool, list[str]]:
         """Check a candidate price against all rules. Returns (is_valid, violations).
 
         Для защитных правил (min_margin/max_step/min_frequency/rounding)
         отсутствие строки в БД НЕ отключает проверку — применяются
         FAILSAFE_DEFAULTS (fail-safe, а не fail-open).
+
+        rec_type='rollback' снимает ROLLBACK_RELAXED_RULES — правила выбора
+        НОВОЙ цены неприменимы к возврату цены, которая уже стояла. Список
+        послаблений живёт здесь, а не в местах вызова: политика — забота
+        сервиса правил.
         """
         violations: list[str] = []
+        relaxed = ROLLBACK_RELAXED_RULES if rec_type == "rollback" else frozenset()
 
-        # Rule 1: min_margin (fail-safe)
+        # Rule 1: min_margin (fail-safe) — не снимается никогда
         r = rules.get("min_margin", FAILSAFE_DEFAULTS["min_margin"])
         if cogs is not None and candidate_price > 0:
             min_margin = r.get("value", 0.60)
@@ -187,7 +213,7 @@ class PricingRulesService:
 
         # Rule 2: max_step (fail-safe)
         r = rules.get("max_step", FAILSAFE_DEFAULTS["max_step"])
-        if current_price > 0:
+        if "max_step" not in relaxed and current_price > 0:
             max_step = r.get("value", 0.05)
             step = abs(candidate_price - current_price) / current_price
             if step > max_step:
@@ -195,7 +221,7 @@ class PricingRulesService:
 
         # Rule 3: min_frequency (fail-safe)
         r = rules.get("min_frequency", FAILSAFE_DEFAULTS["min_frequency"])
-        if last_change_date:
+        if "min_frequency" not in relaxed and last_change_date:
             days_since = (date.today() - last_change_date).days
             min_days = r.get("days", 14)
             if days_since < min_days:
@@ -203,7 +229,9 @@ class PricingRulesService:
 
         # Rule 4: no_decrease_anchor
         r = rules.get("no_decrease_anchor")
-        if r is not None and r.get("enabled", True) and menu_role == "premium_anchor":
+        if ("no_decrease_anchor" not in relaxed
+                and r is not None and r.get("enabled", True)
+                and menu_role == "premium_anchor"):
             if candidate_price < current_price:
                 violations.append("no_decrease_anchor: price decrease on premium_anchor")
 
@@ -212,22 +240,32 @@ class PricingRulesService:
         # Rule 6: rounding (fail-safe)
         r = rules.get("rounding", FAILSAFE_DEFAULTS["rounding"])
         step = r.get("flagship_step", 100) if menu_role in PREMIUM_ROLES else r.get("step", 50)
-        if candidate_price % step != 0:
+        if "rounding" not in relaxed and candidate_price % step != 0:
             violations.append(f"rounding: {candidate_price} not divisible by {step}")
 
         # Rule 7: no_psychological
         r = rules.get("no_psychological")
-        if r is not None and r.get("enabled", True) and menu_role in PREMIUM_ROLES:
+        if ("no_psychological" not in relaxed
+                and r is not None and r.get("enabled", True)
+                and menu_role in PREMIUM_ROLES):
             endings = r.get("endings", [9, 99])
             last_digits = int(candidate_price) % 100
             if last_digits in endings:
                 violations.append(f"no_psychological: ending {last_digits} on {menu_role}")
 
-        # Rule 8: stop_list
+        # Rule 8: stop_list. params.block задаёт направление: 'any' (по
+        # умолчанию — не трогать вовсе), 'increase' (не повышать, вернуть
+        # можно) или 'decrease'. Направленная блокировка нужна как раз для
+        # позиций с доказанным убытком от повышения: поднимать нельзя,
+        # а откат к прежней цене — именно то, что требуется.
         r = rules.get("stop_list")
-        if r is not None:
-            if candidate_price != current_price:
-                violations.append("stop_list: price change blocked")
+        if r is not None and candidate_price != current_price:
+            block = str(r.get("block", "any")).lower()
+            up = candidate_price > current_price
+            if (block not in ("increase", "decrease")
+                    or (block == "increase" and up)
+                    or (block == "decrease" and not up)):
+                violations.append(f"stop_list: {'increase' if up else 'decrease'} blocked ({block})")
 
         return (len(violations) == 0, violations)
 

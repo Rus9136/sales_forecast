@@ -55,7 +55,9 @@ export interface PriceRecommendation {
   menu_role: MenuRole | string | null
   constraints_applied: string[] | null
   llm_explanation?: string | null
-  rec_type: 'optimizer' | 'experiment'
+  rec_type: 'optimizer' | 'experiment' | 'rollback'
+  /** миграция 041: какое решение отменяет этот откат */
+  reverses_recommendation_id?: number | null
   status: RecommendationStatus
   created_at: string
   reviewed_at?: string | null

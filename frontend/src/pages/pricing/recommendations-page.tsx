@@ -147,7 +147,7 @@ export function PricingRecommendationsPage() {
               r.status === 'new' &&
               (r.elasticity_grade === 'A' || r.elasticity_grade === 'B') &&
               (r.delta_gp ?? 0) > 0 &&
-              r.rec_type !== 'experiment',
+              r.rec_type === 'optimizer',
           )
         : [],
     [items, status],
@@ -595,6 +595,15 @@ function RecRow({
               <Term tip={GLOSSARY.experiment}>Эксперимент</Term>
             </Badge>
           )}
+          {rec.rec_type === 'rollback' && (
+            <Badge
+              variant="outline"
+              className="ml-2 align-middle text-[10px]"
+              style={{ color: 'var(--neg)', borderColor: 'var(--neg)' }}
+            >
+              <Term tip={GLOSSARY.rollback}>Возврат цены</Term>
+            </Badge>
+          )}
           <div className="text-xs text-muted-foreground">
             {menuRoleLabel(rec.menu_role)}
             {rec.department_name ? ` · ${rec.department_name}` : ''}
@@ -618,6 +627,10 @@ function RecRow({
         <TableCell className="text-right tabular" style={{ color: gpUp ? 'var(--pos)' : 'var(--neg)', fontWeight: 600 }}>
           {rec.rec_type === 'experiment'
             ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>замер спроса</span>
+            : rec.rec_type === 'rollback'
+            ? <span style={{ color: 'var(--pos)' }}>
+                {rec.delta_gp != null ? `вернуть ${formatCurrency(rec.delta_gp)}` : 'вернуть потерю'}
+              </span>
             : rec.delta_gp != null ? `${rec.delta_gp > 0 ? '+' : ''}${formatCurrency(rec.delta_gp)}` : '—'}
         </TableCell>
         <TableCell className="text-center">

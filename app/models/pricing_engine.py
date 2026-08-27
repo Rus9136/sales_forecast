@@ -90,6 +90,8 @@ class PriceRecommendation(Base):
     llm_explanation = Column(Text)
     status = Column(Text, nullable=False, default="new")
     rec_type = Column(Text, nullable=False, default="optimizer", server_default=text("'optimizer'"))
+    # миграция 041: откат подтверждённо убыточного решения — какое решение отменяет
+    reverses_recommendation_id = Column(BigInteger, ForeignKey("price_recommendation.id"))
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     reviewed_by = Column(UUID(as_uuid=True))
     reviewed_at = Column(DateTime)

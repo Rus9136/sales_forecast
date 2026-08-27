@@ -473,6 +473,7 @@ async def list_recommendations(
             "llm_explanation": r.llm_explanation,
             "status": r.status,
             "rec_type": r.rec_type,
+            "reverses_recommendation_id": r.reverses_recommendation_id,
             "created_at": str(r.created_at),
             "reviewed_at": str(r.reviewed_at) if r.reviewed_at else None,
             "review_comment": r.review_comment,
@@ -666,6 +667,27 @@ def generate_experiments(
     _require_section(user, "pricing.recommendations", "pricing.outcomes")
     svc = PriceOptimizerService(db)
     return svc.generate_experiments(department_id, n, delta_pct, actor=_actor_of(user))
+
+
+@router.post("/rollbacks/generate")
+def generate_rollbacks(
+    department_id: Optional[str] = Query(None, description="Точка; пусто — вся сеть"),
+    dry_run: bool = Query(False, description="Показать, что будет создано, ничего не записывая"),
+    user: Optional[AppUser] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Вернуть прежнюю цену там, где повышение доказанно навредило.
+
+    Кандидаты — применённые решения с отрицательным эффектом, у которых либо
+    bootstrap-интервал целиком ниже нуля, либо заведено правило stop_list
+    (доказательство на уровне категории; решение принимает человек).
+    Цель отката — цена ДО решения. Идёт обычным циклом approve → applied →
+    outcome, поэтому даёт второй замер в обратную сторону.
+    """
+    from ..services.price_optimizer_service import PriceOptimizerService
+    _require_section(user, "pricing.recommendations", "pricing.outcomes")
+    return PriceOptimizerService(db).generate_rollbacks(
+        department_id=department_id, actor=_actor_of(user), dry_run=dry_run)
 
 
 # ==================== Audit log ====================
