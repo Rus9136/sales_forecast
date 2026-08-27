@@ -558,3 +558,57 @@ class TestStopListDirection:
         _, viol = rules_svc.check_recommendation(
             1000.0, 1000.0, 300.0, "traffic_driver", None, rules)
         assert not any(v.startswith("stop_list") for v in viol)
+
+
+class TestRoundingTiers:
+    """Плоский шаг 50 ₸ вырождает коридор на дешёвых позициях.
+
+    У товара за 430 ₸ интервал ±5% это 408.5…451.5, кратных пятидесяти внутри
+    ровно одно — 450. Кандидат единственный, и, поскольку при |ε| < 1 прибыль
+    монотонна по цене, он же и выбирается: тонкой настройки не существует.
+    """
+
+    TIERED = {
+        **DEFAULT_RULES,
+        "rounding": {
+            "step": 50, "flagship_step": 100,
+            "tiers": [{"max_price": 1500, "step": 10},
+                      {"max_price": 5000, "step": 50},
+                      {"step": 100}],
+        },
+    }
+
+    def test_flat_step_degenerates_cheap_grid(self, optimizer):
+        cands = optimizer._enumerate_candidates(430.0, DEFAULT_RULES, "traffic_driver")
+        assert cands == [430.0, 450.0], cands
+
+    def test_tiers_give_cheap_positions_a_real_grid(self, optimizer):
+        cands = optimizer._enumerate_candidates(430.0, self.TIERED, "traffic_driver")
+        assert len(cands) > 2
+        assert min(cands) < 430.0 < max(cands)
+
+    def test_tier_by_price_not_by_role(self, optimizer):
+        from app.services.pricing_rules_service import resolve_rounding_step
+        assert resolve_rounding_step(430.0, "traffic_driver", self.TIERED) == 10
+        assert resolve_rounding_step(3000.0, "traffic_driver", self.TIERED) == 50
+        assert resolve_rounding_step(9000.0, "traffic_driver", self.TIERED) == 100
+
+    def test_premium_role_keeps_flagship_step(self, optimizer):
+        """У якорной позиции крупный шаг — часть ценового образа, не арифметика."""
+        from app.services.pricing_rules_service import resolve_rounding_step
+        assert resolve_rounding_step(430.0, "premium_anchor", self.TIERED) == 100
+
+    def test_without_tiers_behaviour_unchanged(self, optimizer):
+        from app.services.pricing_rules_service import resolve_rounding_step
+        assert resolve_rounding_step(430.0, "traffic_driver", DEFAULT_RULES) == 50
+        assert resolve_rounding_step(9000.0, "traffic_driver", DEFAULT_RULES) == 50
+
+    def test_check_and_grid_agree_on_step(self, rules_svc, optimizer):
+        """Раньше логика шага была продублирована и могла разъехаться."""
+        for price in (430.0, 3000.0, 9000.0):
+            for cand in optimizer._enumerate_candidates(price, self.TIERED, "traffic_driver"):
+                if cand == price:
+                    continue
+                _, viol = rules_svc.check_recommendation(
+                    price, cand, price * 0.2, "traffic_driver", None, self.TIERED)
+                assert not any(v.startswith("rounding") for v in viol), (price, cand, viol)

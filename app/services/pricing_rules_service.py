@@ -68,6 +68,38 @@ ROLLBACK_RELAXED_RULES = frozenset({
 })
 
 
+def resolve_rounding_step(
+    price: float, menu_role: Optional[str], rules: dict[str, dict[str, Any]],
+) -> float:
+    """Шаг округления цены. Единая точка: до этого логика была продублирована
+    в check_recommendation и в _enumerate_candidates, и разъехаться им ничего
+    не мешало.
+
+    Плоский шаг 50 ₸ вырождает коридор на дешёвых позициях: у товара за 430 ₸
+    интервал ±5% это 408.5…451.5, кратных пятидесяти внутри ровно одно — 450.
+    Кандидат остаётся единственным, и, поскольку при |ε| < 1 прибыль монотонна
+    по цене, он же и выбирается. Тонкой настройки на дешёвых позициях не
+    существует, а это как раз импульсная выпечка — единственная группа с
+    доказанным убытком от повышения.
+
+    params.tiers (необязательно) задаёт шаг по цене:
+        [{"max_price": 1500, "step": 10}, {"max_price": 5000, "step": 50},
+         {"step": 100}]
+    Без tiers поведение прежнее: step / flagship_step.
+    """
+    r = rules.get("rounding", FAILSAFE_DEFAULTS["rounding"])
+    if menu_role in PREMIUM_ROLES:
+        # у якорных позиций крупный шаг — часть ценового образа, не арифметика
+        return float(r.get("flagship_step", 100))
+    tiers = r.get("tiers")
+    if isinstance(tiers, list) and tiers:
+        for tier in tiers:
+            cap = tier.get("max_price")
+            if cap is None or price < float(cap):
+                return float(tier.get("step", r.get("step", 50)))
+    return float(r.get("step", 50))
+
+
 class PricingRulesService:
     def __init__(self, db: Session):
         self.db = db
@@ -238,8 +270,7 @@ class PricingRulesService:
         # Rule 5: min_competitive_idx — skip in Phase 1 (no competitor data)
 
         # Rule 6: rounding (fail-safe)
-        r = rules.get("rounding", FAILSAFE_DEFAULTS["rounding"])
-        step = r.get("flagship_step", 100) if menu_role in PREMIUM_ROLES else r.get("step", 50)
+        step = resolve_rounding_step(current_price, menu_role, rules)
         if "rounding" not in relaxed and candidate_price % step != 0:
             violations.append(f"rounding: {candidate_price} not divisible by {step}")
 

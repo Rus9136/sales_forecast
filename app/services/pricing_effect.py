@@ -43,6 +43,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
@@ -573,3 +574,84 @@ class PriceEffectEstimator:
             control_method="cross_store", measurable=True,
             n_control_stores=max(p.n_control_stores for p in panels),
             effect_gp=point, ci_low=lo, ci_high=hi, p_negative=p_neg)
+
+
+# ---------------------------------------------------------------------------
+# Прогноз точности замера ДО принятия решения
+# ---------------------------------------------------------------------------
+# Откалибровано на 9 приказах пилота (84 позиции). Проверялось три гипотезы:
+#   * порог по обороту (шт/день)      — не разделяет: p = 0.49;
+#   * порог по ожидаемому ΔGP         — не разделяет: p = 0.64;
+#   * порог по «ожидание / шум»       — не разделяет: p = 0.39.
+# Вывод: доказуемость ОТДЕЛЬНОЙ позиции заранее не предсказуема — среди
+# доказанных есть торт при 1.4 шт/день. Поэтому фильтровать позиции по
+# «измеримости» нельзя: любой такой порог выбрасывает доказанные результаты
+# (на пороге 5 шт/день терялось 6 из 8).
+#
+# Зато ШИРИНА интервала предсказуема, и хорошо:
+#   corr(прогноз, факт) = +0.976 на уровне приказа, +0.899 на уровне позиции.
+# Это и есть полезное знание: не «какие позиции брать», а «удастся ли вообще
+# что-то доказать по этому приказу». Ошибки складываются квадратично
+# (дни общие, но объёмы независимы), коэффициент — медиана по 9 приказам.
+BATCH_CI_K = 3.27          # полуширина ≈ K · sqrt(Σ шум_i²)
+BATCH_CI_K_SPREAD = (1.83, 6.06)   # разброс коэффициента на калибровке
+
+
+def forecast_batch_precision(
+    db: Session, department_id: str, statuses: tuple[str, ...] = ("new",),
+    eval_days: int = 14, baseline_days: int = 30,
+) -> dict:
+    """Какой точности будет замер, если утвердить открытые рекомендации точки.
+
+    Возвращает ожидаемый эффект приказа и полуширину интервала, с которой его
+    удастся замерить. Если ожидание меньше полуширины — результат этого приказа
+    доказать не получится, и это надо знать ДО утверждения, а не через месяц.
+    """
+    rows = db.execute(
+        text("""
+            SELECT pr.product_id,
+                   pr.recommended_price - COALESCE(pr.cogs, 0) AS unit_margin,
+                   pr.delta_gp,
+                   STDDEV_SAMP(s.total_qty) AS sd_daily,
+                   COUNT(s.sale_date)       AS n_days
+            FROM price_recommendation pr
+            LEFT JOIN sku_daily_sales s
+                   ON s.product_id = pr.product_id
+                  AND s.department_id = pr.department_id
+                  AND s.sale_date >= CURRENT_DATE - :base
+            WHERE pr.department_id = CAST(:dept AS uuid)
+              AND pr.status = ANY(:statuses)
+            GROUP BY pr.product_id, pr.recommended_price, pr.cogs, pr.delta_gp
+        """),
+        {"dept": department_id, "statuses": list(statuses), "base": baseline_days},
+    ).fetchall()
+
+    sq_sum, expected, counted, no_history = 0.0, 0.0, 0, 0
+    for r in rows:
+        weekly = float(r.delta_gp or 0.0)
+        expected += weekly * eval_days / 7.0
+        if r.sd_daily is None or int(r.n_days or 0) < 5:
+            no_history += 1
+            continue
+        margin = max(float(r.unit_margin or 0.0), 0.0)
+        # шум суммы за окно: sd дневных продаж × √дней, два окна → ×√2
+        sq_sum += (margin * float(r.sd_daily) * math.sqrt(eval_days) * math.sqrt(2.0)) ** 2
+        counted += 1
+
+    if not counted:
+        return {"positions": len(rows), "with_history": 0, "measurable": None,
+                "reason": "нет истории продаж для оценки шума"}
+
+    ci_half = BATCH_CI_K * math.sqrt(sq_sum)
+    return {
+        "positions": len(rows),
+        "with_history": counted,
+        "no_history": no_history,
+        "eval_window_days": eval_days,
+        "expected_delta_gp": round(expected, 2),
+        "ci_half_forecast": round(ci_half, 2),
+        "ci_half_range": [round(ci_half / BATCH_CI_K * BATCH_CI_K_SPREAD[0], 2),
+                          round(ci_half / BATCH_CI_K * BATCH_CI_K_SPREAD[1], 2)],
+        "measurable": bool(expected > ci_half),
+        "ratio": round(expected / ci_half, 3) if ci_half > 0 else None,
+    }

@@ -11,7 +11,7 @@ from typing import Any, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .pricing_rules_service import PricingRulesService
+from .pricing_rules_service import PricingRulesService, resolve_rounding_step
 
 logger = logging.getLogger(__name__)
 
@@ -422,11 +422,7 @@ class PriceOptimizerService:
         self, current_price: float, rules: dict, menu_role: str,
     ) -> list[float]:
         max_step = rules.get("max_step", {}).get("value", 0.05)
-        rounding_cfg = rules.get("rounding", {})
-        if menu_role in ("premium_anchor", "image_rare"):
-            step = rounding_cfg.get("flagship_step", 100)
-        else:
-            step = rounding_cfg.get("step", 50)
+        step = resolve_rounding_step(current_price, menu_role, rules)
 
         p_min = current_price * (1 - max_step)
         p_max = current_price * (1 + max_step)
@@ -539,10 +535,7 @@ class PriceOptimizerService:
             rules = self.rules_service.get_effective_rules(
                 sku["product_id"], sku["department_id"], sku.get("segment_type"),
             )
-            rounding_cfg = rules.get("rounding") or {}
-            step = (rounding_cfg.get("flagship_step", 100)
-                    if sku["menu_role"] in ("premium_anchor", "image_rare")
-                    else rounding_cfg.get("step", 50))
+            step = resolve_rounding_step(current_price, sku["menu_role"], rules)
 
             target = current_price * (1 + delta_pct / 100.0)
             target = round(target / step) * step

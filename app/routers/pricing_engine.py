@@ -1338,10 +1338,21 @@ async def recommendations_summary(
         params,
     ).scalar()
 
+    # Точность будущего замера: удастся ли вообще доказать эффект приказа.
+    # Считается только по точке — по сети пачки не общие, складывать нечего.
+    precision = None
+    if department_id:
+        from ..services.pricing_effect import forecast_batch_precision
+        from ..services.pricing_rules_service import PricingRulesService
+        window = PricingRulesService(db).get_measurement_window()
+        precision = forecast_batch_precision(
+            db, department_id, statuses=("new",), eval_days=window["eval_days"])
+
     return {
         "by_status": by_status,
         "total": sum(by_status.values()),
         "total_delta_gp_new": float(total_delta_gp),
+        "measurement_forecast": precision,
     }
 
 

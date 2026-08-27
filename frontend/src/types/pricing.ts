@@ -28,10 +28,25 @@ export interface DepartmentWeeklyResponse {
   total: number
 }
 
+/** Прогноз точности будущего замера приказа (corr с фактом 0.976 на 9 приказах) */
+export interface MeasurementForecast {
+  positions: number
+  with_history: number
+  no_history?: number
+  eval_window_days?: number
+  expected_delta_gp?: number
+  ci_half_forecast?: number
+  ci_half_range?: [number, number]
+  measurable: boolean | null
+  ratio?: number | null
+  reason?: string
+}
+
 export interface RecommendationSummary {
   by_status: Partial<Record<RecommendationStatus, number>>
   total: number
   total_delta_gp_new: number | null
+  measurement_forecast?: MeasurementForecast | null
 }
 
 export interface PriceRecommendation {

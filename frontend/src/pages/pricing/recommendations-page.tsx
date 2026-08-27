@@ -137,6 +137,7 @@ export function PricingRecommendationsPage() {
 
   const byStatus = summary.data?.by_status ?? {}
   const potentialGp = summary.data?.total_delta_gp_new ?? null
+  const forecast = summary.data?.measurement_forecast ?? null
 
   // «Уверенные ходы»: новые A/B с положительным эффектом на текущей странице
   const sureMoves = useMemo(
@@ -319,6 +320,35 @@ export function PricingRecommendationsPage() {
       {reviewMut.error && <ErrorAlert message={apiErrorMessage(reviewMut.error)} title="Действие не выполнено" />}
       {batchMut.error && <ErrorAlert message={apiErrorMessage(batchMut.error)} title="Массовое действие не выполнено" />}
       {generateMut.error && <ErrorAlert message={apiErrorMessage(generateMut.error)} title="Пересчёт не выполнен" />}
+
+      {/* Точность будущего замера: узнать ДО утверждения, а не через месяц */}
+      {forecast && forecast.measurable === false && effectiveDepartmentId && (
+        <div
+          className="pricing-sure"
+          style={{ borderColor: 'var(--warn, var(--accent))' }}
+        >
+          <div>
+            <b>
+              Эффект этого приказа доказать не получится:{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>
+                ожидание +{fmtCompact(forecast.expected_delta_gp ?? 0)} ₸
+              </span>{' '}
+              против{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>
+                ±{fmtCompact(forecast.ci_half_forecast ?? 0)} ₸
+              </span>{' '}
+              <Term tip={GLOSSARY.measurementPrecision}>точности замера</Term>
+            </b>
+            <div className="ds">
+              Все {forecast.positions} открытых позиций вместе дадут прибавку меньше, чем
+              обычные колебания спроса за {forecast.eval_window_days ?? 14} дней. Решения можно
+              принимать, но проверить их результат через две недели будет нечем — как это уже
+              вышло на пилоте. Чтобы замер получился, приказ должен быть крупнее или
+              однороднее по категории.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* «Уверенные ходы» */}
       {sureMoves.length > 0 && (
