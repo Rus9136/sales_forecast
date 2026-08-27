@@ -239,6 +239,10 @@ class PriceOrderService:
                     f"({old_price:.0f}) — перегенерируйте рекомендацию")
 
         rules = self.rules.get_effective_rules(rec.product_id, str(dept.id), None)
+        # rec_type обязателен: для отката снимаются ROLLBACK_RELAXED_RULES.
+        # Без него возврат к прежней цене отсекался правилом rounding — исходные
+        # цены не кратны шагу 50 (1360, 1010, 810, 430 ₸), и приказ на откат
+        # собрать было нельзя в принципе.
         ok, violations = self.rules.check_recommendation(
             current_price=old_price or catalog["price"],
             candidate_price=new_price,
@@ -246,6 +250,7 @@ class PriceOrderService:
             menu_role=rec.menu_role,
             last_change_date=catalog.get("date_from"),
             rules=rules,
+            rec_type=rec.rec_type,
         )
         if not ok:
             return "нарушены правила: " + "; ".join(violations)
