@@ -169,3 +169,5 @@ app/static/spa/
 # Local session artifacts
 .claude/projects/
 frontend/tsconfig.tsbuildinfo
+.env.prod.bak*
+.env*.bak*
